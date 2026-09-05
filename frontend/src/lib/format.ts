@@ -68,3 +68,33 @@ export function when(at: number): string {
     minute: '2-digit',
   });
 }
+
+/** Milliseconds, rounded, with a thousands separator. `—` when unmeasured. */
+export function ms(v: number | undefined): string {
+  if (v === undefined || !Number.isFinite(v)) return '—';
+  return Math.round(v).toLocaleString('en-US');
+}
+
+/** Seconds, one decimal place, for audio durations. */
+export function secs(v: number | undefined): string {
+  if (v === undefined || !Number.isFinite(v)) return '—';
+  return `${(v / 1000).toFixed(1)}s`;
+}
+
+export function pct(part: number, whole: number): string {
+  if (!whole) return '0%';
+  return `${Math.round((part / whole) * 100)}%`;
+}
+
+/**
+ * A turn cost projected to a monthly bill. Fractions of a cent are impossible
+ * to reason about; the same number at production volume is the form the
+ * decision actually gets made in.
+ */
+export function monthly(perTurn: number, turnsPerDay: number): string {
+  const total = perTurn * turnsPerDay * 30;
+  if (!Number.isFinite(total)) return '—';
+  if (total >= 1000) return `$${Math.round(total).toLocaleString('en-US')}`;
+  if (total >= 10) return `$${total.toFixed(0)}`;
+  return `$${total.toFixed(2)}`;
+}

@@ -12,6 +12,7 @@
 import { WebSocketServer } from 'ws';
 import { once } from 'node:events';
 import { MurfTtsProvider } from '../src/providers/tts/MurfTtsProvider.js';
+import { languagesFor, voicesFor } from '../src/providers/catalog.js';
 import { CANONICAL_SAMPLE_RATE } from '../src/shared/protocol.js';
 import { tone } from '../src/audio/pcm.js';
 
@@ -45,7 +46,10 @@ const provider = new MurfTtsProvider();
 
 interface RunResult { bytes: number; chunks: number; errors: string[]; doneCalls: number }
 
-async function run(words: string[], opts: { voice?: string; language?: string } = {}): Promise<RunResult> {
+async function run(
+  words: string[],
+  opts: { voice?: string; language?: string; model?: string } = {},
+): Promise<RunResult> {
   received.length = 0;
   const errors: string[] = [];
   let bytes = 0;
@@ -56,7 +60,13 @@ async function run(words: string[], opts: { voice?: string; language?: string } 
   const done = new Promise<void>((res) => (resolveDone = res));
 
   const stream = await provider.open(
-    { model: 'falcon-2', voice: opts.voice, language: opts.language, sampleRate: CANONICAL_SAMPLE_RATE, credentials },
+    {
+      model: opts.model ?? 'falcon-2',
+      voice: opts.voice,
+      language: opts.language,
+      sampleRate: CANONICAL_SAMPLE_RATE,
+      credentials,
+    },
     {
       onAudio: (c) => {
         chunks += 1;
@@ -121,6 +131,21 @@ await run(['hi '], { voice: 'en-IN-aarav', language: 'en-IN' });
 const vc2 = (received[0]?.voice_config ?? {}) as Record<string, unknown>;
 check('explicit voice forwarded', vc2.voiceId === 'en-IN-aarav', JSON.stringify(vc2));
 check('language forwarded as multi_native_locale', vc2.multi_native_locale === 'en-IN');
+check('catalog voice keeps the default style', vc2.style === 'Conversational', JSON.stringify(vc2));
+
+/* 5b. a hand-typed voice id is sent as-is, and carries no assumed style */
+await run(['hi '], { voice: '  ab12cd34-0000-4444-8888-ffffffffffff  ', language: 'en-US' });
+const vc3 = (received[0]?.voice_config ?? {}) as Record<string, unknown>;
+check('typed voice id trimmed and forwarded', vc3.voiceId === 'ab12cd34-0000-4444-8888-ffffffffffff', JSON.stringify(vc3));
+check('no style assumed for a non-library voice id', !('style' in vc3), JSON.stringify(vc3));
+check('locale still sent for a typed voice id', vc3.multi_native_locale === 'en-US');
+
+/* 5c. the model picked in the UI is the model asked for on the wire */
+await run(['hi '], { model: 'gen2' });
+check('gen2 selection reaches the query string', lastUrl.includes('model=gen2'), lastUrl);
+check('gen2 still asks for 24kHz PCM', lastUrl.includes('sample_rate=24000'), lastUrl);
+const vc4 = (received[0]?.voice_config ?? {}) as Record<string, unknown>;
+check('gen2 falls back to the default voice', vc4.voiceId === 'en-US-natalie', JSON.stringify(vc4));
 
 /* 6. a WAV-headered chunk is still usable */
 const wav = Buffer.concat([
@@ -188,6 +213,24 @@ handler = (send, msg) => {
   check('queues text sent before open', bytes > 0, `${bytes} bytes`);
   check('queued voice_config still goes first', received[0]?.voice_config !== undefined);
 }
+
+/* 10. the catalog cannot offer one model the other model's voice.
+   Murf rejects that outright — it is the error that sent us to the live API. */
+const falconVoices = voicesFor('murf-tts', 'falcon-2');
+const gen2Voices = voicesFor('murf-tts', 'gen2');
+const falconIds = new Set(falconVoices.map((v) => v.id));
+const gen2Ids = new Set(gen2Voices.map((v) => v.id));
+check('falcon-2 has its own voice list', falconVoices.length > 100, `${falconVoices.length}`);
+check('gen2 has its own voice list', gen2Voices.length > 100, `${gen2Voices.length}`);
+check('the two lists genuinely differ',
+  [...gen2Ids].some((id) => !falconIds.has(id)) && [...falconIds].some((id) => !gen2Ids.has(id)));
+check('the provider default voice is valid on both models',
+  falconIds.has('en-US-natalie') && gen2Ids.has('en-US-natalie'));
+check('every catalog voice id is locale-prefixed (the docs\' bare names are not)',
+  [...falconIds, ...gen2Ids].every((id) => /^[a-z]{2}-[a-z]{2,6}-/i.test(id)),
+  [...falconIds, ...gen2Ids].filter((id) => !/^[a-z]{2}-[a-z]{2,6}-/i.test(id)).slice(0, 5).join(', '));
+check('each model brings its own locales',
+  languagesFor('murf-tts', 'falcon-2').length > 20 && languagesFor('murf-tts', 'gen2').length > 20);
 
 let failed = 0;
 for (const [n, ok, d] of results) {

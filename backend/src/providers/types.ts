@@ -173,4 +173,23 @@ export interface TtsStream {
   /** Barge-in: drop everything queued. */
   cancel(): void;
   close(): void;
+  /**
+   * Characters this stream actually handed to the vendor, where that can differ
+   * from what was pushed into it.
+   *
+   * `PipelineSession` otherwise bills every character it fed to `pushText`,
+   * which is correct for a streaming vendor: the text was on the wire the
+   * moment it arrived, and a barge-in half way through still consumed what had
+   * already been sent. It is wrong for a one-shot vendor. `GeminiTtsProvider`
+   * cannot accept incremental text, so it accumulates and issues a single
+   * request on `flush()` — barge-in before that point means the request was
+   * never made and Google was never asked to synthesise anything, yet the
+   * pipeline would still bill the whole reply. That invents cost for a turn
+   * that did not run, which is the same failure the `pending`/`abandoned` turn
+   * distinction exists to prevent.
+   *
+   * Optional: a provider that omits it keeps the pushed-character count, which
+   * is the honest number for every streaming implementation here.
+   */
+  billableCharacters?(): number;
 }

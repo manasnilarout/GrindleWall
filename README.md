@@ -12,7 +12,7 @@ Both implement the **same `VoiceSession` interface** and emit the **same metrics
 comparable and the frontend never knows which one it is talking to.
 
 ```
-frontend/  Vite + React. Provider toggle → model → prompt widget → conversation + latency table.
+frontend/  Vite + React. Named rigs → latency waterfall → compare runs → live console.
 backend/   Node + TS. Factory-injected providers, one WebSocket per session.
 ```
 
@@ -84,6 +84,30 @@ the breakdown. It is deliberately distinct from **Disconnect**, which just drops
 socket is held open until the summary arrives — closing it first would leave the server with a report
 and nowhere to send it.
 
+### The UI
+
+The frontend is organised around **rigs** — named provider combinations you switch between in one
+click, kept in `localStorage`. Each rig tab carries its own median TTFA, so the A/B is on screen
+before you click anything.
+
+| View | What it is for |
+|---|---|
+| **Bench** | Run a rig. The left rail is the chain top to bottom, each leg showing its own latency and whether its key is present, plus the same rig spelled as the `STT=… LLM=… TTS=…` command the scripts take. The centre is the conversation and a per-turn **waterfall** — one bar per turn, split STT · LLM TTFT · TTS TTFB · network — against one scale, so which leg is slow is visible rather than arithmetic. The right rail is the median, the split, and one sentence naming the largest leg. |
+| **Compare** | Records off disk, on one axis. Pick runs, pick a metric, and the bars repaint; the leg split is normalised per run so a 600 ms rig and a 2 s rig stay comparable as ratios. |
+| **Report** | The bill, with every provenance rule attached to the number it governs, and the per-turn cost projected to a monthly figure at a volume you choose. |
+| **Console** | Docked at the bottom, expandable. Filter by level and by source, search, and switch timestamps between wall clock and `t+` from the turn's t0. Metric marks are highlighted and expand to say what they mean. |
+
+A **realtime** run renders as a single band everywhere a pipeline run renders three. That is the
+finding, not missing data: a speech-to-speech model has no legs to take apart, so when it is slow the
+only dial is the model.
+
+Log-line **sources are guessed**, not reported: the `log` frame carries a level and free text and
+nothing else. A line is matched against the vendor names in the active rig's slots, then against
+keywords, and an ambiguous one — an all-mock rig, where every slot's vendor token is `mock` — stays
+`session` rather than being assigned to whichever slot sorted first. Good enough to filter on, not
+something to conclude from; the console says so. Metric marks are the exception: they carry their
+leg in the mark name and are read rather than guessed.
+
 Records are written to `backend/data/sessions/<id>.json` **after every turn**, not only at the end, so
 a conversation that is never formally ended — closed tab, lost connection, crashed process — still
 leaves its token counts on disk. Writes are serialized and atomic (temp file, then rename): two saves
@@ -93,8 +117,15 @@ then vanished from the listing rather than reporting itself.
 A record holds no API keys — provider/model ids, the system prompt, and the usage numbers. It does
 hold the prompt, deliberately, since that is what produced them. Expect ~1-3 KB per turn, kept
 indefinitely; `SESSION_DIR` moves them and `SESSION_MAX_RECORDS` caps them (off by default — silently
-deleting a measurement someone is mid-comparison on is worse than the disk use). Past conversations are listed in the UI and served from
+deleting a measurement someone is mid-comparison on is worse than the disk use). Past conversations are listed in the UI's Compare view and served from
 `GET /api/sessions` and `GET /api/sessions/:id`.
+
+`summary.latency` carries the **median of every leg**, not just TTFA — `sttMedianMs`,
+`llmTtftMedianMs`, `ttsTtfbMedianMs`, `totalTurnMedianMs`, `audioMedianMs`. Those numbers were always
+computed and always on the wire; they were simply never kept, so a record could say a conversation was
+slow without saying where. Comparing two past runs is arithmetic on exactly those medians. All the
+new fields are optional and records written before them are read back as they are — they show a
+hatched bar in Compare rather than being discarded.
 
 ### Three legs, three billing units
 
@@ -118,6 +149,10 @@ making it ~24× the cost of the same turn at `@minimal`. That is the single larg
 
 `backend/src/pricing/rates.ts` carries every rate with its source URL, the date it was read, and a
 `confidence` flag. `GET /api/pricing` serves the table so any number in the UI can be traced back.
+
+The table below is a **sample, not the file**: `openai-llm` (7 models), `openai-realtime` (2),
+`gemini-stt`, `gemini-tts` and `elevenlabs-tts` are priced there too, and are described under
+[The five late providers, and what contact with the vendor changed](#the-five-late-providers-and-what-contact-with-the-vendor-changed).
 
 | Provider | Rate | Source |
 |---|---|---|
@@ -150,12 +185,29 @@ labelled a **floor, not a bill**.
 ### Verifying it
 
 ```bash
-cd backend  && npm run turn:selftest    # 32 checks on turn attribution, no key, no network
-cd backend  && npm run usage:selftest   # 86 checks on arithmetic, persistence and redaction
-cd backend  && npm run gemini:selftest  # 37 checks incl. token-usage parsing
-cd backend  && npm run smoke            # usage + summary over the real WS protocol
-cd frontend && npm run render-check     # actually renders the panels (tsc did not catch the last UI crash)
+cd backend  && npm run turn:selftest             # 36 checks on turn attribution and the TTFA derivation
+cd backend  && npm run usage:selftest            # 130 checks on arithmetic, persistence, redaction and per-leg latency medians
+cd backend  && npm run catalog:selftest          # 111 checks — every provider/model/language path the UI can click
+cd backend  && npm run gemini:selftest           # 37 checks incl. token-usage parsing
+cd backend  && npm run murf:selftest             # 40 checks against a local fake
+cd backend  && npm run gemini:speech:selftest    # 80 checks — Gemini TTS + STT against local fakes
+cd backend  && npm run elevenlabs:selftest       # 57 checks against a local fake
+cd backend  && npm run openai:realtime:selftest  # 130 checks against a local fake
+cd backend  && npm run openai:llm:selftest       # 55 checks against a local fake
+cd backend  && npm run models                    # 10 checks against the vendors' free model listings (needs a key, bills nothing)
+cd backend  && npm run smoke                     # usage + summary over the real WS protocol
+cd backend  && npm run realtime:probe            # a realtime turn with real SPEECH in (needs a key, billable)
+cd frontend && npm run render-check              # 88 checks: actually renders every panel, and pins the rules
+                                                 # (voice resolution, leg overlap, TTFA attribution) that only a call can prove.
+                                                 # tsc did not catch this project's last UI crash. Start the backend
+                                                 # and it additionally runs against the live 26-provider catalog.
 ```
+
+676 backend checks plus 88 frontend render checks, none of which needs a key or a network. Read the caveat in
+[The five late providers, and what contact with the vendor changed](#the-five-late-providers-and-what-contact-with-the-vendor-changed)
+before treating `gemini:speech`, `elevenlabs`, `openai:realtime` or `openai:llm` as evidence of
+anything about a vendor — they run against fakes. `models`, `smoke`, `roundtrip` and
+`realtime:probe` are the only checks here that touch a real API.
 
 `turn:selftest` encodes bugs that actually shipped — silence stranding a turn, a second question
 arriving mid-answer, a TTS failure losing the model's token counts, barge-in inventing a turn — and
@@ -224,7 +276,7 @@ all three selectable from the UI.
 ```bash
 echo 'GOOGLE_API_KEY=your_key' >> backend/.env
 cd backend
-npm run gemini:selftest      # 25 checks, no key or network needed
+npm run gemini:selftest      # 37 checks, no key or network needed
 npm run gemini:live all      # real TTFT for all 26 verified combinations
 ```
 
@@ -304,11 +356,57 @@ input leg uses `ink-2` / `ink-whisper`. Both legs are WebSockets.
 
 ```bash
 echo 'CARTESIA_API_KEY=your_key' >> backend/.env
-cd backend && npm run cartesia      # Sonic -> Ink round trip
+cd backend
+npm run cartesia          # Sonic -> Ink round trip
+npm run cartesia:voices   # regenerate the voice library + measure language support
 ```
 
 Both legs run natively at **24 kHz pcm_s16le** — the bench's canonical format — so neither
 transcodes nor resamples. STT audio goes up as raw binary frames, not base64.
+
+### 934 voices, 44 languages, and a different language set per model
+
+The eight voice ids this file used to list were a rounding error: `GET /voices` returns **934
+voices across 44 languages** — 417 English, **49 Hindi**, 10 Tamil, 9 Telugu, and so on down
+to one Ukrainian. They are all in the picker now, filed under their language, generated into
+`src/providers/cartesia-catalog.ts` by `npm run cartesia:voices`.
+
+Two things that generator establishes which no doc page states:
+
+**Which languages a model takes is per model, and the spread is enormous.** One short live
+utterance per model/language pair, 220 of them:
+
+| Model | Languages accepted |
+|---|---|
+| `sonic-3.6` | **all 44** |
+| `sonic-3.5` · `sonic-3` | 42 — everything but Odia and Urdu |
+| `sonic-turbo` | 9 — `de en es fr hi ja ko pt zh` |
+| `sonic-2` | 8 — the same minus Hindi |
+
+The older models answer an unsupported language with *"The language is not supported by this
+model"*, and a few pairings with *"The requested model has been sunsetted"*. Since the catalog
+is what the UI renders, those combinations are simply absent from it: pick `sonic-2` and the
+language list shortens to eight, taking any voice that no longer fits with it.
+
+**A voice is not bound to the language it is filed under.** An English voice speaking Hindi
+is accepted, and so is the reverse (measured). The grouping exists to make 934 options
+navigable — the same thing [play.cartesia.ai](https://play.cartesia.ai/voices?language=hi)
+does — not to constrain the pairing. To cross it, paste the id into the **Voice id** field,
+which Cartesia now also accepts (`acceptsVoiceId`), and which is how a cloned voice gets in.
+
+Verified end to end in Hindi: `Amrit` on `sonic-3.6`, 281ms TTFB, transcribed back by Saaras
+at 9/10 words (the difference is a nuqta).
+
+```bash
+cd backend
+TTS=cartesia-tts TTS_MODEL=sonic-3.6 VOICE=97303aad-1a66-4edf-870a-58e6ba545005 TTS_LANG=hi \
+STT=sarvam-stt STT_MODEL='saaras:v3-realtime@fast' STT_LANG=hi-IN \
+  npx tsx scripts/roundtrip.ts "हमारी वापसी अवधि खरीद की तारीख से तीस दिन है।"
+```
+
+Because five models share one library, the voices are held once on the provider as
+`voicesByLanguage` and the models name only their language codes — nesting them per model
+sent the library five times and made `/api/catalog` a 613 KB response instead of 175 KB.
 
 ### `max_buffer_delay_ms: 0` is a quality trap
 
@@ -368,68 +466,395 @@ TTS=cartesia-tts TTS_MODEL=sonic-3.6 STT=sarvam-stt STT_MODEL='saaras:v3-realtim
 ## Murf (Falcon 2 TTS)
 
 **Murf is TTS only** — there is no Murf STT, so pair it with Saaras or Ink on the input leg.
+Verified end to end against the live API on 2026-09-05 (`murf-tts -> sarvam-stt` round trip,
+91% word overlap on both models).
 
-| Leg | Models | Endpoint |
-|---|---|---|
-| TTS | `falcon-2` · `gen2` | `wss://global.api.murf.ai/v1/speech/stream-input` |
+| Model | Host | Measured TTFB | Voices |
+|---|---|---|---|
+| `falcon-2` | `wss://global.api.murf.ai/v1/speech/stream-input` | **~186ms** (~90ms socket-warm) | 137 |
+| `gen2` | `wss://api.murf.ai/v1/speech/stream-input` | ~1.75s | 163 |
+
+Falcon 2 is the fastest TTS in this bench. Gen2 is here for comparison only.
 
 ```bash
 echo 'MURF_API_KEY=your_key' >> backend/.env
 cd backend
-npm run murf:selftest   # 27 checks, no key needed — message handling
-npm run murf:probe      # resolves the request-shape ambiguities (needs key)
-npm run murf:voices     # real voice ids, prints a paste-ready catalog block
+npm run murf:selftest   # 40 checks, no key needed — message handling + catalog invariants
+npm run murf:probe      # re-measures the request shape and the buffering behaviour
+npm run murf:voices     # regenerates src/providers/murf-catalog.ts from the live API
 ```
 
 Requested as raw `PCM`, `MONO`, 24 kHz — the bench's canonical format, so no resampling.
 A RIFF header is stripped if one shows up anyway (`stripWavHeader`, shared with Sarvam).
 
-### This one is not yet verified against the live API
+### The three things the docs get wrong
 
-It has still never been run against the live API. A `MURF_API_KEY` is now present in `backend/.env`,
-so `npm run murf:probe` will settle this in one run — until then every Murf constant is a guess.
-Unlike the other vendors, **Murf's own docs disagree with shipped third-party clients on three
-details**:
+Every one of these was a live error before it was measured, and each is now a field on
+`MurfModelProfile` in `MurfTtsProvider.ts` rather than a constant buried in the socket code.
 
-| Detail | Murf docs (what we send) | Alternate seen in the wild |
+**1. Each model has its own voice catalogue.** Falcon 2 publishes 137 voices, Gen2 163, and
+only 100 are shared. Asking one for the other's voice is a hard failure:
+
+```
+Invalid voice_id: en-US-imani. The specified voice is not supported for the
+selected model (FALCON). Note: Falcon-2 and Gen2 each have their own voice catalog.
+```
+
+So voices and locales hang off the **model** in `catalog.ts`, not off the provider —
+`ModelEntry.voices` / `.languages`, read through `voicesFor()` / `languagesFor()`, whose rule
+is *a model's own list wins*. Changing the model in the UI re-picks any voice or language the
+new model does not offer. The lists themselves are generated: `npm run murf:voices` rewrites
+`src/providers/murf-catalog.ts` from `GET /v1/speech/voices?model=FALCON|GEN2`.
+
+**2. Gen2 is not on the global host.** It closes with `1008 Gen2 Model is not available in
+global.api.murf.ai`. Each model therefore carries its own `wsBase`. Falcon answers on both
+hosts, but the global one is ~3x faster from here, so the profile pins it there.
+
+**3. A voice id has two accepted spellings, and only one of them is checkable.** The API
+returns qualified ids — `hi-IN-namrita` — but both endpoints also resolve the bare display
+name the docs use, `Namrita` (verified: 3/3 on the websocket, and the documented `curl`
+against `POST /v1/speech/stream` returns a real WAV). Resolution is per model either way:
+`Imani` and `en-US-imani` are both refused on Falcon because that voice is Gen2's. The
+catalog therefore stores the qualified ids — they are what the API publishes and what can be
+checked against a model's list — while the **Voice id** field accepts either.
+
+What turned out **not** to matter, measured across all 14 permutations in `murf:probe`: the
+`api-key` header and the query param both authenticate, `voiceId` and `voice_id` are both
+accepted, and `falcon-2` / `FALCON` / `Falcon` are interchangeable. The three ambiguities
+this file used to warn about were never the problem — the voice catalogue was.
+
+### Voices: the dropdown is not the whole list
+
+Beyond the per-model lists, Murf takes cloned and Voice Library ids, so the Murf entry sets
+`acceptsVoiceId: true` and the picker grows a **Voice id** field next to the dropdown. A
+non-empty id wins over the selection and goes to Murf verbatim. It is one catalog flag — set
+it on any other vendor measured to accept an id a dropdown cannot enumerate. Nothing is
+validated locally: an id the vendor rejects comes back as its own error rather than as a
+silently different voice.
+
+Two rules the provider applies to whatever id it is handed:
+
+- A **locale-prefixed id** is a catalogue voice, so the default `Conversational` style rides
+  along. (A style a voice does not list is tolerated — `en-IN-isha` publishes none and
+  renders fine — but a voice id from the other model's catalogue is not.)
+- Anything else — a bare display name, a cloned or Voice Library voice — cannot be matched to
+  a catalogue entry here, so **no style is sent** and Murf applies the voice's own.
+
+### Locales, not languages
+
+Murf names locales: `en-US`, never `en`. Other legs of this bench speak bare ISO codes, and a
+bare one is refused — *"Locale 'en' is not a recognized or supported locale for the Falcon
+model"*. So the provider widens a bare code to the first locale that model publishes for that
+language (`en` → `en-US`, `hi` → `hi-IN`) and drops anything still unrecognised rather than
+sending it to be refused; the voice's own locale is the right fallback. A mismatched pairing
+is *not* an error — a `hi-IN` voice with `multi_native_locale: en-US` renders — which is what
+multinative speech is for.
+
+### Buffering: the Cartesia trap does not apply here
+
+Cartesia's Sonic voiced every token as its own utterance at `max_buffer_delay_ms: 0` — 2.6x
+too much audio. Murf, measured against a one-shot reference of the same sentence (3.48s):
+
+| `max_buffer_delay_in_ms` | TTFB | Audio rendered |
 |---|---|---|
-| voice_config key | `voiceId` | `voice_id` |
-| model string | `falcon-2` | `FALCON` / `Falcon` |
-| auth | `api-key` header | `api-key` query param |
+| one-shot reference | 90ms | 3.48s |
+| `0` | 84ms | 3.96s |
+| `100` | 83ms | 4.28s |
+| `250` | 97ms | 4.28s |
+| vendor default | 81ms | 4.28s |
 
-Guessing here would be a coin flip, so instead `npm run murf:probe` permutes all of them
-against the live API, reports which combination works, and prints the exact constants to
-set in `MurfTtsProvider.ts`. It also re-runs the buffering check below. Add a key, run it
-once, and the ambiguity is gone.
+Word-by-word costs 14-23% extra audio at every setting, and `0` is the *closest* to the
+reference rather than the worst — Murf aggregates sensibly on its own. TTFB is flat across
+the range, so there is nothing to buy by tuning it: the provider leaves the delay at the
+vendor default and sets only a small `min_buffer_size`. Re-check with stage 3 of `murf:probe`.
 
-The voice ids and locales in the catalog are likewise doc-derived, not API-derived — the
-catalog entry says so. `npm run murf:voices` replaces them with real ones.
-
-### Buffering: pre-empting the Cartesia trap
-
-Murf exposes the same text-buffering knobs as Cartesia (`min_buffer_size`,
-`max_buffer_delay_in_ms`), where setting the delay to `0` made Sonic voice every token as
-its own utterance — 2.6x too much audio and mangled prosody. One third-party Murf client
-sets `max_buffer_delay_in_ms: 0`. Rather than repeat that mistake blind, this provider
-**leaves the delay at Murf's default** and sets only a small `min_buffer_size`. Stage 3 of
-`murf:probe` reports rendered audio duration per setting against a one-shot reference, so
-you can confirm or tune it with numbers instead of assumptions.
-
-### What the 27 self-test checks do and do not prove
+### What the 40 self-test checks do and do not prove
 
 They run the real provider against a local fake speaking Murf's dialect, covering base64
 decoding, the `final` flag, `voice_config` ordering, `end` flags, one shared `context_id`,
-header-not-URL auth, RIFF stripping, error surfacing, barge-in, and text queued before the
-socket opens. **They cannot prove Murf accepts our request shape** — a fake I wrote will
-happily accept whatever I send. That is exactly the gap `murf:probe` closes, and it is the
-lesson from the Gemini `thinkingLevel` bug: 25 green checks against my own assumption told
-me nothing about what Google would accept.
+header-not-URL auth, RIFF stripping, error surfacing, barge-in, text queued before the socket
+opens, the per-model wire shape, and the catalog invariants that keep one model's voice off
+another. **A fake cannot prove Murf accepts any of it** — that is what `murf:probe` and a real
+`roundtrip` are for, and it is the lesson from the Gemini `thinkingLevel` bug: green checks
+against my own assumption told me nothing about what the vendor would accept. Here they told
+me nothing about the voice catalogue either, which is exactly where the live API bit.
+
+## The five late providers, and what contact with the vendor changed
+
+Gemini TTS, Gemini Transcribe, OpenAI Realtime, OpenAI LLM and ElevenLabs TTS were added on
+2026-09-05 and written entirely from documentation. **All five have now completed live calls**,
+on the same date. This section is the record of that: what was measured, and what contact with
+the real APIs corrected.
+
+Keep the distinction that made this section necessary in the first place. A live round trip
+proves the request shape, the auth, the audio format and the decode path. It does **not**
+upgrade the self-tests: all 676 offline backend checks still run against local fakes written to
+agree with our own hypotheses, and a green suite remains worth nothing as vendor evidence. Only
+`roundtrip`, `smoke`, `realtime-probe` and `models` touch a vendor.
+
+### What was run, and what came back
+
+| Provider | Live check | Result |
+|---|---|---|
+| `elevenlabs-tts` | `npm run elevenlabs` (→ `cartesia-stt`) | transcribed back at 91% word overlap; `pcm_24000` served on this account tier |
+| `gemini-tts` | `npm run gemini:speech` (→ `gemini-stt`) | 101 SSE frames, 4.0s of audio, transcribed back |
+| `gemini-stt` | `roundtrip` from both `elevenlabs-tts` and `gemini-tts` | full transcript, correct at the word level |
+| `openai-llm` | `node scripts/smoke.mjs pipeline` | streamed, and reported vendor token counts |
+| `openai-realtime` | `smoke.mjs realtime` **and** `npm run realtime:probe` | answered text and speech; billed audio tokens as audio |
+
+### Measured time-to-first-byte
+
+Same method as the rest of this file: one fixed sentence, median of three, warm socket.
+
+| Leg | Model | TTFB | Read it as |
+|---|---|---|---|
+| `elevenlabs-tts` | `eleven_flash_v2_5` | **426ms** | one-shot text; 839ms streaming word-by-word |
+| `elevenlabs-tts` | `eleven_multilingual_v2` | 717ms | one-shot text |
+| `gemini-tts` | `gemini-3.1-flash-tts-preview` | 1798ms | streaming SSE, but see the caveat below |
+| `gemini-tts` | `gemini-2.5-flash-preview-tts` | ~4871ms | one-shot `:generateContent` — this is whole-generation time, not TTFB |
+| `openai-realtime` | `gpt-realtime-2.1` | 955ms | first audio after commit, real speech in |
+| `openai-realtime` | `gpt-realtime-2.1-mini` | 976ms | first audio after commit, text in |
+| `gemini-stt` | `gemini-3.5-transcribe-live` | ~365ms | final transcript after the local VAD called t0 (first partial ~1.0s) |
+
+`gemini-2.5-flash-preview-tts` is the clearest case of a number that must not be read as a TTFB.
+It is served by `:generateContent`, which returns one complete body, so the ~4.9s *is* the
+generation. Only `gemini-3.1-flash-tts-preview` streams.
+
+### A bug that only a live call could have found
+
+The `gemini-stt` socket closed **1006, mid-turn, twice**, after several good partials. The
+provider reported the error and emitted no final — which above the provider layer is not an
+error but a **hang**, `PipelineSession` blocked forever on an `onFinal` that would never come,
+with the banked transcript discarded.
+
+The close handler now salvages: an abnormal close emits whatever transcript is banked, then
+reports the error. `emitFinal` is idempotent, so a turn that already finalized emits nothing
+twice, and a deliberate `close()` never takes this path. Four checks in
+`gemini:speech:selftest` cover it, and they go red against the old handler.
+
+The 1006 itself was **not** reproduced on demand: 6/6 idle sessions survived 15s, one survived
+120s, and every subsequent round trip succeeded. Both occurrences were minutes after the account
+was topped up. It is recorded here as rare and unexplained, not as a characterised failure mode
+— the fix is about not losing a turn when it happens, not about knowing why it does.
+
+### The Gemini Live API transcription wire, as actually observed
+
+Worth writing down because the docs describe none of it precisely, and one field is the whole
+turn boundary:
+
+```
+<< {"setupComplete":{}}
+<< {"serverContent":{},"voiceActivity":{"type":"ACTIVITY_START","audioOffset":"0.200s"}}
+<< {"serverContent":{"interimInputTranscription":{"text":"Our refund window is"}}}   <- partial
+>> {"realtimeInput":{"audioStreamEnd":true}}                                          <- local VAD
+<< {"serverContent":{"inputTranscription":{"text":"...date of purchase."}}}           <- FINAL
+<< {"serverContent":{"generationComplete":true}}                                      <- boundary
+<< {"serverContent":{},"voiceActivity":{"type":"ACTIVITY_END","audioOffset":"3.297s"}}
+```
+
+- `interimInputTranscription` and `inputTranscription` are **different fields**, not the same
+  field with a flag. The first is speculative and rewritten; the second is a finalized segment.
+- **`turnComplete` was never observed.** `generationComplete` is what actually ends the turn.
+  The provider accepts either, which is the only reason this worked first time.
+- `VoiceActivity` — undocumented when this was written — turns out to carry
+  `{type: ACTIVITY_START|ACTIVITY_END, audioOffset}`. It arrives *after* the final transcript,
+  so it is still no use as t0, and the local VAD stays.
+- The final transcript lands ~350-560ms after `audioStreamEnd`.
+- Audio sent *after* `audioStreamEnd` is accepted, and in a controlled A/B the run that kept
+  streaming trailing silence got a complete final transcript while the run that stopped
+  immediately got only a truncated interim. The provider does not stop pushing audio at
+  finalization, and on this evidence it should not start.
+
+### One inference that looked measured and was not
+
+`ListModels` reports no `streamGenerateContent` for any Gemini TTS model, which reads like
+proof that Gemini TTS cannot stream. It is not — that field never lists
+`streamGenerateContent` for *any* model, including ones that certainly stream. Google's
+changelog says the opposite outright: streaming speech generation is supported, on
+`gemini-3.1-flash-tts-preview` and only there. Absence from that list is not evidence of
+absence, and the catalog now follows the changelog rather than the inference.
+
+### Gemini TTS is the odd one out, and its TTFB is not comparable
+
+Gemini TTS **cannot accept incremental text**. The request carries one complete body;
+`stream: true` streams audio *out*, never text *in*, and the TTS model pages list "Live API:
+not supported", so there is no socket to feed either. `GeminiTtsProvider` therefore
+accumulates on `pushText` and issues a single request on `flush()`.
+
+The consequence matters more than the mechanism: **its time-to-first-byte includes the entire
+LLM generation**, because nothing can be sent until the LLM is finished. Cartesia's ~174ms and
+Murf's ~186ms are time to the first frame of a stream that started while the model was still
+writing. Putting Gemini's number in the same column would be comparing two different quantities.
+Read it as end-of-LLM → first-audio.
+
+Only `gemini-3.1-flash-tts-preview` streams the audio back, which is the one thing keeping its
+first-frame number meaningful at all; the two 2.5-series models return the whole utterance in a
+single response and are deprecated in Google's own favour of the 3.1 model.
+
+### Gemini publishes no speech-end event, so t0 comes from the local VAD
+
+t0 for every latency number in this bench is the moment the user stopped speaking. Gemini's
+Live API has no speech-end event — `speechState` is deprecated in favour of a `VoiceActivity`
+message whose definition Google has not published, and the only documented turn boundary is the
+*arrival* of a finalized transcript, which lands after the server's silence timer has already
+expired. Using that as t0 would fold the vendor's endpointing delay into every measurement and
+make Gemini look faster than it is.
+
+So `GeminiSttProvider` uses the same local `SpeechEndDetector` as Cartesia, and sends
+`audioStreamEnd` immediately — which Google's docs describe as bypassing the server-side silence
+wait. Same t0 definition as every other provider, different detector. That is the rule, not an
+exception to it.
+
+### OpenAI Realtime: the docs and the schema disagree, and the schema wins
+
+The prose guides still show the flat session shape (`input_audio_format`, `output_audio_format`,
+`turn_detection` at the top of `session`). OpenAI's published API schema shows the GA object is
+nested — `session.audio.input.format`, `session.audio.output.voice` — with a required
+`type: "realtime"`. The provider follows the schema; the flat shape is the stale half.
+
+Two things fall out of that schema that are unusually convenient here:
+
+- The audio format object's own docstrings read *"The audio format. Always `audio/pcm`"* and
+  *"The sample rate of the audio. Always `24000`"*. 24 kHz PCM16 mono is exactly
+  `CANONICAL_SAMPLE_RATE`, so this is the one vendor leg in the bench that needs no resampling
+  in either direction.
+- `turn_detection` offers `server_vad` and `semantic_vad`. `server_vad` is what maps onto this
+  bench's `t0`, since `input_audio_buffer.speech_stopped` is a speech-end event of exactly the
+  kind Gemini lacks.
+
+### Realtime billing needed a new shape in the ledger
+
+OpenAI's realtime models publish **two token prices in one request** — on `gpt-realtime-2.1`,
+audio is $32/$64 per 1M in/out while text is $4/$24. A single `input`/`output` pair cannot say
+that, and a realtime turn is almost entirely audio tokens, so pricing one at the text rate would
+understate it ~8x *while still looking like a plausible number*.
+
+`LegUsage` therefore carries `audioInputTokens`, `audioOutputTokens` and
+`cachedAudioInputTokens`, each obeying the same containment rule as the existing breakdown
+fields — a total always includes its parts — and `Rate` carries `audioInput` / `audioOutput` /
+`cachedAudioInput`. `priceLeg` splits the leg and bills each half at its own rate.
+
+The guard matters as much as the arithmetic: **a leg reporting audio tokens against a rate that
+has only one token price is left unpriced**, with a reason saying so, rather than billed at the
+text rate. Silence beats a wrong number that looks right.
+
+### ElevenLabs: the buffering knobs are pointed at quality, not latency
+
+ElevenLabs exposes `chunk_length_schedule` and `auto_mode`, the same class of control as
+Cartesia's `max_buffer_delay_ms` — and this pipeline streams raw LLM tokens with no sentence
+aggregation upstream, which is precisely the condition under which Cartesia at `0` voiced every
+token as its own utterance and rendered 2.6x too much audio.
+
+That question has now been **measured**, by the same method used on Cartesia and Murf: a fixed
+139-character text synthesised one-shot for a reference (7.71-7.99s), then streamed word by word
+at ~40ms/word under each setting, comparing rendered audio duration rather than TTFB. Three
+trials per setting.
+
+| Setting | TTFB | Rendered | Verdict |
+|---|---|---|---|
+| `auto_mode: true` | 418ms | **13.70s = 178%** | the Cartesia fault, on this vendor |
+| `[120,160,250,290]` (vendor default) | 1286ms | 7.66-8.03s | safe, slow |
+| `[50,160,250,290]` | **839ms** | 7.66-7.85s | safe, and ~450ms faster |
+| `[50,120,160,250]` | 796ms | 7.80-7.94s | safe; the later steps buy almost nothing |
+| `[20,50,120,160]` | — | — | refused: `invalid_generation_config` |
+
+Two findings, both load-bearing:
+
+1. **`auto_mode: true` really is the Cartesia trap.** 178% of the reference duration is the
+   signature of text fragmented into separately voiced utterances. The vendor's warning about
+   partial sentences is accurate, and this pipeline is exactly the case it warns about. The
+   provider sends `false`, and that is now a measurement rather than a precaution.
+2. **Shortening the first step does not reproduce the fault.** Every schedule rendered within
+   7.66-8.03s — indistinguishable from the one-shot reference and from each other — while the
+   first step alone moved TTFB by ~450ms. 50 is the floor; 20 is refused outright.
+
+So the schedule now opens at `[50,160,250,290]` and the later steps keep the vendor's values.
+What this does **not** establish: rendered duration catches word-isolation, the gross fault, and
+nothing subtler. Nobody has listened to these samples side by side, and the vendor still claims
+longer inputs read better. If ElevenLabs prosody is ever suspect, restore `120` as the first
+step before looking anywhere else.
+
+### Two vendor facts that outrank the docs
+
+**ElevenLabs bills the API in dollars per character, not in credits.** The credit pool is the
+subscription product and a separate billing system; pricing this leg off credits overstates it
+about 3x. Flash and Turbo are $0.05 per 1K characters, `eleven_multilingual_v2` $0.10. An
+unlisted model falls back to the expensive tier, because for an unchecked number an
+overestimate is the safer direction. A promotional banner offering 50% off API pricing *for
+life* was live on 2026-09-05; an account that took it pays half these rates.
+
+**ElevenLabs' default voices are on a hard sunset.** The help centre states all default voices
+expire **2026-12-31** and are *already* unavailable on accounts created after March 2026. The
+three ids in the catalog — George, Rachel, Sarah — are therefore expected to fail outright on a
+new account, and the free-text voice id field is the working path rather than a convenience.
+The replacement voices are named in the docs but their ids are not published, so the real fix is
+a generated catalog from `GET /v2/voices`, exactly as `murf-voices.ts` and `cartesia-voices.ts`
+already do. This vendor is a stronger case for generation than either of those, because its ids
+have a published expiry date.
+
+`eleven_turbo_v2_5` is kept only for comparison and labelled deprecated — the vendor's own
+wording is to use Flash over Turbo "in all use cases". `eleven_v3` is absent because the docs list it as
+excluded from this socket (v3 dialogue has its own endpoint) — documented, not observed. `eleven_v3_conversational` is absent on the weaker
+ground that only `eleven_v3` is *explicitly* excluded — it may well work here, and it is the one
+model that would give this bench a mid-latency multilingual option, so it is the first thing
+worth probing.
+
+### Known undercounts, stated rather than hidden
+
+- **OpenAI Realtime** enables input transcription (the speech-to-speech model emits no user
+  transcript of its own, so the transcript panel would otherwise be empty). That ASR runs on a
+  separate model billed **per minute**, which the realtime leg does not meter. A realtime total
+  is a floor by that add-on.
+- **Gemini bills STT in tokens**, not seconds — an exception to this bench's "STT in seconds of
+  audio" convention. The rate on file is Google's own blended per-minute figure, flagged
+  `ambiguous` because a blended rate averages over an assumed transcript length. Google's Live
+  API *does* report `usageMetadata` broken down by modality, but `SttEvents` has no `onUsage`
+  channel to carry it — only the LLM slot does — so the leg is counted locally and marked `local`
+  rather than `vendor`. That is a real vendor count left on the table, not an estimate that could
+  not be improved; closing it means widening the STT interface, which no other vendor here needs.
+- **The GPT-5.6 family bills cache writes** as a separate line the API does not report, so it
+  cannot be priced here. `gpt-5.6-sol` is also on promotional pricing through at least
+  2026-11-21, with no published post-promo number to step to.
+
+### How to re-verify these
+
+Every command below has been run against the live vendor on 2026-09-05. Re-run them after any
+change to a request shape:
+
+```bash
+cd backend
+npm run gemini:speech      # Gemini TTS -> Gemini Transcribe round trip
+npm run elevenlabs         # ElevenLabs TTS -> Cartesia Ink round trip
+
+# any pairing works; mix vendors to isolate a bad leg
+TTS=gemini-tts TTS_MODEL=gemini-3.1-flash-tts-preview VOICE=Kore TTS_LANG=en-US \
+STT=sarvam-stt STT_MODEL='saaras:v3-realtime@fast' STT_LANG=en-IN \
+  npx tsx scripts/roundtrip.ts "Our refund window is thirty days from the date of purchase."
+
+# the OpenAI LLM leg, through the full protocol (needs npm run dev)
+STT=mock-stt LLM=openai-llm LLM_MODEL='gpt-5.6-luna@none' TTS=mock-tts \
+  node scripts/smoke.mjs pipeline
+```
+
+```bash
+# the realtime leg with real SPEECH in, which smoke.mjs cannot do (it sends text,
+# so it never bills a single audio input token)
+npm run realtime:probe
+```
+
+`realtime:probe` is the only check that exercises the audio-in half of a speech-to-speech turn,
+and therefore the only one that can tell whether `audioInputTokens` is reported at all. It
+asserts the audio breakdown is non-zero, is contained by its total, and prices — a realtime leg
+billed entirely at the text rate would understate the turn ~8x while still looking like a number.
+
+Everything in this section is measured. The self-tests still are not: they run against local
+fakes, and per the claim-discipline rule a green suite may never be restated as vendor evidence.
 
 ## Adding a provider
 
 Two steps. Nothing else in the app changes.
 
-**1. Flip it on in the catalog** — `backend/src/providers/catalog.ts` already lists 24 providers with
+**1. Flip it on in the catalog** — `backend/src/providers/catalog.ts` already lists 26 providers with
 their models, voices and required env vars. Set `implemented: true` on the one you're wiring.
 
 **2. Implement the interface and register it** — `backend/src/providers/factory.ts`:

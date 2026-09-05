@@ -10,6 +10,7 @@
  * Needs no API key and touches no network.
  */
 import { PipelineSession } from '../src/pipeline/PipelineSession.js';
+import { TurnMetrics } from '../src/metrics/TurnMetrics.js';
 import { MockRealtimeProvider } from '../src/providers/realtime/MockRealtimeProvider.js';
 import type {
   LegUsage,
@@ -341,6 +342,42 @@ console.log('\nRealtime: barge-in and close must still bill the turn (the mock i
   await session.close();
   check('ending mid-answer bills that turn too', rec.usage.length, 2);
   ok('billed exactly once each', rec.usage[1].legs.length === 1);
+}
+
+/*
+ * The derivation every latency number in this bench rests on.
+ *
+ * `timeToFirstAudioMs` is `first_audio_out - user_speech_end`, and that
+ * subtraction had NO coverage anywhere: deleting `- speechEnd` from
+ * `TurnMetrics.snapshot()` left every provider suite green, because each one
+ * constructs its metrics one line before stamping t0, so `user_speech_end.atMs`
+ * is ~0 and the subtraction is invisible. It only matters when t0 lands late —
+ * which is the realtime case, where the clock starts at the socket and t0 is
+ * stamped whenever the user stops talking.
+ */
+console.log('\nTurnMetrics — time-to-first-audio is measured FROM the speech end');
+{
+  const metrics = new TurnMetrics(1);
+  // Let the clock run before t0, the way a realtime session does.
+  await sleep(120);
+  metrics.mark('user_speech_end');
+  await sleep(80);
+  metrics.mark('first_audio_out');
+  const { marks, derived } = metrics.snapshot();
+
+  const speechEnd = marks.find((m) => m.name === 'user_speech_end')!.atMs;
+  const firstAudio = marks.find((m) => m.name === 'first_audio_out')!.atMs;
+  ok(`t0 is recorded at its real offset, not at zero (${speechEnd}ms)`, speechEnd > 60);
+  ok(`first audio is recorded after it (${firstAudio}ms)`, firstAudio > speechEnd);
+  ok(
+    `TTFA is the gap between them, not the time since the clock started ` +
+      `(${derived.timeToFirstAudioMs}ms vs ${(firstAudio - speechEnd).toFixed(1)}ms)`,
+    Math.abs((derived.timeToFirstAudioMs ?? 0) - (firstAudio - speechEnd)) < 1,
+  );
+  ok(
+    `...so the pre-t0 dead air is excluded (${derived.timeToFirstAudioMs}ms)`,
+    (derived.timeToFirstAudioMs ?? 999) < 140,
+  );
 }
 
 console.log(`\n${'-'.repeat(60)}`);

@@ -108,6 +108,18 @@ function PipelineTable({ usage }: { usage: TurnUsage[] }) {
   );
 }
 
+/**
+ * One side of a realtime leg, rendered in the unit the vendor actually bills —
+ * `132 tokens` or `4.3 s audio`, never a bare number wearing the wrong suffix.
+ * Seconds get a decimal place; token and character counts are integers.
+ */
+function unitCell(leg: LegUsage | undefined, side: 'in' | 'out' = 'in'): string {
+  if (!leg) return '—';
+  const value = side === 'in' ? leg.inputUnits : leg.outputUnits;
+  const dp = leg.unit === 'audio_seconds' ? 1 : 0;
+  return `${num(value, dp)} ${UNIT_LABEL[leg.unit] ?? leg.unit}`;
+}
+
 function RealtimeTable({ usage }: { usage: TurnUsage[] }) {
   return (
     <table>
@@ -115,8 +127,9 @@ function RealtimeTable({ usage }: { usage: TurnUsage[] }) {
         <tr>
           <th>#</th>
           <th>Model</th>
-          <th>Audio in</th>
-          <th>Audio out</th>
+          <th>In</th>
+          <th>Out</th>
+          <th>Audio</th>
           <th>USD</th>
           <th>INR</th>
         </tr>
@@ -128,8 +141,18 @@ function RealtimeTable({ usage }: { usage: TurnUsage[] }) {
             <tr key={t.turnId}>
               <td>{t.turnId}</td>
               <td>{rt?.modelId ?? '—'}</td>
-              <td>{num(rt?.inputUnits, 1)}s</td>
-              <td>{num(rt?.outputUnits, 1)}s</td>
+              {/* Realtime vendors do not agree on a unit: the mock meters
+                  seconds of audio, OpenAI meters tokens and charges audio ones
+                  at several times the text rate. Hardcoding "s" here rendered
+                  132 tokens as "132.0s" — a number that looks like a
+                  measurement and is off by whatever the token/second ratio
+                  happens to be. The unit travels with the leg; use it. */}
+              <td>{unitCell(rt)}</td>
+              <td>{unitCell(rt, 'out')}</td>
+              {/* Seconds of audio are still worth showing where the provider
+                  reports them, since they are the latency/quality denominator
+                  even when they are not what is billed. */}
+              <td className="muted">{rt?.audioSeconds === undefined ? '—' : `${num(rt.audioSeconds, 1)}s`}</td>
               <td className="strong">{usd(t.costUsd)}</td>
               <td className="strong">{inr(t.costInr)}</td>
             </tr>

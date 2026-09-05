@@ -1,14 +1,15 @@
 /**
- * Resolves the Murf request-shape ambiguities against the live API.
+ * Re-measures Murf's request shape and its text-buffering behaviour.
  *
- * Murf's own docs disagree with shipped third-party clients on the voice_config
- * key, the model string, and whether the key goes in a header or the query
- * string. Rather than guess, this permutes them and reports what actually works,
- * then checks the text-buffering behaviour that bit us on Cartesia.
+ * The shape ambiguities are settled (2026-09-05): `api-key` header, `voiceId`,
+ * `falcon-2`/`gen2` in the query string, and each model on its own host — Gen2
+ * is refused by global.api.murf.ai. Stage 1 re-checks all of that rather than
+ * trusting it, since the constants it feeds live in one table in the provider.
+ * Stage 3 is the part that still matters day to day: it reports rendered audio
+ * duration per buffering setting, which is how the Cartesia per-token trap was
+ * caught.
  *
  *   npx tsx scripts/murf-probe.ts
- *
- * Prints the constants to set in MurfTtsProvider.ts.
  */
 import 'dotenv/config';
 import WebSocket from 'ws';
@@ -21,7 +22,11 @@ if (!KEY) {
   process.exit(1);
 }
 
-const BASE = process.env.MURF_WS_BASE ?? 'wss://global.api.murf.ai/v1/speech/stream-input';
+const GLOBAL = 'wss://global.api.murf.ai/v1/speech/stream-input';
+const US = 'wss://api.murf.ai/v1/speech/stream-input';
+/** Falcon is only on the global host; Gen2 is only on the US one. */
+const hostFor = (model: string) =>
+  process.env.MURF_WS_BASE ?? (model.toLowerCase().startsWith('gen2') ? US : GLOBAL);
 const TEXT = 'Our refund window is thirty days from the date of purchase.';
 const SR = 24000;
 const VOICE = process.env.MURF_VOICE ?? 'en-US-natalie';
@@ -47,7 +52,7 @@ function attempt(a: Attempt): Promise<Outcome> {
     });
     if (a.auth === 'query') params.set('api-key', KEY!);
 
-    const ws = new WebSocket(`${BASE}?${params}`, {
+    const ws = new WebSocket(`${hostFor(a.model)}?${params}`, {
       headers: a.auth === 'header' ? { 'api-key': KEY! } : {},
     });
     const ctx = randomUUID();
@@ -114,7 +119,8 @@ const line = (label: string, o: Outcome) =>
   `${o.err ? 'FAIL' : 'ok  '} ${label.padEnd(46)} ttfb=${o.ttfb ? Math.round(o.ttfb) + 'ms' : '-'} ` +
   `audio=${o.bytes ? (pcm16DurationMs(o.bytes) / 1000).toFixed(2) + 's' : '-'}${o.err ? '  ' + o.err : ''}`;
 
-console.log(`voice=${VOICE}  (override with MURF_VOICE=...)\n`);
+console.log(`voice=${VOICE}  (override with MURF_VOICE=...)`);
+console.log('voice ids are per model — npm run murf:voices lists them\n');
 console.log('=== stage 1: auth / model / voice_config key ===');
 let winner: Attempt | undefined;
 for (const auth of ['header', 'query'] as const) {
@@ -147,9 +153,10 @@ for (const bufferDelay of [0, 100, 250, null]) {
   console.log(line(label, await attempt({ ...winner, mode: 'words', bufferDelay })));
 }
 
-console.log('\n--- set these in src/providers/tts/MurfTtsProvider.ts ---');
-console.log(`  VOICE_CONFIG_KEY = '${winner.voiceKey}'`);
-console.log(`  DEFAULT_MODEL    = '${winner.model}'`);
-console.log(`  auth             = ${winner.auth}`);
+console.log('\n--- MurfModelProfile in src/providers/tts/MurfTtsProvider.ts ---');
+console.log(`  voiceKey   = '${winner.voiceKey}'`);
+console.log(`  wireModel  = '${winner.model}'`);
+console.log(`  wsBase     = '${hostFor(winner.model)}'`);
+console.log(`  auth       = ${winner.auth}`);
 console.log('\nPick the smallest buffer delay whose rendered audio matches the one-shot reference.');
 process.exit(0);

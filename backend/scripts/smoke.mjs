@@ -66,6 +66,10 @@ for (const [prov, model, label] of [
   [env.STT, env.STT_MODEL, 'STT'],
   [env.LLM, env.LLM_MODEL, 'LLM'],
   [env.TTS, env.TTS_MODEL, 'TTS'],
+  // Realtime was missing from this list, so `REALTIME=openai-realtime` with no
+  // REALTIME_MODEL ran against `mock-s2s` and reported mock latency as if it
+  // were the vendor's.
+  [env.REALTIME, env.REALTIME_MODEL, 'REALTIME'],
 ]) {
   if (prov && !prov.startsWith('mock') && !model) {
     console.error(`FAIL: ${label}=${prov} needs ${label}_MODEL too (it would inherit a mock model id)`);

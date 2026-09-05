@@ -6,7 +6,9 @@ A harness for A/B-testing voice AI providers on latency and audio quality across
 architectures — **realtime** (one native speech-to-speech model) and **pipeline**
 (STT → LLM → TTS) — behind one interface so the numbers are comparable. See `README.md`
 for the measured vendor findings; they are the record of what the live APIs actually
-accept and should be updated when re-measured.
+accept and should be updated when re-measured. Before writing any claim about what a vendor
+does or does not accept — there, or in a catalog comment — follow the **claim-discipline**
+skill: a capability claim ships only with a committed probe behind it.
 
 Not a git repository. `backend/` and `frontend/` are two independent npm projects with no
 workspace root (the root `package-lock.json` is empty).
@@ -33,20 +35,35 @@ Verification scripts, all in `backend/`:
 | `npm run gemini:selftest` | no | Gemini SSE/wire handling against a local fake |
 | `npm run usage:selftest` | no | cost arithmetic, persistence, secret redaction — vs hand-computed vendor denominations |
 | `npm run turn:selftest` | no | turn attribution: silence, barge-in, overlapping turns, TTS failure, tails |
+| `npm run catalog:selftest` | no | every provider/model/language path the UI can click resolves to a non-empty selection — for the generated Murf/Cartesia tables, one the vendor was measured to take; for doc-derived entries, only one the docs describe |
 | `npm run murf:selftest` | no | Murf message handling against a local fake |
+| `npm run gemini:speech:selftest` | no | Gemini TTS + Transcribe against local fakes |
+| `npm run elevenlabs:selftest` | no | ElevenLabs message handling against a local fake |
+| `npm run openai:realtime:selftest` | no | OpenAI Realtime event handling against a local fake |
+| `npm run openai:llm:selftest` | no | OpenAI Responses SSE + usage parsing against a local fake |
+| `npm run models` | yes (either) | asks Google/OpenAI which models exist and checks every catalog id against the answer — free listing endpoints, bills nothing |
 | `npm run roundtrip` | yes | any TTS → STT pair: synthesise, stream back at real time, print transcript + latency |
-| `npm run sarvam` / `npm run cartesia` | yes | preset `roundtrip` invocations |
+| `npm run realtime:probe` | yes | a realtime turn driven by real SPEECH, asserting the vendor bills audio tokens as audio — `smoke` sends text and so never bills one |
+| `npm run sarvam` / `npm run cartesia` / `npm run elevenlabs` / `npm run gemini:speech` | yes | preset `roundtrip` invocations |
 | `npm run gemini:live [model\|all]` | yes | real TTFT per catalog model variant |
-| `npm run murf:probe` / `npm run murf:voices` | yes | resolve Murf's undocumented request shape / real voice ids |
+| `npm run murf:probe` / `npm run murf:voices` | yes | re-measure Murf's request shape + buffering / regenerate its per-model voice catalog |
+| `npm run cartesia:voices` | yes | regenerate Cartesia's 934-voice library and re-measure which languages each Sonic model accepts |
 
-And in `frontend/`: `npm run render-check` server-renders the usage panels against a real or synthetic
-session record. `tsc` did not catch this project's last UI crash, so type-checking a component is not
-evidence that it renders.
+And in `frontend/`: `npm run render-check` server-renders **every panel** against a real or synthetic
+session record, and — when the backend is up on :8787 — also against the live catalog, where it seeds
+rigs from all 26 providers and asserts each resolves to a startable config. `tsc` did not catch this
+project's last UI crash, so type-checking a component is not evidence that it renders. Extend it
+whenever a component is added or `StartConfig` / `Rig` / `SessionSummary` changes shape.
 
 Scripts are configured by env vars, not flags — `TTS`, `TTS_MODEL`, `STT`, `STT_MODEL`,
-`LLM`, `LLM_MODEL`, `VOICE`, `LANG_CODE`, `STT_LANG`, `TTS_LANG`, `PROMPT`. (`LANG` is the
-shell's own POSIX locale — `smoke.mjs` ignores it when it looks like one.) To run a
-single case, invoke the script directly:
+`LLM`, `LLM_MODEL`, `REALTIME`, `REALTIME_MODEL`, `VOICE`, `LANG_CODE`, `STT_LANG`,
+`TTS_LANG`, `SYSTEM` (the system prompt) and `PROMPT` (the turn to say). (`LANG` is the
+shell's own POSIX locale — `smoke.mjs` ignores it when it looks like one.) The mode is
+`argv[2]`, not an env var. The bench's rig rail generates exactly this command line, so
+these names are a contract with the UI as well as with you — `envCommandOf` in
+`frontend/src/lib/rigs.ts` is pinned to them by `render-check`, because a wrong name does
+not error, it silently falls back to a mock provider. To run a single case, invoke the
+script directly:
 
 ```bash
 cd backend
@@ -78,8 +95,17 @@ Key files:
 - `backend/src/shared/protocol.ts` — the wire contract, and `CANONICAL_SAMPLE_RATE`.
   **Mirrored by copy** to `frontend/src/lib/protocol.ts`; after editing it run
   `cd frontend && npm run sync-protocol`. Never hand-edit the frontend copy.
-- `backend/src/providers/catalog.ts` — single source of truth for the UI's toggles (24
-  providers, their models, voices, languages, `envKeys`). Served via `GET /api/catalog`
+- `backend/src/providers/catalog.ts` — single source of truth for the UI's toggles (26
+  providers, their models, voices, languages, `envKeys`, and `acceptsVoiceId` where the
+  vendor takes voice ids the dropdown cannot enumerate — cloned or library voices).
+  **Voices and languages narrow from provider to model to language**, in that order, because
+  vendors genuinely differ at each step: Murf keeps a voice catalogue per model, Cartesia
+  accepts a different language set per model (44 on `sonic-3.6`, 8 on `sonic-2`) and files
+  934 voices under 44 languages. `voicesFor(provider, model, language)` and
+  `languagesFor(provider, model)` are the only correct way to read them — never
+  `entry.voices` directly. A shared library hangs off the provider as `voicesByLanguage` so
+  it crosses the wire once. Both vendor tables are generated (`murf-catalog.ts`,
+  `cartesia-catalog.ts`); do not hand-edit them. Served via `GET /api/catalog`
   with readiness computed per env var. Entries are **measured, not assumed**: unsupported
   model/setting pairings are absent so the UI cannot produce a 400.
 - `backend/src/providers/factory.ts` — the registration point and the only session entry
@@ -152,6 +178,21 @@ Key files:
   total is labelled a floor. Costing happens above the provider layer — providers report raw counts
   and never learn what anything is worth.
 
+- **A vendor that bills audio and text tokens differently gets both rates.** Speech-to-speech
+  meters in tokens like an LLM, but audio tokens cost several times text tokens in the same
+  request (OpenAI: $32 vs $4 per 1M in). `LegUsage` carries `audioInputTokens` /
+  `audioOutputTokens` / `cachedAudioInputTokens` and `Rate` carries `audioInput` / `audioOutput`
+  / `cachedAudioInput`; each total INCLUDES its breakdown, as everywhere else. A leg reporting
+  audio tokens against a single-price rate is left **unpriced**, never billed at the text rate —
+  that would understate a realtime turn ~8x while still looking like a number.
+- **All five late providers have now completed live calls** (2026-09-05) — `gemini-tts`,
+  `gemini-stt`, `openai-realtime`, `openai-llm`, `elevenlabs-tts`. Each was doc-derived until
+  then; the measured numbers and the corrections that came out of contact with the real APIs are
+  in the README section "The five late providers, and what contact with the vendor changed".
+  What that does NOT upgrade: every self-test in this repo still runs against a local fake that
+  agrees with our hypotheses by construction, so a green suite is still not vendor evidence. The
+  live checks are `roundtrip`, `smoke`, `realtime-probe` and `models`, and only those.
+
 ### Adding a provider
 
 1. `implemented: true` on its `catalog.ts` entry (with correct `envKeys`).
@@ -170,16 +211,32 @@ Streaming TTS vendors expose text-aggregation knobs (`max_buffer_delay_ms`,
 `min_buffer_size`). Setting the delay to `0` makes Cartesia's Sonic voice **every token as
 its own utterance** — 2.6× too much audio with mangled prosody — because this pipeline
 streams raw LLM tokens with no sentence aggregation upstream. Cartesia is pinned at
-`250ms`; Murf is left at the vendor default with only a small `min_buffer_size`. Do not
-lower these to chase TTFB without measuring rendered audio duration against a one-shot
+`250ms`. Murf, measured the same way, does not have the fault — word-by-word costs 14-23%
+extra audio at every delay including `0`, and TTFB is flat across the range — so it is left
+at the vendor default with only a small `min_buffer_size`, there being nothing to buy. Do
+not lower either to chase TTFB without measuring rendered audio duration against a one-shot
 reference.
 
-### Unverified: Murf
+### Murf: verified, and what the docs got wrong
 
-`MurfTtsProvider` has still never run against the live API. A `MURF_API_KEY` is now present in
-`backend/.env`, so the only thing standing between this and verification is running the probe. Murf's
-docs disagree with shipped third-party clients on the `voiceId` key, the model string and
-the auth mechanism. Its 27 self-test checks pass against a local fake, which proves nothing
-about what Murf accepts. `npm run murf:probe` permutes the ambiguities against the real API
-and prints the constants to set; its catalog voice ids are doc-derived until
-`npm run murf:voices` replaces them. Treat any Murf constant as a guess until then.
+`MurfTtsProvider` is verified against the live API (2026-09-05) — `falcon-2` ~186ms TTFB, the
+fastest TTS here; `gen2` ~1.75s. Three things cost a live error each and are now fields on
+`MurfModelProfile` in that file:
+
+- **Each model has its own voice catalogue** (Falcon 137, Gen2 163, 100 shared). The other
+  model's voice is rejected outright, so Murf's voices and locales hang off `ModelEntry` in
+  `catalog.ts` and are read through `voicesFor()` / `languagesFor()` — a model's own list wins
+  over the provider's. The lists are generated by `npm run murf:voices` into
+  `src/providers/murf-catalog.ts`; do not hand-edit that file.
+- **Gen2 is not served by `global.api.murf.ai`** (closes 1008). Each model carries its host.
+- **Murf names locales, not languages** — a bare `en` is refused, so the provider widens it to
+  the first locale the model publishes for that language and drops what it cannot resolve.
+
+Voice ids have two accepted spellings — the qualified `hi-IN-namrita` the API publishes and
+the bare `Namrita` the docs use. Both resolve, both are resolved *per model*. The catalog
+stores qualified ids because those are checkable against a model's list; the Voice id field
+takes either.
+
+What the file used to warn about turned out not to matter: header and query auth, `voiceId`
+and `voice_id`, `falcon-2` / `FALCON` / `Falcon` are all accepted. `npm run murf:probe`
+re-measures all of it plus the buffering behaviour.

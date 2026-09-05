@@ -15,8 +15,26 @@ export class AudioSink {
   /** Seconds of lead time; keeps playback from stuttering on jittery sockets. */
   private readonly jitterBuffer = 0.08;
 
-  onFirstAudible?: () => void;
+  /**
+   * Reports the wall-clock moment the first sample of a turn became audible,
+   * tagged with the turn it belongs to.
+   *
+   * The tag is not decoration. This fires from a `setTimeout` scheduled for the
+   * jitter-buffer lead, so it is always late relative to the frame that
+   * triggered it — late enough that a short turn's metrics can arrive first, and
+   * a barge-in can cancel the audio entirely before it lands. Without a tag the
+   * caller cannot tell "the number for this turn" from "a number left over from
+   * the last one", and a leftover reads as a measurement.
+   */
+  onFirstAudible?: (token: number) => void;
   private awaitingFirst = false;
+  /** Bumped whenever the turn being awaited changes, invalidating pending timers. */
+  private turnToken = 0;
+
+  /** The turn currently being awaited. A report tagged otherwise is stale. */
+  get currentToken(): number {
+    return this.turnToken;
+  }
 
   async resume(): Promise<void> {
     if (!this.ctx) {
@@ -32,6 +50,7 @@ export class AudioSink {
   /** Call at the start of each assistant turn so onFirstAudible fires once per turn. */
   expectTurn(): void {
     this.awaitingFirst = true;
+    this.turnToken += 1;
   }
 
   enqueue(pcm16: ArrayBuffer): void {
@@ -53,7 +72,11 @@ export class AudioSink {
     if (this.awaitingFirst) {
       this.awaitingFirst = false;
       const delayMs = Math.max(0, (this.playHead - now) * 1000);
-      window.setTimeout(() => this.onFirstAudible?.(), delayMs);
+      // Captured now, read later: if the turn moves on before this fires, the
+      // token no longer matches and the report is dropped rather than credited
+      // to whichever turn happens to be open.
+      const token = this.turnToken;
+      window.setTimeout(() => this.onFirstAudible?.(token), delayMs);
     }
 
     src.onended = () => this.sources.delete(src);
@@ -74,6 +97,10 @@ export class AudioSink {
     this.sources.clear();
     this.playHead = this.ctx?.currentTime ?? 0;
     this.awaitingFirst = false;
+    // A barge-in cancels the audio but not the timer already scheduled for it.
+    // Bumping the token is what stops that timer reporting a time-to-audible
+    // for a reply that was cut off before anyone heard it.
+    this.turnToken += 1;
   }
 
   /** 0..1 output level, for a speaking indicator. */
