@@ -44,7 +44,9 @@ export function handleSocket(ws: WebSocket): void {
     onTurnStart: (turnId) => send({ type: 'turn_start', turnId }),
     onTurnEnd: (turnId) => send({ type: 'turn_end', turnId }),
     onMetrics: (turnId, marks, derived) => {
-      if (derived.timeToFirstAudioMs !== undefined) ledger?.noteTtfa(derived.timeToFirstAudioMs);
+      // Banks the whole breakdown, TTFA included — not just TTFA, so a record
+      // read back later can still say which leg was slow.
+      ledger?.noteLatency(derived);
       send({ type: 'metrics', turnId, marks, derived });
     },
     onUsage: (turnId, legs) => {

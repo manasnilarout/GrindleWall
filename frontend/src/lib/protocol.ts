@@ -109,6 +109,23 @@ export interface LegUsage {
   thinkingTokens?: number;
   /** Billed at the (cheaper) cache rate, and already counted in inputUnits. */
   cachedInputTokens?: number;
+  /**
+   * Speech-to-speech vendors meter in tokens like an LLM, but bill AUDIO tokens
+   * at a different — far higher — rate than text tokens in the same request.
+   * One `input`/`output` pair per rate cannot express that, so the audio portion
+   * travels separately and `priceLeg` bills the two halves at their own rates.
+   *
+   * Same containment rule as the fields above, for the same reason: a total
+   * always INCLUDES its breakdown. `audioInputTokens` is already inside
+   * `inputUnits`, `audioOutputTokens` inside `outputUnits`, and
+   * `cachedAudioInputTokens` inside BOTH `cachedInputTokens` and
+   * `audioInputTokens`. Pricing subtracts, so a field counted twice here is
+   * billed twice, and one left out is billed at the wrong rate rather than not
+   * at all — which is harder to notice.
+   */
+  audioInputTokens?: number;
+  audioOutputTokens?: number;
+  cachedAudioInputTokens?: number;
   /** Seconds of audio the TTS leg produced. Not what it is billed on, but the quality/latency denominator. */
   audioSeconds?: number;
   /** 'vendor' — the API reported these counts. 'local' — this process counted them. */
@@ -164,11 +181,25 @@ export interface SessionSummary {
   costInr: number;
   unpriced: string[];
   turns: TurnUsage[];
+  /**
+   * Medians for the whole conversation. TTFA is the headline; the per-leg
+   * figures are what make two records comparable after the fact — without them
+   * a run read back from disk can say *that* it was slow but not *where*, and
+   * the only place that answer exists is the live session that has since gone.
+   *
+   * All optional: records written before these were kept have the TTFA fields
+   * and nothing else, and are read back rather than discarded.
+   */
   latency: {
     ttfaMedianMs?: number;
     ttfaP95Ms?: number;
     ttfaMinMs?: number;
     ttfaMaxMs?: number;
+    sttMedianMs?: number;
+    llmTtftMedianMs?: number;
+    ttsTtfbMedianMs?: number;
+    totalTurnMedianMs?: number;
+    audioMedianMs?: number;
   };
   /**
    * The FX rate every conversion above used, so a stale rate is visible rather

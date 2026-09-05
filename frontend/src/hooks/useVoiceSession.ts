@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DerivedMetrics, MetricMark, ServerMessage, SessionSummary, StartConfig, TurnUsage } from '../lib/protocol';
 import { MicRecorder } from '../audio/recorder';
 import { AudioSink } from '../audio/player';
+import { MARK_NOTE, sourceOfMark, sourceOfMessage, type LogSource } from '../lib/logsource';
 
 /** 'ending' is the window between asking for the bill and the summary arriving. */
 export type ConnState = 'idle' | 'connecting' | 'ready' | 'ending' | 'error' | 'closed' | 'ended';
@@ -10,7 +11,21 @@ export interface TurnRecord {
   turnId: number;
   marks: MetricMark[];
   derived: DerivedMetrics;
-  /** Measured in the browser: speech end -> first sample actually audible. */
+  /**
+   * Measured in the browser: **final user transcript received here** → first
+   * sample actually audible.
+   *
+   * NOT time-to-first-audio, and not comparable with `derived.timeToFirstAudioMs`.
+   * The page cannot see t0 — `user_speech_end` is the server's mark and only
+   * reaches the browser at turn end, inside the metrics frame — so the clock
+   * starts at the last event the page can observe, which is already after STT
+   * finished and after that frame crossed the network. It excludes STT latency
+   * and includes both network hops.
+   *
+   * It is still the only number with a person's ear at the end of it, which is
+   * why it is kept; it just is not the same measurement as TTFA, so nothing
+   * subtracts one from the other.
+   */
   clientTtfaMs?: number;
   label: string;
 }
@@ -19,6 +34,24 @@ export interface LogLine {
   at: number;
   level: 'info' | 'warn' | 'error';
   message: string;
+  /**
+   * Derived for ordinary log lines (see `sourceOfMessage`), read straight off
+   * the name for marks. Only ever used to colour and filter — nothing depends
+   * on it being right.
+   */
+  source: LogSource;
+  /**
+   * 'mark' lines are metric marks the server already sent in a `metrics` frame,
+   * re-emitted into the console so a latency number can be read next to the
+   * events that produced it. They are the same measurements, not a second
+   * source of truth.
+   */
+  kind: 'log' | 'mark';
+  turnId?: number;
+  /** ms since this turn's t0. Marks only. */
+  atMs?: number;
+  /** Longer explanation, revealed when the line is expanded. */
+  detail?: string;
 }
 
 export interface Utterance {
@@ -27,7 +60,13 @@ export interface Utterance {
   final: boolean;
 }
 
-const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/session`;
+/**
+ * Resolved on connect rather than at module load. A browser global read while
+ * the module is being evaluated makes the whole file unimportable outside a
+ * browser, which takes `render-check` — the only thing in this project that
+ * actually proves a component renders — down with it.
+ */
+const wsUrl = (): string => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/session`;
 
 /** How long to wait for a summary before letting the user move on. */
 const END_TIMEOUT_MS = 8000;
@@ -45,9 +84,24 @@ function detach(ws: WebSocket | null): void {
   ws.close();
 }
 
+/**
+ * Whether a stashed client-measured TTFA belongs to the turn now reporting.
+ *
+ * Exported because it is the rule that keeps one turn's measurement off another
+ * turn's row, and a rule that cannot be called from a test is a rule nothing
+ * checks. The stash is tagged when it is written; `currentToken` is whatever
+ * turn the audio sink is awaiting at the moment metrics arrive. They match only
+ * for a turn whose audio actually became audible before its metrics landed —
+ * which is exactly the condition under which the number means anything.
+ */
+export function claimTtfa(stash: { token: number; ms: number } | null, currentToken: number): number | undefined {
+  return stash && stash.token === currentToken ? stash.ms : undefined;
+}
+
 export function useVoiceSession() {
   const [state, setState] = useState<ConnState>('idle');
   const [label, setLabel] = useState('');
+  const [sessionId, setSessionId] = useState('');
   const [micOn, setMicOn] = useState(false);
   const [assistantSpeaking, setAssistantSpeaking] = useState(false);
   const [utterances, setUtterances] = useState<Utterance[]>([]);
@@ -63,12 +117,40 @@ export function useVoiceSession() {
   const sinkRef = useRef<AudioSink | null>(null);
   const labelRef = useRef('');
   const pendingTtfaRef = useRef<number | null>(null);
-  /** Client-measured TTFA for the in-flight turn, consumed by the next metrics frame. */
-  const lastClientTtfa = useRef<number | null>(null);
+  /**
+   * Client-measured TTFA waiting for its metrics frame, tagged with the turn it
+   * was measured for. The tag is checked on consumption: an untagged stash used
+   * to be handed to whichever turn reported next, so a turn whose audio was
+   * interrupted — or whose metrics simply beat the jitter-buffer timer — could
+   * donate its number to the following turn, which then rendered a client TTFA
+   * and a derived network band for a measurement that was not its own.
+   */
+  const lastClientTtfa = useRef<{ token: number; ms: number } | null>(null);
 
-  const log = useCallback((level: LogLine['level'], message: string) => {
-    setLogs((prev) => [...prev.slice(-199), { at: Date.now(), level, message }]);
+  /** The config this session was started with, so log lines can be attributed. */
+  const configRef = useRef<StartConfig | undefined>(undefined);
+
+  const push = useCallback((lines: LogLine[]) => {
+    // The cap is on the buffer, not the view: 600 lines is a couple of minutes
+    // of a chatty pipeline, and dropping older ones keeps a long session from
+    // growing without bound.
+    setLogs((prev) => [...prev, ...lines].slice(-600));
   }, []);
+
+  const log = useCallback(
+    (level: LogLine['level'], message: string) => {
+      push([
+        {
+          at: Date.now(),
+          level,
+          message,
+          kind: 'log',
+          source: sourceOfMessage(message, configRef.current),
+        },
+      ]);
+    },
+    [push],
+  );
 
   const pushUtterance = useCallback((role: 'user' | 'assistant', text: string, final: boolean) => {
     setUtterances((prev) => {
@@ -99,6 +181,10 @@ export function useVoiceSession() {
       setUsage([]);
       setSummary(null);
       setLogs([]);
+      configRef.current = config;
+      // Left over from a previous session these would be credited to turn 1.
+      pendingTtfaRef.current = null;
+      lastClientTtfa.current = null;
 
       const sink = sinkRef.current ?? new AudioSink();
       sinkRef.current = sink;
@@ -113,13 +199,13 @@ export function useVoiceSession() {
       }
       // Metrics always arrive at turn end, i.e. after the first sample is audible,
       // so stashing here and consuming on the metrics frame is race-free.
-      sink.onFirstAudible = () => {
+      sink.onFirstAudible = (token) => {
         if (pendingTtfaRef.current === null) return;
-        lastClientTtfa.current = Math.round(performance.now() - pendingTtfaRef.current);
+        lastClientTtfa.current = { token, ms: Math.round(performance.now() - pendingTtfaRef.current) };
         pendingTtfaRef.current = null;
       };
 
-      const ws = new WebSocket(WS_URL);
+      const ws = new WebSocket(wsUrl());
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
       /** Guards every state update: this socket may have been superseded. */
@@ -137,6 +223,7 @@ export function useVoiceSession() {
         switch (msg.type) {
           case 'session_started':
             setState('ready');
+            setSessionId(msg.sessionId);
             setLabel(msg.label);
             labelRef.current = msg.label;
             log('info', `session ${msg.sessionId} · ${msg.mode} · ${msg.label}`);
@@ -155,13 +242,31 @@ export function useVoiceSession() {
             setAssistantSpeaking(false);
             break;
           case 'metrics':
+            // The marks were already measured and already on this frame. Fanning
+            // them into the console costs nothing and turns "612 ms" into
+            // something you can read the derivation of.
+            push(
+              [...msg.marks]
+                .sort((a, b) => a.atMs - b.atMs)
+                .map((mark) => ({
+                  at: Date.now(),
+                  level: 'info' as const,
+                  message: mark.name,
+                  kind: 'mark' as const,
+                  source: sourceOfMark(mark.name),
+                  turnId: msg.turnId,
+                  atMs: mark.atMs,
+                  detail: MARK_NOTE[mark.name],
+                })),
+            );
             setTurns((prev) => [
               ...prev,
               {
                 turnId: msg.turnId,
                 marks: msg.marks,
                 derived: msg.derived,
-                clientTtfaMs: lastClientTtfa.current ?? undefined,
+                // Only the turn still being awaited may claim the stash.
+                clientTtfaMs: claimTtfa(lastClientTtfa.current, sink.currentToken),
                 label: labelRef.current,
               },
             ]);
@@ -204,7 +309,7 @@ export function useVoiceSession() {
         void stopMic();
       };
     },
-    [log, pushUtterance, stopMic],
+    [log, push, pushUtterance, stopMic],
   );
 
   const startMic = useCallback(async () => {
@@ -299,6 +404,7 @@ export function useVoiceSession() {
   return {
     state,
     label,
+    sessionId,
     micOn,
     micLevel,
     assistantSpeaking,

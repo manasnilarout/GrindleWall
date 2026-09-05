@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  DerivedMetrics,
   LegUsage,
   SessionSummary,
   SessionMode,
@@ -19,6 +20,11 @@ export class UsageLedger {
 
   private readonly turns: TurnUsage[] = [];
   private readonly ttfas: number[] = [];
+  private readonly sttLatencies: number[] = [];
+  private readonly llmTtfts: number[] = [];
+  private readonly ttsTtfbs: number[] = [];
+  private readonly totalTurns: number[] = [];
+  private readonly audioDurations: number[] = [];
 
   constructor(
     private readonly sessionId: string,
@@ -47,12 +53,38 @@ export class UsageLedger {
   }
 
   /**
-   * Server-side time-to-first-audio for a turn. The browser measures its own
-   * (actually-audible) number, but that one never reaches this process, so the
-   * summary reports the server figure and the UI keeps showing both.
+   * Banks a completed turn's whole latency breakdown.
+   *
+   * Server-side time-to-first-audio is one of the figures here. The browser
+   * measures its own, actually-audible number, but that never reaches this
+   * process — so the record carries the server figure and the UI shows both.
+   *
+   * This deliberately replaced a narrower `noteTtfa`. Two public methods writing
+   * the same array is a trap: calling both banks every TTFA twice and skews the
+   * median and p95 with nothing to show for it.
+   *
+   * The per-leg numbers were already computed and already on the wire; they
+   * were simply never kept, so a record on disk could report a slow
+   * conversation without saying which leg was slow. Comparing two past runs is
+   * the point of this bench, and that comparison is arithmetic on medians —
+   * medians that only ever existed in the browser tab that ran the session.
+   *
+   * Every leg is banked separately rather than as whole turns: a realtime
+   * session has no STT or LLM mark at all, and a pipeline turn can miss one
+   * when a provider reports nothing, so a shared array would silently pair the
+   * n-th STT figure with an unrelated turn's TTS figure.
    */
-  noteTtfa(ms: number): void {
-    if (Number.isFinite(ms) && ms >= 0) this.ttfas.push(ms);
+  noteLatency(derived: DerivedMetrics): void {
+    this.note(this.ttfas, derived.timeToFirstAudioMs);
+    this.note(this.sttLatencies, derived.sttLatencyMs);
+    this.note(this.llmTtfts, derived.llmTtftMs);
+    this.note(this.ttsTtfbs, derived.ttsTtfbMs);
+    this.note(this.totalTurns, derived.totalTurnMs);
+    this.note(this.audioDurations, derived.audioDurationMs);
+  }
+
+  private note(into: number[], ms: number | undefined): void {
+    if (ms !== undefined && Number.isFinite(ms) && ms >= 0) into.push(ms);
   }
 
   summary(): SessionSummary {
@@ -72,7 +104,14 @@ export class UsageLedger {
       costInr: round(this.turns.reduce((sum, t) => sum + t.costInr, 0), 6),
       unpriced: [...new Set(this.turns.flatMap((t) => t.unpriced))],
       turns: this.turns,
-      latency: latencyOf(this.ttfas),
+      latency: {
+        ...latencyOf(this.ttfas),
+        sttMedianMs: medianOf(this.sttLatencies),
+        llmTtftMedianMs: medianOf(this.llmTtfts),
+        ttsTtfbMedianMs: medianOf(this.ttsTtfbs),
+        totalTurnMedianMs: medianOf(this.totalTurns),
+        audioMedianMs: medianOf(this.audioDurations),
+      },
       usdPerInr,
     };
   }
@@ -102,6 +141,16 @@ function totalsByLeg(turns: TurnUsage[]): LegUsage[] {
         acc.cachedInputTokens = (acc.cachedInputTokens ?? 0) + leg.cachedInputTokens;
       }
       if (leg.audioSeconds !== undefined) acc.audioSeconds = round((acc.audioSeconds ?? 0) + leg.audioSeconds, 3);
+      // The audio/text token split, kept summed alongside the totals it sits
+      // inside. Dropping these would leave a realtime total that no longer
+      // reproduces its own cost.
+      if (leg.audioInputTokens !== undefined) acc.audioInputTokens = (acc.audioInputTokens ?? 0) + leg.audioInputTokens;
+      if (leg.audioOutputTokens !== undefined) {
+        acc.audioOutputTokens = (acc.audioOutputTokens ?? 0) + leg.audioOutputTokens;
+      }
+      if (leg.cachedAudioInputTokens !== undefined) {
+        acc.cachedAudioInputTokens = (acc.cachedAudioInputTokens ?? 0) + leg.cachedAudioInputTokens;
+      }
       // A single 'local' turn makes the total an estimate, so it wins.
       if (leg.source === 'local') acc.source = 'local';
       if (leg.unpricedReason && !acc.unpricedReason) acc.unpricedReason = leg.unpricedReason;
@@ -125,6 +174,16 @@ function latencyOf(values: number[]): SessionSummary['latency'] {
     ttfaMinMs: sorted[0],
     ttfaMaxMs: sorted[sorted.length - 1],
   };
+}
+
+/**
+ * Median of an unsorted sample, or undefined when there is nothing to take one
+ * of. Undefined rather than 0: a realtime session genuinely has no STT leg, and
+ * a zero there would render as a measurement of instant transcription.
+ */
+function medianOf(values: number[]): number | undefined {
+  if (values.length === 0) return undefined;
+  return median([...values].sort((a, b) => a - b));
 }
 
 /** True median: the midpoint of the middle pair on an even count, not the upper one. */

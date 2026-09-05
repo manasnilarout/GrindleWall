@@ -141,6 +141,190 @@ console.log('\nMurf — priced, but flagged because the vendor’s own sources d
   ok('the conflict is spelled out', (p.cost?.note ?? '').includes('1 cent per minute'));
 }
 
+console.log('\nOpenAI Realtime — audio and text tokens are two prices in one request');
+{
+  const rt = (over: Partial<LegUsage>) =>
+    leg({ leg: 'realtime', providerId: 'openai-realtime', modelId: 'gpt-realtime-2.1', ...over });
+
+  // gpt-realtime-2.1: audio $32 in / $64 out, text $4 in / $24 out, per 1M.
+  check(
+    '1M audio input tokens = $32, not the $4 text price',
+    priceLeg(rt({ inputUnits: 1_000_000, audioInputTokens: 1_000_000 })).cost?.amount,
+    32,
+  );
+  check(
+    '1M text input tokens = $4',
+    priceLeg(rt({ inputUnits: 1_000_000 })).cost?.amount,
+    4,
+  );
+
+  // The audio count sits INSIDE inputUnits, so the remainder is text.
+  check(
+    'a mixed turn bills each half at its own rate',
+    priceLeg(rt({ inputUnits: 1000, audioInputTokens: 900 })).cost?.amount,
+    Number((900 * 32e-6 + 100 * 4e-6).toFixed(8)),
+  );
+  check(
+    'output splits the same way',
+    priceLeg(rt({ outputUnits: 1000, audioOutputTokens: 800 })).cost?.amount,
+    Number((800 * 64e-6 + 200 * 24e-6).toFixed(8)),
+  );
+
+  // Cached audio is inside BOTH cachedInputTokens and audioInputTokens; billing
+  // it twice, or at the uncached audio rate, are the two easy mistakes.
+  check(
+    'cached audio bills at the cache rate and only once',
+    priceLeg(rt({ inputUnits: 1000, audioInputTokens: 1000, cachedInputTokens: 400, cachedAudioInputTokens: 400 }))
+      .cost?.amount,
+    Number((600 * 32e-6 + 400 * 0.4e-6).toFixed(8)),
+  );
+
+  const mini = priceLeg(
+    leg({ leg: 'realtime', providerId: 'openai-realtime', modelId: 'gpt-realtime-2.1-mini', inputUnits: 1_000_000, audioInputTokens: 1_000_000 }),
+  );
+  check('the mini model is cheaper per audio token', mini.cost?.amount, 10);
+
+  // The trap this guard exists for: a vendor whose rate has one token price
+  // must never quietly bill audio tokens at it — on the flagship that would
+  // understate the turn 8x while still looking like a number.
+  const wrongRate = priceLeg(leg({ inputUnits: 1000, audioInputTokens: 1000 }));
+  ok('audio tokens against a text-only rate refuse to price', wrongRate.cost === undefined);
+  ok('...and say why', (wrongRate.unpricedReason ?? '').includes('audio tokens'));
+}
+
+console.log('\nCached realtime tokens make a turn cheaper, never dearer');
+{
+  const rt = (over: Partial<LegUsage>) =>
+    priceLeg(leg({ leg: 'realtime', providerId: 'openai-realtime', modelId: 'gpt-realtime-2.1', ...over }));
+  const AUDIO = 32e-6;
+  const CACHED_AUDIO = 0.4e-6;
+
+  // OpenAI omits cached_tokens_details when there is nothing text-side to
+  // report, leaving only the cached_tokens total. Treating that remainder as
+  // TEXT cache bills tokens the leg never reported — and because a realtime
+  // conversation resends its whole history every turn, the cached share grows
+  // with the conversation, so the error grows with it too.
+  const allAudioCached = rt({ inputUnits: 10_000, audioInputTokens: 10_000, cachedInputTokens: 9_000 });
+  check(
+    '9K of 10K audio tokens cached, no per-modality detail',
+    allAudioCached.cost?.amount,
+    Number((1_000 * AUDIO + 9_000 * CACHED_AUDIO).toFixed(8)),
+  );
+  ok(
+    '...which is far cheaper than the same turn uncached',
+    (allAudioCached.cost?.amount ?? 0) < (rt({ inputUnits: 10_000, audioInputTokens: 10_000 }).cost?.amount ?? 0),
+  );
+  ok(
+    '...and never bills more tokens than the leg reported',
+    (allAudioCached.cost?.amount ?? 0) <= 10_000 * AUDIO,
+  );
+
+  // An explicit split must still win over the derivation.
+  check(
+    'an explicit cachedAudioInputTokens is honoured as given',
+    rt({ inputUnits: 1000, audioInputTokens: 900, cachedInputTokens: 400, cachedAudioInputTokens: 300 }).cost?.amount,
+    Number((600 * AUDIO + 300 * CACHED_AUDIO + 100 * 0.4e-6).toFixed(8)),
+  );
+
+  // And a pure-text leg must be untouched by any of this.
+  check(
+    'a text-only leg still prices on the text rates',
+    rt({ inputUnits: 1000, cachedInputTokens: 400 }).cost?.amount,
+    Number((600 * 4e-6 + 400 * 0.4e-6).toFixed(8)),
+  );
+
+  // The mixed line: audio and text BOTH nonzero on input, and both partly
+  // cached. Every other realtime check here has textIn == 0, so the text half
+  // of the split was never exercised with a nonzero result.
+  // 450*$32 + 250*$0.40 + 150*$4 + 150*$0.40 per 1M.
+  check(
+    'a leg with audio and text, both partly cached',
+    rt({ inputUnits: 1000, audioInputTokens: 700, cachedInputTokens: 400, cachedAudioInputTokens: 250 }).cost?.amount,
+    Number((450 * 32e-6 + 250 * 0.4e-6 + 150 * 4e-6 + 150 * 0.4e-6).toFixed(8)),
+  );
+}
+
+console.log('\nA breakdown bigger than its total is refused, not clamped into a plausible number');
+{
+  const rt = (over: Partial<LegUsage>) =>
+    priceLeg(leg({ leg: 'realtime', providerId: 'openai-realtime', modelId: 'gpt-realtime-2.1', ...over }));
+
+  // Every field below is documented as counted INSIDE its total. A provider that
+  // reported them additively would, without this guard, have the excess absorbed
+  // by a clamp and be billed a number that looks entirely reasonable — 500 audio
+  // tokens charged on a leg whose own total says 100.
+  const overAudioIn = rt({ inputUnits: 100, audioInputTokens: 500 });
+  ok('audioInputTokens > inputUnits is unpriced', overAudioIn.cost === undefined);
+  ok('...and names the contradiction', (overAudioIn.unpricedReason ?? '').includes('audioInputTokens'));
+
+  ok('audioOutputTokens > outputUnits is unpriced', rt({ outputUnits: 10, audioOutputTokens: 1000 }).cost === undefined);
+  ok('cachedInputTokens > inputUnits is unpriced', rt({ inputUnits: 100, cachedInputTokens: 500 }).cost === undefined);
+  ok(
+    'cachedAudioInputTokens beyond its two parents is unpriced',
+    rt({ inputUnits: 1000, audioInputTokens: 1000, cachedInputTokens: 100, cachedAudioInputTokens: 900 }).cost === undefined,
+  );
+
+  // The guard must not fire on well-formed usage — including the boundary case
+  // where the breakdown exactly equals its total, which is the common one.
+  ok('a leg whose breakdown equals its total still prices', rt({ inputUnits: 1000, audioInputTokens: 1000 }).cost !== undefined);
+  ok('a leg with no audio fields at all still prices', rt({ inputUnits: 1000, outputUnits: 100 }).cost !== undefined);
+}
+
+console.log('\nElevenLabs — dollars per character, and the rate is per model');
+{
+  const el = (modelId: string, chars: number) =>
+    priceLeg(leg({ leg: 'tts', providerId: 'elevenlabs-tts', modelId, unit: 'characters', outputUnits: chars, source: 'local' }));
+
+  // Billed in USD per character. The subscription CREDIT pool is a different
+  // billing system; pricing this leg off credits overstates it ~3x, which is
+  // the mistake these two checks exist to catch.
+  check('flash: 1000 characters = $0.05', el('eleven_flash_v2_5', 1000).cost?.amount, 0.05);
+  check('multilingual_v2 is twice the price', el('eleven_multilingual_v2', 1000).cost?.amount, 0.1);
+  ok(
+    'an unlisted model falls back to the expensive tier, not the cheap one',
+    (el('eleven_something_new', 1000).cost?.amount ?? 0) === 0.1,
+  );
+  check('reported in USD, the currency the vendor bills in', el('eleven_flash_v2_5', 1000).cost?.currency, 'USD');
+}
+
+console.log('\nOpenAI LLM — $0.20 in / $1.20 out per 1M (gpt-5.6-luna), suffix stripped');
+{
+  const o = (over: Partial<LegUsage>) => leg({ providerId: 'openai-llm', modelId: 'gpt-5.6-luna', ...over });
+  check('1M input tokens = $0.20', priceLeg(o({ inputUnits: 1_000_000 })).cost?.amount, 0.2);
+  check('1M output tokens = $1.20', priceLeg(o({ outputUnits: 1_000_000 })).cost?.amount, 1.2);
+  ok('the @variant suffix resolves to the same rate', rateFor('openai-llm', 'gpt-5.6-luna@none') !== undefined);
+  check(
+    'reasoning effort does not change the price per token',
+    priceLeg(o({ modelId: 'gpt-5.6-luna@medium', outputUnits: 1_000_000 })).cost?.amount,
+    1.2,
+  );
+  // Reasoning tokens are folded into outputTokens by the provider, exactly as
+  // Gemini's thinking tokens are, so 300 output of which 200 reasoning is 300.
+  check(
+    'reasoning tokens ride the output rate, once',
+    priceLeg(o({ outputUnits: 300, thinkingTokens: 200 })).cost?.amount,
+    Number((300 * 1.2e-6).toFixed(8)),
+  );
+  ok('a model with no @variant still resolves', rateFor('openai-llm', 'gpt-4o-mini') !== undefined);
+}
+
+console.log('\nGemini speech — the STT leg prices, the TTS leg cannot');
+{
+  const stt = priceLeg(
+    leg({ leg: 'stt', providerId: 'gemini-stt', modelId: 'gemini-3.5-transcribe-live', unit: 'audio_seconds', inputUnits: 60, source: 'local' }),
+  );
+  check('one minute of audio = $0.009', stt.cost?.amount, Number((0.009).toFixed(8)));
+  check('flagged ambiguous — it is a blended rate', stt.cost?.confidence, 'ambiguous');
+
+  // Google bills Gemini TTS per token; this leg counts characters. The rate is
+  // on file so the gap explains itself rather than reading as "no rate".
+  const tts = priceLeg(
+    leg({ leg: 'tts', providerId: 'gemini-tts', modelId: 'gemini-2.5-flash-preview-tts', unit: 'characters', outputUnits: 1000, source: 'local' }),
+  );
+  ok('a character count against a token rate refuses to price', tts.cost === undefined);
+  ok('...and names the mismatch', (tts.unpricedReason ?? '').includes('per tokens'));
+}
+
 console.log('\nMock providers are free, so a mock run costs nothing');
 {
   check('mock TTS', priceLeg(leg({ leg: 'tts', providerId: 'mock-tts', modelId: 'mock-voice', unit: 'characters', outputUnits: 5000, source: 'local' })).cost?.amount, 0);
@@ -149,7 +333,7 @@ console.log('\nMock providers are free, so a mock run costs nothing');
 
 console.log('\nMissing or mismatched rates are reported, never silently zeroed');
 {
-  const unknown = priceLeg(leg({ providerId: 'elevenlabs-tts', modelId: 'whatever' }));
+  const unknown = priceLeg(leg({ providerId: 'deepgram-tts', modelId: 'whatever' }));
   ok('no cost is invented', unknown.cost === undefined);
   ok('and the reason is stated', (unknown.unpricedReason ?? '').includes('No rate on file'));
 
@@ -185,8 +369,10 @@ console.log('\nLedger — totals are the sum of the turns the UI already showed'
 
   const t1 = ledger.record(1, turnLegs());
   const t2 = ledger.record(2, turnLegs());
-  ledger.noteTtfa(400);
-  ledger.noteTtfa(600);
+  // The production path is noteLatency; noteTtfa alone exercises a call the
+  // socket no longer makes.
+  ledger.noteLatency({ timeToFirstAudioMs: 400, sttLatencyMs: 210, llmTtftMs: 140, ttsTtfbMs: 180, audioDurationMs: 2600 });
+  ledger.noteLatency({ timeToFirstAudioMs: 600, sttLatencyMs: 230, llmTtftMs: 160, ttsTtfbMs: 200, audioDurationMs: 3000 });
   const s = ledger.summary();
 
   check('turn count', s.turnCount, 2);
@@ -201,8 +387,34 @@ console.log('\nLedger — totals are the sum of the turns the UI already showed'
   check('TTS audio seconds doubled', s.totals.find((l) => l.leg === 'tts')?.audioSeconds, 8);
   check('STT seconds doubled', s.totals.find((l) => l.leg === 'stt')?.inputUnits, 6);
   check('median TTFA is the midpoint of the pair, not the upper value', s.latency.ttfaMedianMs, 500);
+  /*
+   * Each leg is banked into its own array. A single shared array would still
+   * produce plausible medians while pairing the n-th STT figure with an
+   * unrelated turn's TTS figure — and the compare view is built entirely on
+   * these numbers, so a mix-up there is invisible and permanent.
+   */
+  check('STT median is the STT figures', s.latency.sttMedianMs, 220);
+  check('LLM TTFT median is the LLM figures', s.latency.llmTtftMedianMs, 150);
+  check('TTS TTFB median is the TTS figures', s.latency.ttsTtfbMedianMs, 190);
+  check('audio duration median is the audio figures', s.latency.audioMedianMs, 2800);
+  ok('no leg borrowed another leg\'s numbers',
+    s.latency.sttMedianMs !== s.latency.llmTtftMedianMs &&
+    s.latency.llmTtftMedianMs !== s.latency.ttsTtfbMedianMs);
   check('the FX assumption is on the record', s.usdPerInr, usdPerInr);
   ok('rupee and dollar legs both counted', s.costUsd > 0);
+}
+
+console.log('\nLedger — a leg that never reported has no median, not a zero');
+{
+  const config = { mode: 'realtime', systemPrompt: '', turnDetection: 'server_vad' } as StartConfig;
+  const l = new UsageLedger('s', 'realtime', 't', config);
+  l.noteLatency({ timeToFirstAudioMs: 441, ttsTtfbMs: 441, audioDurationMs: 2260 });
+  const { latency } = l.summary();
+  check('TTFA is recorded', latency.ttfaMedianMs, 441);
+  ok('no STT median on a speech-to-speech run', latency.sttMedianMs === undefined);
+  ok('no LLM median either', latency.llmTtftMedianMs === undefined);
+  ok('a zero would render as a vendor that answered instantly',
+    latency.sttMedianMs !== 0 && latency.llmTtftMedianMs !== 0);
 }
 
 console.log('\nLedger — latency summary statistics');
@@ -210,7 +422,7 @@ console.log('\nLedger — latency summary statistics');
   const config = { mode: 'pipeline', systemPrompt: '', turnDetection: 'server_vad' } as StartConfig;
   const build = (ttfas: number[]) => {
     const l = new UsageLedger('s', 'pipeline', 't', config);
-    for (const v of ttfas) l.noteTtfa(v);
+    for (const v of ttfas) l.noteLatency({ timeToFirstAudioMs: v });
     return l.summary().latency;
   };
 
@@ -232,9 +444,9 @@ console.log('\nLedger — an unpriced leg makes the total a floor, and says so')
 {
   const config = { mode: 'pipeline', systemPrompt: '', turnDetection: 'server_vad' } as StartConfig;
   const ledger = new UsageLedger('sess', 'pipeline', 'test', config);
-  ledger.record(1, [leg({ leg: 'tts', providerId: 'elevenlabs-tts', modelId: 'v3', unit: 'characters', outputUnits: 100, source: 'local' })]);
+  ledger.record(1, [leg({ leg: 'tts', providerId: 'deepgram-tts', modelId: 'aura-2-thalia-en', unit: 'characters', outputUnits: 100, source: 'local' })]);
   const s = ledger.summary();
-  check('flagged on the session', s.unpriced, ['elevenlabs-tts:v3']);
+  check('flagged on the session', s.unpriced, ['deepgram-tts:aura-2-thalia-en']);
   check('and contributes nothing to the total', s.costUsd, 0);
 }
 
