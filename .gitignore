@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-check/
+.env
+.env.local
+*.log
+.DS_Store
+recordings/
+data/
