@@ -12,6 +12,14 @@ export type SessionMode = 'realtime' | 'pipeline';
 export type ClientMessage =
   | { type: 'start'; config: StartConfig }
   | { type: 'user_text'; text: string }
+  /**
+   * Begin recording both directions of the conversation to a stereo WAV.
+   * Sent when the user opens the mic; there is no matching stop, because
+   * recording deliberately spans the whole conversation — turning the mic off
+   * and on again mid-call must not split the recording in two. It ends with the
+   * conversation (`end_conversation`, `stop`, or the socket closing).
+   */
+  | { type: 'start_recording' }
   | { type: 'commit_audio' }
   | { type: 'interrupt' }
   /** Finish the conversation: close the providers, then bill and persist it. */

@@ -5,7 +5,32 @@ export const config = {
   /** Comma-separated origins allowed to talk to this server. */
   corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:5173').split(',').map((s) => s.trim()),
   logAudio: process.env.LOG_AUDIO === '1',
+  /**
+   * Conversations are recorded to a stereo WAV beside their JSON record. On by
+   * default — the bench exists to compare audio QUALITY, and until now nothing
+   * here could be listened back to. `SESSION_AUDIO=0` turns it off; stereo
+   * PCM16 @ 24 kHz costs ~5.8 MB per recorded minute.
+   */
+  recordAudio: process.env.SESSION_AUDIO !== '0',
+  /**
+   * Where records and their recordings live. Owned here so the WAV and the JSON
+   * cannot end up in different directories: the audio route resolves a file
+   * through `SessionStore`, so a recorder that resolved its own would 404 on a
+   * file that plainly exists.
+   */
+  sessionDir: process.env.SESSION_DIR ?? 'data/sessions',
+  /**
+   * Cap on one recording, in minutes. Sanitised HERE rather than at each use so
+   * there is one answer: a junk value used to cap the recorder at the default
+   * while the warning shown to the user quoted the junk back verbatim.
+   */
+  recordAudioMaxMinutes: sanePositive(process.env.SESSION_AUDIO_MAX_MINUTES, 60),
 };
+
+function sanePositive(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 /** Passed to every provider so no provider reads process.env directly. */
 export function credentials(): Record<string, string | undefined> {

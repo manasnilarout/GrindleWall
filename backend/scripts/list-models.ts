@@ -5,7 +5,7 @@
  *   npm run models
  *
  * This is the committed probe behind every "Measured" claim in the README's
- * "Five providers that have never spoken to their vendor" section. Those claims
+ * "The five late providers, and what contact with the vendor changed" section. Those claims
  * were true when they were written and unreproducible, which per the repo's
  * claim-discipline rule makes them a gap rather than a finished claim: the next
  * person's question is always "is that still true?", and the answer should be

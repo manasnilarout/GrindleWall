@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { SessionIndexEntry, SessionSummary } from '../shared/protocol.js';
+import { config } from '../config.js';
 
 /**
  * Conversations are persisted as one JSON file each, rewritten after every turn
@@ -41,7 +42,7 @@ export class SessionStore {
    */
   private readonly maxRecords: number;
 
-  constructor(dir = process.env.SESSION_DIR ?? 'data/sessions', maxRecords = Number(process.env.SESSION_MAX_RECORDS ?? 0)) {
+  constructor(dir = config.sessionDir, maxRecords = Number(process.env.SESSION_MAX_RECORDS ?? 0)) {
     this.dir = resolve(dir);
     this.maxRecords = Number.isFinite(maxRecords) && maxRecords > 0 ? Math.floor(maxRecords) : 0;
   }
@@ -52,6 +53,23 @@ export class SessionStore {
     const entries = await this.list();
     for (const stale of entries.slice(this.maxRecords)) {
       await unlink(this.path(stale.recordId)).catch(() => {});
+      /*
+       * The recording is part of the record. Pruning the JSON and leaving the
+       * WAV would quietly turn the cap into a no-op — audio is ~5.8 MB/minute
+       * and the JSON is ~1-3 KB per turn, so the audio IS the disk use.
+       *
+       * try/catch, not `.catch()`: `audioPath` validates the id and throws
+       * SYNCHRONOUSLY, before `unlink` is ever called, so a trailing `.catch`
+       * never sees it. One malformed filename on disk would escape `prune`,
+       * escape `writeAtomic`, and make every later `save()` report
+       * "Conversation was not saved" about a record that had in fact been
+       * saved — while SESSION_MAX_RECORDS silently stopped pruning for good.
+       */
+      try {
+        await unlink(this.audioPath(stale.recordId));
+      } catch {
+        /* no recording, or an id this store will not touch */
+      }
       this.index.delete(`${stale.recordId}.json`);
     }
   }
@@ -61,12 +79,39 @@ export class SessionStore {
     // SESSION_DIR pointing at a file) would otherwise poison the store for the
     // lifetime of the process, with no way back even once the cause is fixed.
     this.ready ??= mkdir(this.dir, { recursive: true })
-      .then(() => undefined)
+      .then(() => this.sweepStaleTemp())
       .catch((err) => {
         this.ready = undefined;
         throw err;
       });
     return this.ready;
+  }
+
+  /**
+   * Removes leftover `.tmp` files once, at startup.
+   *
+   * A recording writes two channel temp files and unlinks them when it
+   * finalizes; a process killed mid-conversation leaves both at full size, and
+   * nothing else ever looks at them — `list()` filters on `.json` and `prune()`
+   * only unlinks records it can see. At ~5.8 MB per recorded minute that
+   * accumulates in a directory nobody thinks to check.
+   *
+   * The age guard is not caution about our own files but about someone else's:
+   * a second server sharing this directory may have a recording in flight, and
+   * an hour is far longer than any finalize takes.
+   */
+  private async sweepStaleTemp(): Promise<void> {
+    const cutoff = Date.now() - 60 * 60 * 1000;
+    try {
+      const files = (await readdir(this.dir)).filter((f) => f.endsWith('.tmp'));
+      for (const f of files) {
+        const path = join(this.dir, f);
+        const info = await stat(path).catch(() => undefined);
+        if (info && info.mtimeMs < cutoff) await unlink(path).catch(() => {});
+      }
+    } catch {
+      // A sweep that cannot run must never stop the store from working.
+    }
   }
 
   /** Idempotent: called after every turn, and again when the conversation ends. */
@@ -97,6 +142,16 @@ export class SessionStore {
       await unlink(tmp).catch(() => {});
       throw err;
     }
+  }
+
+  /**
+   * Where this record's stereo recording lives, whether or not it exists —
+   * callers stat it. Same id validation as the JSON path, because this one is
+   * reached from a URL parameter.
+   */
+  audioPath(recordId: string): string {
+    if (!isSafeId(recordId)) throw new Error(`Unsafe record id: ${recordId}`);
+    return join(this.dir, `${recordId}.wav`);
   }
 
   async list(): Promise<SessionIndexEntry[]> {

@@ -4,10 +4,12 @@
  *
  * WHAT THIS DOES NOT PROVE. The fake below answers however this repo expects it
  * to, so every check here is a check on our parsing — not on what OpenAI
- * accepts. No billable OpenAI call was authorised here, so the provider has
- * never been run against the live API, so the request shape, the model ids and
- * the per-model reasoning-effort table are doc-derived and UNVERIFIED. A green
- * run here is not evidence that a real request would succeed.
+ * accepts. The provider HAS since streamed a live completion (2026-09-05,
+ * `gpt-5.4-nano@none` through `scripts/smoke.mjs pipeline`), and every model id
+ * is checked against `GET /v1/models` by `npm run models` — but only that one
+ * model and that one reasoning effort have actually been exercised, so the
+ * per-model effort table remains doc-derived. A green run here is not evidence
+ * that a real request would succeed.
  *
  * It does cover the parts most likely to be wrong on our side: SSE framing
  * across chunk boundaries, event-type dispatch, the `@variant` suffix, the

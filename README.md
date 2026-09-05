@@ -49,7 +49,7 @@ One WebSocket per session at `ws://localhost:8787/ws/session`.
 - **Text frames** are JSON control messages. Types live in `backend/src/shared/protocol.ts`
   (mirrored to `frontend/src/lib/protocol.ts` — `npm run sync-protocol` in `frontend/` re-copies it).
 
-Client → server: `start`, `user_text`, `commit_audio`, `interrupt`, `end_conversation`, `stop`
+Client → server: `start`, `user_text`, `start_recording`, `commit_audio`, `interrupt`, `end_conversation`, `stop`
 
 Server → client: `session_started`, `transcript`, `turn_start`/`turn_end`, `metrics`, `usage`,
 `session_summary`, `log`, `error`, `session_closed`
@@ -120,6 +120,52 @@ indefinitely; `SESSION_DIR` moves them and `SESSION_MAX_RECORDS` caps them (off 
 deleting a measurement someone is mid-comparison on is worse than the disk use). Past conversations are listed in the UI's Compare view and served from
 `GET /api/sessions` and `GET /api/sessions/:id`.
 
+### The conversation is recorded, both directions, in one stereo file
+
+Every conversation **in which the mic is opened** is also recorded to
+`backend/data/sessions/<id>.wav`, beside its JSON: **left channel the microphone, right channel
+the assistant.** Recording starts when the mic is opened and stops when the conversation ends — turning the mic off and on again mid-call does not
+split it, because the unit being recorded is the conversation, not the microphone.
+
+Stereo rather than a mix or two files, because the interesting thing is the timing *between* the
+two sides. A barge-in, a late first frame, an assistant still talking over the user — all audible
+and measurable in one file, and either channel still solos in any editor. A mix cannot be taken
+apart again.
+
+The hard part is the timeline, not the audio. Concatenating chunks as they arrive would give a
+file with the right sound and the wrong conversation: every pause squeezed out, so a 40-second
+exchange plays back as 12 seconds of back-to-back speech with every latency in it invisible. Each
+channel therefore writes each chunk AT A POSITION — `max(head, now)` — so a late chunk leaves a
+hole that reads back as the silence it represents. The opposite case is the one that is easy to
+get backwards: **TTS arrives faster than real time**, so assistant chunks are routinely "early",
+and those go at the head rather than at the clock; padding there would insert silence into the
+middle of a spoken word. Positions rather than an append-only stream also mean a gap costs a seek
+instead of a multi-megabyte buffer of zeros, and that a head which has run ahead can be clawed
+back — which is what barge-in needs, below. `recorder:selftest` covers both directions and every
+mutation goes red.
+
+**Barge-in needed its own signal.** A channel's lead is not harmless: TTS renders ~10x faster
+than real time, so after one 5-second utterance the assistant channel is ~4.5s ahead of the
+clock. If the user then cuts in, the tail was never heard — but it has already been written, and
+every later assistant turn is appended after it instead of landing at its own time. One barge-in
+turned a 2.7-second conversation into a 7.00-second file with turn two 2500ms late, and the error
+never washed out. So `SessionEvents` gained an optional `onInterrupt`, raised by both session
+kinds when audio already emitted is cut off; the recorder clamps the assistant head back to the
+wall clock and truncates what was never heard. Four checks cover it, and they go red without it.
+
+What the file is: when each side's audio reached the **server** — the same clock the latency
+numbers use, which is why the recording and the metrics agree. What it is not: what the user
+heard. The browser buffers and plays at real time, so true playback lags this by the jitter
+buffer, and the barge-in cut above is therefore very slightly later than the true one. Do not
+read inter-channel gaps here as perceived response time.
+
+Recordings are served from `GET /api/sessions/:id/audio` (with `Range` support, so a browser can
+seek in a long one) and play inline in the Compare view. `SESSION_AUDIO=0` turns recording off;
+`SESSION_AUDIO_MAX_MINUTES` caps it, default 60. The cap matters — stereo PCM16 @ 24 kHz is
+**~5.8 MB per recorded minute**, so audio, not JSON, is what fills the disk. Hitting the cap
+finalizes the recording rather than discarding it, and `SESSION_MAX_RECORDS` prunes the WAV along
+with its JSON.
+
 `summary.latency` carries the **median of every leg**, not just TTFA — `sttMedianMs`,
 `llmTtftMedianMs`, `ttsTtfbMedianMs`, `totalTurnMedianMs`, `audioMedianMs`. Those numbers were always
 computed and always on the wire; they were simply never kept, so a record could say a conversation was
@@ -186,10 +232,11 @@ labelled a **floor, not a bill**.
 
 ```bash
 cd backend  && npm run turn:selftest             # 36 checks on turn attribution and the TTFA derivation
-cd backend  && npm run usage:selftest            # 130 checks on arithmetic, persistence, redaction and per-leg latency medians
+cd backend  && npm run usage:selftest            # 133 checks on arithmetic, persistence, redaction and per-leg latency medians
 cd backend  && npm run catalog:selftest          # 111 checks — every provider/model/language path the UI can click
 cd backend  && npm run gemini:selftest           # 37 checks incl. token-usage parsing
 cd backend  && npm run murf:selftest             # 40 checks against a local fake
+cd backend  && npm run recorder:selftest         # 40 checks on the conversation recorder's timeline, against real files
 cd backend  && npm run gemini:speech:selftest    # 80 checks — Gemini TTS + STT against local fakes
 cd backend  && npm run elevenlabs:selftest       # 57 checks against a local fake
 cd backend  && npm run openai:realtime:selftest  # 130 checks against a local fake
@@ -203,7 +250,7 @@ cd frontend && npm run render-check              # 88 checks: actually renders e
                                                  # and it additionally runs against the live 26-provider catalog.
 ```
 
-676 backend checks plus 88 frontend render checks, none of which needs a key or a network. Read the caveat in
+719 backend checks plus 91 frontend render checks, none of which needs a key or a network. Read the caveat in
 [The five late providers, and what contact with the vendor changed](#the-five-late-providers-and-what-contact-with-the-vendor-changed)
 before treating `gemini:speech`, `elevenlabs`, `openai:realtime` or `openai:llm` as evidence of
 anything about a vendor — they run against fakes. `models`, `smoke`, `roundtrip` and
@@ -588,9 +635,9 @@ the real APIs corrected.
 
 Keep the distinction that made this section necessary in the first place. A live round trip
 proves the request shape, the auth, the audio format and the decode path. It does **not**
-upgrade the self-tests: all 676 offline backend checks still run against local fakes written to
+upgrade the self-tests: every provider suite still runs against local fakes written to
 agree with our own hypotheses, and a green suite remains worth nothing as vendor evidence. Only
-`roundtrip`, `smoke`, `realtime-probe` and `models` touch a vendor.
+`roundtrip`, `smoke`, `realtime:probe` and `models` touch a vendor.
 
 ### What was run, and what came back
 
@@ -604,17 +651,20 @@ agree with our own hypotheses, and a green suite remains worth nothing as vendor
 
 ### Measured time-to-first-byte
 
-Same method as the rest of this file: one fixed sentence, median of three, warm socket.
+One fixed sentence, warm socket. The **Samples** column is not decoration — these rows are not
+all the same kind of number, and averaging them in your head would be wrong. Only the first three
+are medians of a repeated run; the realtime and STT rows are single observations and should be
+read as "about this", not as a characteristic of the model.
 
-| Leg | Model | TTFB | Read it as |
-|---|---|---|---|
-| `elevenlabs-tts` | `eleven_flash_v2_5` | **426ms** | one-shot text; 839ms streaming word-by-word |
-| `elevenlabs-tts` | `eleven_multilingual_v2` | 717ms | one-shot text |
-| `gemini-tts` | `gemini-3.1-flash-tts-preview` | 1798ms | streaming SSE, but see the caveat below |
-| `gemini-tts` | `gemini-2.5-flash-preview-tts` | ~4871ms | one-shot `:generateContent` — this is whole-generation time, not TTFB |
-| `openai-realtime` | `gpt-realtime-2.1` | 955ms | first audio after commit, real speech in |
-| `openai-realtime` | `gpt-realtime-2.1-mini` | 976ms | first audio after commit, text in |
-| `gemini-stt` | `gemini-3.5-transcribe-live` | ~365ms | final transcript after the local VAD called t0 (first partial ~1.0s) |
+| Leg | Model | TTFB | Samples | Read it as |
+|---|---|---|---|---|
+| `elevenlabs-tts` | `eleven_flash_v2_5` | **426ms** | median of 3 | one-shot text; 837ms streaming word-by-word |
+| `elevenlabs-tts` | `eleven_multilingual_v2` | 717ms | median of 3 | one-shot text |
+| `gemini-tts` | `gemini-3.1-flash-tts-preview` | 1798ms | median of 3 | streaming SSE, but see the caveat below |
+| `gemini-tts` | `gemini-2.5-flash-preview-tts` | ~4871ms | 2 runs | one-shot `:generateContent` — whole-generation time, **not** a TTFB |
+| `openai-realtime` | `gpt-realtime-2.1` | 955ms | 1 run | first audio after commit, real speech in |
+| `openai-realtime` | `gpt-realtime-2.1-mini` | 976ms | 1 run | first audio after commit, text in |
+| `gemini-stt` | `gemini-3.5-transcribe-live` | ~365ms | 1 run | final transcript after the local VAD called t0 (first partial ~1.0s) |
 
 `gemini-2.5-flash-preview-tts` is the clearest case of a number that must not be read as a TTFB.
 It is served by `:generateContent`, which returns one complete body, so the ~4.9s *is* the
@@ -745,17 +795,18 @@ Cartesia's `max_buffer_delay_ms` — and this pipeline streams raw LLM tokens wi
 aggregation upstream, which is precisely the condition under which Cartesia at `0` voiced every
 token as its own utterance and rendered 2.6x too much audio.
 
-That question has now been **measured**, by the same method used on Cartesia and Murf: a fixed
-139-character text synthesised one-shot for a reference (7.71-7.99s), then streamed word by word
-at ~40ms/word under each setting, comparing rendered audio duration rather than TTFB. Three
-trials per setting.
+That question has now been **measured**, and the probe is committed —
+`npm run elevenlabs:buffer` re-runs it. Same method used on Cartesia and Murf: a fixed
+140-character text synthesised one-shot for a reference (8.08s), then streamed word by word at
+~40ms/word under each setting, comparing rendered audio duration rather than TTFB. Median of
+three trials each.
 
 | Setting | TTFB | Rendered | Verdict |
 |---|---|---|---|
-| `auto_mode: true` | 418ms | **13.70s = 178%** | the Cartesia fault, on this vendor |
-| `[120,160,250,290]` (vendor default) | 1286ms | 7.66-8.03s | safe, slow |
-| `[50,160,250,290]` | **839ms** | 7.66-7.85s | safe, and ~450ms faster |
-| `[50,120,160,250]` | 796ms | 7.80-7.94s | safe; the later steps buy almost nothing |
+| `auto_mode: true` | 465ms | **13.89s = 172%** | the Cartesia fault, on this vendor |
+| `[120,160,250,290]` (vendor default) | 1298ms | 7.85s = 97% | safe, slow |
+| `[50,160,250,290]` **shipped** | **837ms** | 7.89s = 98% | safe, and ~460ms faster |
+| `[50,120,160,250]` | 859ms | 7.99s = 99% | safe; the later steps buy almost nothing |
 | `[20,50,120,160]` | — | — | refused: `invalid_generation_config` |
 
 Two findings, both load-bearing:
@@ -764,9 +815,9 @@ Two findings, both load-bearing:
    signature of text fragmented into separately voiced utterances. The vendor's warning about
    partial sentences is accurate, and this pipeline is exactly the case it warns about. The
    provider sends `false`, and that is now a measurement rather than a precaution.
-2. **Shortening the first step does not reproduce the fault.** Every schedule rendered within
-   7.66-8.03s — indistinguishable from the one-shot reference and from each other — while the
-   first step alone moved TTFB by ~450ms. 50 is the floor; 20 is refused outright.
+2. **Shortening the first step does not reproduce the fault.** Every accepted schedule rendered
+   within 97-99% of the one-shot reference, and of each other, while the first step alone moved
+   TTFB by ~460ms. 50 is the floor; 20 is refused outright.
 
 So the schedule now opens at `[50,160,250,290]` and the later steps keep the vendor's values.
 What this does **not** establish: rendered duration catches word-isolation, the gross fault, and
@@ -842,7 +893,7 @@ STT=mock-stt LLM=openai-llm LLM_MODEL='gpt-5.6-luna@none' TTS=mock-tts \
 npm run realtime:probe
 ```
 
-`realtime:probe` is the only check that exercises the audio-in half of a speech-to-speech turn,
+`npm run realtime:probe` is the only check that exercises the audio-in half of a speech-to-speech turn,
 and therefore the only one that can tell whether `audioInputTokens` is reported at all. It
 asserts the audio breakdown is non-zero, is contained by its total, and prices — a realtime leg
 billed entirely at the text rate would understate the turn ~8x while still looking like a number.

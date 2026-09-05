@@ -86,10 +86,13 @@ import { SpeechEndDetector } from '../../audio/vad.js';
  *     `{type: ACTIVITY_START|ACTIVITY_END, audioOffset}`. ACTIVITY_END arrives
  *     AFTER the final transcript, so it is still useless as t0 and the local
  *     detector above stands.
- *   · Audio sent after `audioStreamEnd` is accepted, and in a controlled A/B the
- *     run that kept streaming trailing silence got a complete final while the run
- *     that stopped dead got only a truncated interim. `pushAudio` deliberately
- *     does not stop at finalization; do not "fix" that.
+ *   · Audio sent after `audioStreamEnd` is accepted. In a single A/B — ONE run
+ *     per arm, no committed probe — the run that kept streaming trailing silence
+ *     got a complete final while the one that stopped dead got only a truncated
+ *     interim. That is a reason to leave `pushAudio` streaming past
+ *     finalization, which costs nothing either way; it is NOT a characterised
+ *     behaviour, and anyone changing it should re-run the comparison rather than
+ *     trust this line.
  *   · 16 kHz input is what goes up (hence the resample below). Whether the model
  *     would accept another rate is still unverified — there was no reason to ask.
  *

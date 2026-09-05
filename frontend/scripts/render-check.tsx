@@ -31,6 +31,7 @@ import {
   type Rig,
 } from '../src/lib/rigs';
 import { normalizeSummary } from '../src/lib/session';
+import { Recordings } from '../src/components/Recordings';
 
 
 /** Covers the branches a mock-only session would not: rupees, thinking, unpriced. */
@@ -221,6 +222,94 @@ check('ComparePage (pre-fetch)', () => renderToString(h(ComparePage, { onOpenRep
   'Runs on disk',
   'Nothing recorded yet',
 ]);
+
+/*
+ * The Recordings panel lives in its own component (`Recordings.tsx`) rather
+ * than inline here, and this is why. `ComparePage` fills `runs` from a
+ * `useEffect` fetch, and `renderToString` never runs effects — so nested markup
+ * is unreachable from this harness in the only state that matters, and the
+ * panel would ship with nothing but its own absence verified.
+ *
+ * Two checks, therefore: this one pins the empty state through ComparePage
+ * itself (the guard must suppress the whole section, not render an empty box),
+ * and the block below renders the panel directly with runs in hand.
+ */
+
+check('ComparePage (pre-fetch) does not draw the Recordings panel before any run is loaded', () => {
+  const html = renderToString(h(ComparePage, { onOpenReport: () => {} }));
+  if (html.includes('Recordings')) throw new Error('the Recordings heading rendered with no runs loaded');
+  if (html.includes('<audio')) throw new Error('an <audio> element rendered with no runs loaded');
+  if (html.includes('left: you · right: the assistant')) {
+    throw new Error('the channel hint rendered with no runs loaded');
+  }
+  return html;
+}, ['Nothing recorded yet']);
+
+{
+  /*
+   * recordId and sessionId are deliberately DIFFERENT. They are the same value
+   * in a lot of real records, so a fixture that conflates them cannot tell a
+   * player built from the record id — the only one the audio route accepts —
+   * from one built from the transient socket id, and a check written against it
+   * passes either way.
+   */
+  const run = (id: string, label: string): SessionSummary =>
+    normalizeSummary({ ...SYNTHETIC, recordId: id, sessionId: `socket-${id}`, label });
+  const two = [run('rec-a', 'cartesia-tts:sonic-3.6'), run('rec-b', 'elevenlabs-tts:eleven_flash_v2_5')];
+
+  check('Recordings panel with two runs', () => renderToString(h(Recordings, { runs: two })), [
+    'Recordings',
+    // The channel layout is explained nowhere else in the UI.
+    'left: you \u00b7 right: the assistant',
+    '<audio',
+    'controls',
+    'preload="metadata"',
+    // Each run gets its own player, pointed at that record's own audio.
+    '/api/sessions/rec-a/audio',
+    '/api/sessions/rec-b/audio',
+    'cartesia-tts:sonic-3.6',
+    'elevenlabs-tts:eleven_flash_v2_5',
+  ]);
+
+  // A record id needing escaping must not break out of the src attribute.
+  check('Recordings escapes an awkward record id',
+    () => renderToString(h(Recordings, { runs: [run('a b&c', 'x')] })),
+    ['/api/sessions/a%20b%26c/audio']);
+
+  check('Recordings players are keyed by record id, not session id',
+    () => renderToString(h(Recordings, { runs: two })),
+    ['/api/sessions/rec-a/audio']);
+  check('...and never by the session id', () => {
+    const html = renderToString(h(Recordings, { runs: two }));
+    if (html.includes('socket-rec-a')) throw new Error('the player src was built from sessionId');
+    return html;
+  }, ['<audio']);
+
+  check('Recordings renders nothing when no run has audio', () => {
+    const html = renderToString(h(Recordings, { runs: [] }));
+    if (html.includes('<audio') || html.includes('Recordings')) {
+      throw new Error('the panel rendered with no runs');
+    }
+    return 'empty';
+  }, ['empty']);
+}
+
+/*
+ * A SOURCE check, not a render check, and labelled as one because it cannot be
+ * anything else. `Recordings` returns null with no runs, and no runs is the
+ * only state ComparePage can be server-rendered in — so deleting the element
+ * from ComparePage entirely leaves every render check above green (verified by
+ * mutation: both ComparePage renders stay byte-identical at 1972 chars). The
+ * rendered output cannot distinguish "wired up" from "deleted", so the wiring
+ * is pinned at the source instead of pretending otherwise.
+ */
+check('ComparePage actually renders the Recordings panel', () => {
+  const src = readFileSync(new URL('../src/components/ComparePage.tsx', import.meta.url), 'utf8');
+  if (!/<Recordings\s+runs=\{runs\}\s*\/>/.test(src)) {
+    throw new Error('ComparePage does not render <Recordings runs={runs} />');
+  }
+  return 'wired';
+}, ['wired']);
 
 /* --------------------------- the rig builder --------------------------- */
 // The voice row has three shapes: a list alone, a list plus a free-text voice

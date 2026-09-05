@@ -1,11 +1,13 @@
 import type { WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
+import { unlink } from 'node:fs/promises';
 import { CANONICAL_SAMPLE_RATE, type ClientMessage, type ServerMessage } from '../shared/protocol.js';
 import { createSession, ProviderError } from '../providers/factory.js';
 import type { SessionEvents, VoiceSession } from '../providers/types.js';
 import { credentials, config, redactSecrets } from '../config.js';
 import { UsageLedger } from '../pricing/UsageLedger.js';
 import { sessionStore } from '../store/SessionStore.js';
+import { SessionRecorder } from '../audio/SessionRecorder.js';
 
 /**
  * One WebSocket == one voice session. Text frames are JSON control messages,
@@ -15,6 +17,7 @@ export function handleSocket(ws: WebSocket): void {
   const socketId = randomUUID().slice(0, 8);
   let session: VoiceSession | undefined;
   let ledger: UsageLedger | undefined;
+  let recorder: SessionRecorder | undefined;
   let audioBytesIn = 0;
 
   const send = (msg: ServerMessage) => {
@@ -40,7 +43,11 @@ export function handleSocket(ws: WebSocket): void {
     onUserTranscript: (text, final, turnId) => send({ type: 'transcript', role: 'user', text, final, turnId }),
     onAssistantTranscript: (text, final, turnId) =>
       send({ type: 'transcript', role: 'assistant', text, final, turnId }),
-    onAudio: (chunk) => sendAudio(chunk),
+    onAudio: (chunk) => {
+      recorder?.writeAssistant(chunk);
+      sendAudio(chunk);
+    },
+    onInterrupt: () => recorder?.interrupt(),
     onTurnStart: (turnId) => send({ type: 'turn_start', turnId }),
     onTurnEnd: (turnId) => send({ type: 'turn_end', turnId }),
     onMetrics: (turnId, marks, derived) => {
@@ -70,6 +77,46 @@ export function handleSocket(ws: WebSocket): void {
   };
 
   /**
+   * Closes the recording before the summary is built, so the WAV is on disk by
+   * the time the client is told the conversation is over. Never allowed to
+   * throw: losing the audio must not also cost the bill.
+   */
+  const closeRecording = async () => {
+    if (!recorder) return;
+    const rec = recorder;
+    recorder = undefined;
+    try {
+      const result = await rec.stop();
+      if (!result) return;
+      /*
+       * A conversation with no turns files no JSON — nothing ran, so there is
+       * nothing to bill. Keeping its WAV would leave a file that `list()` cannot
+       * see and `prune()` therefore never deletes, so `SESSION_MAX_RECORDS`
+       * would silently stop bounding the directory that audio, not JSON, fills.
+       * The recording and the record live and die together.
+       */
+      if ((ledger?.turnCount ?? 0) === 0) {
+        await unlink(result.path).catch(() => {});
+        return;
+      }
+      const seconds = (result.durationMs / 1000).toFixed(1);
+      console.log(`[${socketId}] recorded ${seconds}s to ${result.path}`);
+      if (result.truncated) {
+        send({
+          type: 'log',
+          level: 'warn',
+          // The sanitised number, not the raw env var: a junk value capped the
+          // recorder at the default while telling the user it was capped at the junk.
+          message: `Recording hit the ${config.recordAudioMaxMinutes}-minute cap and was closed early.`,
+        });
+      }
+    } catch (err) {
+      console.error(`[${socketId}] recording failed:`, err);
+      send({ type: 'log', level: 'warn', message: `Audio was not recorded: ${redactSecrets((err as Error).message)}` });
+    }
+  };
+
+  /**
    * Closes the providers, bills the conversation, files it, and reports back.
    * `notifyClosed` is false when another session is about to take its place —
    * the client still gets the report, but not a closure it did not ask for.
@@ -77,12 +124,17 @@ export function handleSocket(ws: WebSocket): void {
   const finalize = async (reason: string, notifyClosed: boolean) => {
     await session?.close();
     session = undefined;
+    await closeRecording();
     if (ledger) {
       const summary = ledger.summary();
       if (summary.turnCount > 0) {
         await sessionStore.save(summary).catch((err: Error) => {
           console.error(`[${socketId}] could not file the conversation:`, err.message);
-          send({ type: 'log', level: 'warn', message: `Conversation was not saved: ${err.message}` });
+          send({
+            type: 'log',
+            level: 'warn',
+            message: `Conversation was not saved: ${redactSecrets(err.message)}`,
+          });
         });
       }
       send({ type: 'session_summary', summary });
@@ -98,6 +150,7 @@ export function handleSocket(ws: WebSocket): void {
       if (config.logAudio && audioBytesIn % (CANONICAL_SAMPLE_RATE * 2) < buf.length) {
         console.log(`[${socketId}] mic ${(audioBytesIn / 2 / CANONICAL_SAMPLE_RATE).toFixed(1)}s`);
       }
+      recorder?.writeMic(buf);
       session?.pushAudio(buf);
       return;
     }
@@ -124,6 +177,14 @@ export function handleSocket(ws: WebSocket): void {
             credentials: credentials(),
           });
           ledger = new UsageLedger(socketId, session.mode, session.label, msg.config);
+          // Named for the record it belongs to, so <recordId>.wav sits beside
+          // <recordId>.json. Armed here, but silent until the mic is opened.
+          recorder = config.recordAudio
+            ? new SessionRecorder(ledger.recordId, {
+                dir: config.sessionDir,
+                maxMinutes: config.recordAudioMaxMinutes,
+              })
+            : undefined;
           await session.start();
           send({
             type: 'session_started',
@@ -135,6 +196,12 @@ export function handleSocket(ws: WebSocket): void {
         } catch (err) {
           session = undefined;
           ledger = undefined;
+          // Stopped, not merely dropped. It has not been armed yet on this path
+          // — `start_recording` arrives later — but dropping a reference is how
+          // a recorder with open channels leaks, and that should not depend on
+          // the order two lines above happen to be in.
+          await recorder?.stop().catch(() => undefined);
+          recorder = undefined;
           const message = err instanceof ProviderError ? err.message : `Failed to start session: ${(err as Error).message}`;
           console.error(`[${socketId}] start failed:`, err);
           send({ type: 'error', message: redactSecrets(message) });
@@ -143,6 +210,10 @@ export function handleSocket(ws: WebSocket): void {
       }
       case 'user_text':
         session?.sendText(msg.text);
+        break;
+      case 'start_recording':
+        if (!recorder) break;
+        await recorder.start();
         break;
       case 'commit_audio':
         session?.commitAudio();
@@ -156,6 +227,7 @@ export function handleSocket(ws: WebSocket): void {
       case 'stop':
         await session?.close();
         session = undefined;
+        await closeRecording();
         persist();
         ledger = undefined;
         send({ type: 'session_closed' });
@@ -166,6 +238,8 @@ export function handleSocket(ws: WebSocket): void {
   ws.on('close', async () => {
     await session?.close();
     session = undefined;
+    // A closed tab still gets its audio filed, the same way it still gets billed.
+    await closeRecording();
     // The socket is gone, so the summary cannot be delivered — but it is still filed.
     persist();
     ledger = undefined;

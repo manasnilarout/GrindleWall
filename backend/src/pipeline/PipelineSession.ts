@@ -185,6 +185,9 @@ export class PipelineSession implements VoiceSession {
 
     if (this.speaking) {
       this.speaking = false;
+      // Audio was already on the wire when the user cut in. Anyone holding a
+      // copy of it — the recorder — needs to know it was never heard.
+      this.ctx.events.onInterrupt?.();
       this.ctx.events.onTurnEnd(turn?.id ?? 0);
     }
   }

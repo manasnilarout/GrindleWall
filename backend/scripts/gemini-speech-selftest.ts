@@ -12,10 +12,11 @@
  * turn boundaries, barge-in. **None of it is evidence that Google accepts any of
  * these requests**, and no number printed here is a latency measurement.
  *
- * At the time of writing neither provider had ever run against the live API (the
- * account returned HTTP 429, "prepayment credits are depleted"), so per this
- * repo's claim-discipline rule the vendor's behaviour remains doc-derived and
- * unverified. A green run here does not change that; only a live probe does.
+ * Both providers have since run against the live API (2026-09-05) — see
+ * `npm run gemini:speech`, and the provider headers for what that corrected,
+ * including a turn boundary the docs name and the server never sends. A green
+ * run HERE still does not establish any of that; only the live probe does, and
+ * the fakes below were updated to match what the wire actually carries.
  *
  *   npx tsx scripts/gemini-speech-selftest.ts
  */
