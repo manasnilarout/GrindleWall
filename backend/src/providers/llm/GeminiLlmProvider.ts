@@ -74,7 +74,7 @@ export class GeminiLlmProvider implements LlmProvider {
 
     const [model, variant] = splitModel(opts.model);
     // Overridable so the SSE handling can be tested against a local fake.
-    const base = opts.credentials.GEMINI_BASE_URL ?? DEFAULT_BASE;
+    const base = opts.credentials.GEMINI_BASE_URL || DEFAULT_BASE;
 
     // Gemini expects the system prompt out-of-band, and uses 'model' for assistant turns.
     const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');

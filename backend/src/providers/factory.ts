@@ -9,15 +9,20 @@ import type {
 import { PipelineSession } from '../pipeline/PipelineSession.js';
 import { findProvider } from './catalog.js';
 import { MockRealtimeProvider } from './realtime/MockRealtimeProvider.js';
+import { OpenAiRealtimeProvider } from './realtime/OpenAiRealtimeProvider.js';
 import { MockSttProvider } from './stt/MockSttProvider.js';
 import { SarvamSttProvider } from './stt/SarvamSttProvider.js';
 import { CartesiaSttProvider } from './stt/CartesiaSttProvider.js';
+import { GeminiSttProvider } from './stt/GeminiSttProvider.js';
 import { MockLlmProvider } from './llm/MockLlmProvider.js';
 import { GeminiLlmProvider } from './llm/GeminiLlmProvider.js';
+import { OpenAiLlmProvider } from './llm/OpenAiLlmProvider.js';
 import { MockTtsProvider } from './tts/MockTtsProvider.js';
 import { SarvamTtsProvider } from './tts/SarvamTtsProvider.js';
 import { CartesiaTtsProvider } from './tts/CartesiaTtsProvider.js';
 import { MurfTtsProvider } from './tts/MurfTtsProvider.js';
+import { GeminiTtsProvider } from './tts/GeminiTtsProvider.js';
+import { ElevenLabsTtsProvider } from './tts/ElevenLabsTtsProvider.js';
 
 /**
  * ============================================================================
@@ -40,17 +45,23 @@ export function registerLlm(p: LlmProvider) { llmRegistry.set(p.id, p); }
 export function registerTts(p: TtsProvider) { ttsRegistry.set(p.id, p); }
 
 registerRealtime(new MockRealtimeProvider());
+registerRealtime(new OpenAiRealtimeProvider());
 registerStt(new MockSttProvider());
 registerStt(new SarvamSttProvider());
 registerStt(new CartesiaSttProvider());
+registerStt(new GeminiSttProvider());
 registerLlm(new MockLlmProvider());
 registerLlm(new GeminiLlmProvider());
+registerLlm(new OpenAiLlmProvider());
 registerTts(new MockTtsProvider());
 registerTts(new SarvamTtsProvider());
 registerTts(new CartesiaTtsProvider());
 registerTts(new MurfTtsProvider());
+registerTts(new GeminiTtsProvider());
+registerTts(new ElevenLabsTtsProvider());
 
 /** Direct lookups, for scripts that drive one leg in isolation. */
+export const getRealtime = (id: string) => realtimeRegistry.get(id);
 export const getStt = (id: string) => sttRegistry.get(id);
 export const getTts = (id: string) => ttsRegistry.get(id);
 

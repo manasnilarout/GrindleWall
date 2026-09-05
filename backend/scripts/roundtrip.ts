@@ -13,7 +13,7 @@
  */
 import 'dotenv/config';
 import { getStt, getTts } from '../src/providers/factory.js';
-import { findProvider } from '../src/providers/catalog.js';
+import { findProvider, voicesFor } from '../src/providers/catalog.js';
 import { CANONICAL_SAMPLE_RATE } from '../src/shared/protocol.js';
 import { pcm16DurationMs } from '../src/audio/pcm.js';
 
@@ -24,7 +24,7 @@ const TTS_ID = process.env.TTS ?? 'cartesia-tts';
 const STT_ID = process.env.STT ?? 'cartesia-stt';
 const TTS_MODEL = process.env.TTS_MODEL ?? findProvider(TTS_ID)?.models[0]?.id ?? '';
 const STT_MODEL = process.env.STT_MODEL ?? findProvider(STT_ID)?.models[0]?.id ?? '';
-const VOICE = process.env.VOICE ?? findProvider(TTS_ID)?.voices?.[0]?.id;
+const VOICE = process.env.VOICE ?? voicesFor(TTS_ID, TTS_MODEL)[0]?.id;
 const TTS_LANG = process.env.TTS_LANG ?? LANGUAGE;
 const STT_LANG = process.env.STT_LANG ?? LANGUAGE;
 

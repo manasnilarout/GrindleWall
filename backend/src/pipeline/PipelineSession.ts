@@ -416,7 +416,12 @@ export class PipelineSession implements VoiceSession {
         modelId: this.parts.ttsModel,
         unit: 'characters',
         inputUnits: 0,
-        outputUnits: turn.ttsChars,
+        // What the vendor was actually asked to synthesise. Identical to
+        // `turn.ttsChars` for a streaming provider — the text is on the wire as
+        // it arrives — but a one-shot provider that was interrupted before it
+        // issued its single request sent nothing, and must not be billed for
+        // the whole reply. See `billableCharacters` in types.ts.
+        outputUnits: this.ttsStream?.billableCharacters?.() ?? turn.ttsChars,
         audioSeconds: audioMs === undefined ? undefined : round(audioMs / 1000, 3),
         source: 'local',
       },
