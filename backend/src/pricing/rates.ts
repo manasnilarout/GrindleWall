@@ -196,7 +196,7 @@ function elevenlabs(perThousand: number): Rate {
     checkedOn: CHECKED,
     confidence: 'ambiguous',
     note:
-      'Read off the public API price list, never against an invoice — there is no ElevenLabs key here. ' +
+      'Read off the public API price list, never reconciled against an invoice. ' +
       'A promotional banner offering 50% off API pricing for life was live on 2026-09-05; an account ' +
       'that took it pays half this. The subscription credit pool is a separate billing system and is ' +
       'not what this prices.',
@@ -475,6 +475,17 @@ export function rateTable(): Array<{ providerId: string; modelId: string } & Rat
 
 /** Fills in `cost` (or `unpricedReason`) on a leg. Pure — returns a new object. */
 export function priceLeg(leg: LegUsage, at = Date.now()): LegUsage {
+  /*
+   * A provider can declare its own leg unpriceable before costing is ever
+   * reached — a realtime turn the vendor never reported usage for is the live
+   * case, and it arrives with zeroed units and a reason already attached.
+   * Pricing zero units against a real rate produces a confident-looking
+   * `$0.0000` at a quoted rate string, which is precisely the "never priced at
+   * zero" failure the unpriced path exists to prevent, and the session banner
+   * then blames "no rate on file" — a cause that is not true and sends whoever
+   * reads it to the wrong file.
+   */
+  if (leg.unpricedReason) return { ...leg };
   const found = rateFor(leg.providerId, leg.modelId);
   if (!found) {
     return { ...leg, unpricedReason: `No rate on file for ${leg.providerId}:${leg.modelId}` };

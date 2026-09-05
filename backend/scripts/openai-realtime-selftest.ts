@@ -6,10 +6,12 @@
  * accepts absolutely anything this provider sends it. So a green run proves that
  * this module parses the events, keeps t0 where it belongs, routes transcripts
  * to the right callbacks and bills each turn exactly once — and proves NOTHING
- * WHATSOEVER about what the real OpenAI endpoint accepts. Every wire shape in
- * the provider is doc-derived. NO live verification was performed: a key is present
- * in the environment, but a realtime session is billable and was not authorised. Until someone runs it against
- * wss://api.openai.com with a key, the request shape is unproven.
+ * WHATSOEVER about what the real OpenAI endpoint accepts.
+ *
+ * The provider HAS since run live (2026-09-05): `npm run realtime:probe` drives
+ * a turn with real speech in, and `node scripts/smoke.mjs realtime` one with
+ * text. That is what confirms the request shape — not this file, which would
+ * pass just as happily if every wire shape in the provider were wrong.
  *
  *   npx tsx scripts/openai-realtime-selftest.ts
  */

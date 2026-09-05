@@ -10,7 +10,7 @@
  *
  * Needs no API key and touches no network.
  */
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LegUsage, StartConfig } from '../src/shared/protocol.js';
@@ -50,6 +50,28 @@ const leg = (over: Partial<LegUsage>): LegUsage => ({
   source: 'vendor',
   ...over,
 });
+
+console.log('\nA leg the PROVIDER already declared unpriceable');
+{
+  /*
+   * The live case: `OpenAiRealtimeProvider` bills a turn whose vendor usage
+   * never arrived — zeroed units, with a reason attached before costing is
+   * reached. Pricing those zeros against a real rate yields a confident
+   * `$0.0000` at a quoted rate string, which is the "never priced at zero"
+   * failure the unpriced path exists to prevent; the session banner then blames
+   * "no rate on file", which is not the cause and sends the reader to the wrong
+   * file entirely.
+   */
+  const declared = leg({
+    leg: 'realtime',
+    providerId: 'openai-realtime',
+    modelId: 'gpt-realtime-2.1',
+    unpricedReason: 'OpenAI Realtime reported no usage for this turn',
+  });
+  const p = priceLeg(declared);
+  check("a provider's own unpricedReason survives costing", p.unpricedReason, declared.unpricedReason);
+  check('...and it is not given a cost at all', p.cost, undefined);
+}
 
 console.log('\nGemini — $0.30 in / $2.50 out per 1M tokens (gemini-3.5-flash-lite)');
 {
@@ -551,6 +573,22 @@ console.log('\nStore — retention is opt-in, and off by default');
     const kept = await capped.list();
     check('a cap keeps only the newest', kept.length, 3);
     ok('and it keeps the newest, not the oldest', kept[0].startedAt >= kept[2].startedAt);
+
+    /*
+     * A record id that the store's own id guard rejects, sitting in the
+     * directory. Pruning resolves the companion recording through `audioPath`,
+     * which validates the id and throws SYNCHRONOUSLY — so a trailing `.catch`
+     * on the unlink never sees it. Unguarded, that escapes `prune`, escapes
+     * `writeAtomic`, and every later `save()` reports "Conversation was not
+     * saved" about a record that WAS saved, while the cap silently stops
+     * pruning for the life of the process.
+     */
+    await writeFile(join(dir, 'not a safe id.json'), '{"recordId":"not a safe id"}');
+    let pruneThrew = false;
+    const l = new UsageLedger('after-junk', 'pipeline', 't', config);
+    l.record(1, [leg({ inputUnits: 10 })]);
+    await capped.save(l.summary()).catch(() => (pruneThrew = true));
+    ok('one unreadable filename does not break every later save', !pruneThrew);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

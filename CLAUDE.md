@@ -37,8 +37,10 @@ Verification scripts, all in `backend/`:
 | `npm run turn:selftest` | no | turn attribution: silence, barge-in, overlapping turns, TTS failure, tails |
 | `npm run catalog:selftest` | no | every provider/model/language path the UI can click resolves to a non-empty selection — for the generated Murf/Cartesia tables, one the vendor was measured to take; for doc-derived entries, only one the docs describe |
 | `npm run murf:selftest` | no | Murf message handling against a local fake |
+| `npm run recorder:selftest` | no | the conversation recorder's timeline — writes real files and reads the bytes back |
 | `npm run gemini:speech:selftest` | no | Gemini TTS + Transcribe against local fakes |
 | `npm run elevenlabs:selftest` | no | ElevenLabs message handling against a local fake |
+| `npm run elevenlabs:buffer` | yes | re-measures rendered audio duration per `chunk_length_schedule` / `auto_mode` — the probe behind those two constants |
 | `npm run openai:realtime:selftest` | no | OpenAI Realtime event handling against a local fake |
 | `npm run openai:llm:selftest` | no | OpenAI Responses SSE + usage parsing against a local fake |
 | `npm run models` | yes (either) | asks Google/OpenAI which models exist and checks every catalog id against the answer — free listing endpoints, bills nothing |
@@ -167,6 +169,18 @@ Key files:
   numbers, not just the money.
 - **Audio streamed outside any turn is still metered by the vendor**, so what arrives after the
   last turn is emitted as a tail record carrying only an STT leg.
+- **A conversation is recorded to one stereo WAV — left mic, right assistant** —
+  `data/sessions/<recordId>.wav`, beside the JSON. Recording starts on `start_recording` (the client
+  sends it when the mic opens) and ends with the conversation; toggling the mic must NOT split it.
+  The recorder writes each chunk at `max(head, now)`, so pauses survive as holes — but a chunk
+  that is *early* goes at the head, never at the clock, because TTS arrives faster than real time
+  and seeking back would cut silence into a spoken word. That lead has to be given back on
+  barge-in or every later assistant turn is displaced by it, which is what the optional
+  `SessionEvents.onInterrupt` exists for: both session kinds raise it when audio already emitted
+  is cut off, and the recorder truncates what was never heard. The file records when audio reached
+  the **server**, the same clock as the latency marks; it is not what the user heard.
+  `SESSION_AUDIO=0` disables it, `SESSION_AUDIO_MAX_MINUTES` caps it (~5.8 MB per recorded minute,
+  so the cap is real protection, not a formality).
 - **Session records hold no credentials.** Only the `StartConfig` (provider/model ids, the system
   prompt, language) plus usage and cost. The system prompt *is* persisted — that is deliberate,
   since it is what produced the numbers — so treat `data/sessions/` as conversation content.
@@ -191,7 +205,7 @@ Key files:
   in the README section "The five late providers, and what contact with the vendor changed".
   What that does NOT upgrade: every self-test in this repo still runs against a local fake that
   agrees with our hypotheses by construction, so a green suite is still not vendor evidence. The
-  live checks are `roundtrip`, `smoke`, `realtime-probe` and `models`, and only those.
+  live checks are `roundtrip`, `smoke`, `realtime:probe` and `models`, and only those.
 
 ### Adding a provider
 

@@ -11,10 +11,6 @@ import { pcm16DurationMs, resamplePcm16 } from '../../audio/pcm.js';
  *   header: Authorization: Bearer <OPENAI_API_KEY>
  *
  * ---------------------------------------------------------------------------
- * NOTHING IN THIS FILE HAS BEEN VERIFIED AGAINST THE LIVE API.
- *
- * A key IS present in the shell environment, and the free `GET /v1/models`
- * answers with it — that is how the model ids were confirmed. But no billable
  * VERIFIED LIVE 2026-09-05, both halves of a speech-to-speech turn:
  *
  *   · text in  — `node scripts/smoke.mjs realtime` on `gpt-realtime-2.1-mini`
@@ -332,6 +328,9 @@ class OpenAiRealtimeSession implements VoiceSession {
   interrupt(): void {
     const turn = this.active;
     if (!turn || turn.ended) return;
+
+    // Audio already forwarded to the client will not be heard past this point.
+    if (turn.audioBytes > 0) this.ctx.events.onInterrupt?.();
 
     // Stops generation. Safe to fire blind: "It's safe to call `response.cancel`
     // even if no response is in progress, an error will be returned [and] the

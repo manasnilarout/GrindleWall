@@ -1,8 +1,10 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { WebSocketServer } from 'ws';
-import { config } from './config.js';
+import { config, redactSecrets } from './config.js';
 import { catalogWithReadiness } from './providers/catalog.js';
 import { registeredIds } from './providers/factory.js';
 import { handleSocket } from './server/session-socket.js';
@@ -47,7 +49,10 @@ const route =
   (req: express.Request, res: express.Response): void => {
     fn(req, res).catch((err: Error) => {
       console.error(`[api] ${req.method} ${req.path} failed:`, err.message);
-      if (!res.headersSent) res.status(500).json({ error: err.message });
+      // Scrubbed like every other message that leaves this process: the
+      // invariant is stated as absolute, and an fs error already carries
+      // SESSION_DIR.
+      if (!res.headersSent) res.status(500).json({ error: redactSecrets(err.message) });
     });
   };
 
@@ -68,6 +73,99 @@ app.get(
       return;
     }
     res.json(summary);
+  }),
+);
+
+/**
+ * Pipes a file to the response and cleans up after itself.
+ *
+ * `pipe()` alone does neither half of this. A client that walks away mid-body —
+ * which is precisely what an `<audio>` element does every time the listener
+ * seeks, since it aborts the request and opens a new Range — leaves the read
+ * stream open, and a descriptor is not reclaimed by GC. Measured at one leaked
+ * fd per aborted download; a few hundred and the process cannot accept a
+ * WebSocket upgrade any more. A read error after the headers are out cannot be
+ * turned into a status code either, so the response is destroyed rather than
+ * left hanging forever.
+ */
+function sendFile(res: express.Response, stream: ReturnType<typeof createReadStream>): void {
+  res.on('close', () => stream.destroy());
+  stream.on('error', (err) => {
+    console.error('[api] recording read failed:', err);
+    // Headers are set but not flushed until the first write, so an open()
+    // failure can still be reported properly. Once bytes are out the only
+    // honest signal left is a broken connection.
+    if (!res.headersSent) {
+      res.removeHeader('Content-Length');
+      res.removeHeader('Content-Range');
+      res.status(500).json({ error: 'Recording could not be read' });
+      return;
+    }
+    res.destroy();
+  });
+  stream.pipe(res);
+}
+
+/**
+ * The conversation's stereo recording: left channel the microphone, right the
+ * assistant. Streamed rather than buffered — a long call is tens of megabytes,
+ * and `Range` support is what lets a browser <audio> element seek in it.
+ */
+app.get(
+  '/api/sessions/:id/audio',
+  route(async (req, res) => {
+    let path: string;
+    try {
+      path = sessionStore.audioPath(req.params.id);
+    } catch {
+      res.status(400).json({ error: 'Bad record id' });
+      return;
+    }
+    const info = await stat(path).catch(() => undefined);
+    if (!info?.isFile()) {
+      res.status(404).json({ error: 'No recording for this session' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'audio/wav');
+    res.setHeader('Accept-Ranges', 'bytes');
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '');
+    if (range) {
+      let start: number;
+      let end: number;
+      if (range[1] === '') {
+        /*
+         * A SUFFIX range: `bytes=-500` is the LAST 500 bytes (RFC 9110 §14.1.2),
+         * not the first 500. Treating an absent start as 0 answered 206 with the
+         * head of the file under a Content-Range claiming it was the tail — a
+         * media element probing the end of a container got silent garbage rather
+         * than an error.
+         */
+        const suffix = Number(range[2]);
+        if (!range[2] || !Number.isFinite(suffix) || suffix <= 0) {
+          res.setHeader('Content-Range', `bytes */${info.size}`);
+          res.status(416).end();
+          return;
+        }
+        start = Math.max(0, info.size - suffix);
+        end = info.size - 1;
+      } else {
+        start = Number(range[1]);
+        end = range[2] ? Math.min(Number(range[2]), info.size - 1) : info.size - 1;
+      }
+      if (!(start >= 0 && start <= end && end < info.size)) {
+        res.setHeader('Content-Range', `bytes */${info.size}`);
+        res.status(416).end();
+        return;
+      }
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${info.size}`);
+      res.setHeader('Content-Length', String(end - start + 1));
+      sendFile(res, createReadStream(path, { start, end }));
+      return;
+    }
+    res.setHeader('Content-Length', String(info.size));
+    sendFile(res, createReadStream(path));
   }),
 );
 

@@ -226,6 +226,20 @@ export function useVoiceSession() {
             setSessionId(msg.sessionId);
             setLabel(msg.label);
             labelRef.current = msg.label;
+            /*
+             * Re-arm recording if the mic is ALREADY open. `startMic` sends this
+             * too, but it is not the only way a session begins with a hot mic: a
+             * server `error` frame leaves the socket up and the mic running while
+             * the UI offers Connect again, so the next conversation would stream
+             * to a recorder that was never armed and be lost in silence. Each
+             * session gets a fresh recorder server-side, so arming is per session,
+             * not per mic click. `recRef` rather than `micOn` — this closure
+             * captures state from the render that created it. `start()` is
+             * idempotent, so an extra one costs nothing.
+             */
+            if (recRef.current && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'start_recording' }));
+            }
             log('info', `session ${msg.sessionId} · ${msg.mode} · ${msg.label}`);
             break;
           case 'transcript':
@@ -317,10 +331,27 @@ export function useVoiceSession() {
     const rec = new MicRecorder();
     recRef.current = rec;
     try {
+      /*
+       * Armed BEFORE the mic opens, not after. Frames start flowing the moment
+       * `rec.start()` resolves, and the socket delivers in order — so sending
+       * this afterwards means the first frames reach a server that is not yet
+       * recording, and the opening word of the conversation is missing from the
+       * file. Arming early costs nothing if the mic is then denied: a recorder
+       * that never receives audio writes no file.
+       *
+       * Sent inline rather than through `send`, which is declared below this
+       * hook. There is no matching stop on "Stop mic" — recording spans the
+       * whole conversation and ends with it.
+       */
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'start_recording' }));
+      // Not silent: the mic is about to go hot either way, and audio that is
+      // streamed but not recorded is exactly the failure worth naming.
+      else log('warn', 'mic opened before the session was up — this turn is not being recorded');
       await rec.start({
         onFrame: (pcm) => {
-          const ws = wsRef.current;
-          if (ws?.readyState === WebSocket.OPEN) ws.send(pcm);
+          const sock = wsRef.current;
+          if (sock?.readyState === WebSocket.OPEN) sock.send(pcm);
         },
         onLevel: setMicLevel,
       });

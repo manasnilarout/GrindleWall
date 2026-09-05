@@ -9,6 +9,17 @@ export interface SessionEvents {
   onAudio(chunk: Buffer): void;
   onTurnStart(turnId: number): void;
   onTurnEnd(turnId: number): void;
+  /**
+   * The assistant's audio was cut off mid-utterance — a barge-in, or an
+   * explicit interrupt. Distinct from `onTurnEnd`, which also fires when a turn
+   * simply finishes: this one means audio ALREADY EMITTED was never heard.
+   *
+   * Optional because most consumers do not care. The conversation recorder does:
+   * TTS is emitted far faster than real time, so at the moment of a barge-in it
+   * has already written seconds of speech the user will never hear, and without
+   * this every later assistant turn in the recording is displaced by that much.
+   */
+  onInterrupt?(): void;
   /** Emitted once per completed turn. */
   onMetrics(turnId: number, marks: MetricMark[], derived: DerivedMetrics): void;
   /**

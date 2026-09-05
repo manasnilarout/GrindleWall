@@ -91,9 +91,10 @@ const ELEVENLABS_SAMPLE_RATE = 24000;
  * audio QUALITY control, not just a latency one, and lowering it is a trap here
  * for exactly the reason it was on Cartesia.
  *
- * UNLIKE the Cartesia and Murf numbers in their providers, NOTHING below has been
- * measured. There is no ElevenLabs key in this environment. What follows is the
- * vendor's own claim plus this repo's structural argument, and neither is evidence.
+ * Both settings below were MEASURED on 2026-09-05 — see the table further down,
+ * and `npm run elevenlabs:buffer` to re-run it. The vendor's own claim came
+ * first and is quoted next because it is what the measurement was testing, not
+ * because it is evidence.
  *
  * The vendor's claim, verbatim: the buffer exists "because our model provides
  * higher quality audio when the model has longer inputs, and can deduce more
@@ -115,29 +116,30 @@ const ELEVENLABS_SAMPLE_RATE = 24000;
  *     generation of whatever is still buffered without weakening the schedule.
  *
  * ---------------------------------------------------------------------------
- * MEASURED 2026-09-05 — the experiment this comment used to merely ask for
+ * MEASURED 2026-09-05 — re-run it with `npm run elevenlabs:buffer`
  * ---------------------------------------------------------------------------
- * Method is the one used on Cartesia and Murf: synthesise a fixed 139-character
+ * Method is the one used on Cartesia and Murf: synthesise a fixed 140-character
  * text one-shot for a reference, then stream the same text word by word at
  * ~40ms/word under each setting and compare RENDERED AUDIO DURATION — not TTFB.
- * One-shot reference: 7.71-7.99s. Three trials per setting.
+ * Median of three trials each; one-shot reference 8.08s.
  *
- *   auto_mode = true              TTFB  418ms   rendered 13.70s  = 178%
- *   [120,160,250,290] (default)   TTFB 1286ms   rendered 7.66-8.03s
- *   [50,160,250,290]              TTFB  839ms   rendered 7.66-7.85s
- *   [50,120,160,250]              TTFB  796ms   rendered 7.80-7.94s
- *   [20,50,120,160]               rejected: invalid_generation_config
+ *   [120,160,250,290] (vendor default)  TTFB 1298ms   rendered 7.85s =  97%
+ *   [50,160,250,290]  (shipped)         TTFB  837ms   rendered 7.89s =  98%
+ *   [50,120,160,250]                    TTFB  859ms   rendered 7.99s =  99%
+ *   [20,50,120,160]                     refused: invalid_generation_config
+ *   auto_mode = true                    TTFB  465ms   rendered 13.89s = 172%
  *
  * Two findings, both load-bearing:
  *
- *   1. `auto_mode: true` IS the Cartesia fault on this vendor — 178% of the
+ *   1. `auto_mode: true` IS the Cartesia fault on this vendor — 172% of the
  *      reference duration, the signature of text fragmented into separately
  *      voiced utterances. The vendor's warning about partial sentences is
  *      accurate and this pipeline is exactly that case. Never turn it on here.
- *   2. Shortening the FIRST step does not reproduce that fault. Every schedule
- *      rendered within 7.66-8.03s — indistinguishable from the one-shot
- *      reference and from each other — while the first step alone moved TTFB by
- *      ~450ms. 50 is a floor: 20 is refused outright.
+ *   2. Shortening the FIRST step does not reproduce that fault. Every accepted
+ *      schedule rendered within 97-99% of the one-shot reference — and of each
+ *      other — while the first step alone moved TTFB by ~460ms. 50 is a floor:
+ *      20 is refused outright. The later steps buy almost nothing, so they are
+ *      left at the vendor's values rather than tuned on noise.
  *
  * So the first step is lowered and the rest left alone. What this does NOT
  * establish: rendered duration catches word-isolation, the gross fault, and

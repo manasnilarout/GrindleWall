@@ -5,6 +5,7 @@ import { normalizeSummary } from '../lib/session';
 import { duration, ms, num, secs, usd, when } from '../lib/format';
 import { downloadJson } from '../lib/download';
 import { LegBars } from './Waterfall';
+import { Recordings } from './Recordings';
 
 /**
  * Comparing runs — the thing this bench is for, and the one thing its UI could
@@ -105,6 +106,7 @@ export function ComparePage({ onOpenReport }: { onOpenReport: (s: SessionSummary
    * loaded yet, which is exactly when the re-run happens.
    */
   const inFlight = useRef<Set<string>>(new Set());
+
 
   // Full records carry the medians; the index rows do not. Fetched once per
   // refresh — see `load`, which clears the cache because records are rewritten
@@ -375,6 +377,8 @@ export function ComparePage({ onOpenReport }: { onOpenReport: (s: SessionSummary
 
         <div className="col">
           <Verdicts runs={runs} fastest={fastest} cheapest={cheapest} />
+
+          <Recordings runs={runs} />
 
           {runs.length > 0 && (
             <section className="panel">
