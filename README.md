@@ -27,7 +27,8 @@ cd backend && npm install && cp .env.example .env && npm run dev
 cd frontend && npm install && npm run dev     # http://localhost:5173
 ```
 
-Docker (one public port, production build): see `deployment-guide.md`.
+Docker (one public port, production build), including HTTPS on a domain: see
+`deployment-guide.md`.
 
 ```bash
 cd deploy && cp .env.example .env && docker compose up --build   # http://localhost:8080
