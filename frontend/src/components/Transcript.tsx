@@ -15,7 +15,7 @@ export function Transcript({ utterances, speaking }: { utterances: Utterance[]; 
       <h2>
         <PanelIcon name="owl" />
         Conversation
-        {speaking && <span className="speaking-dot" aria-label="assistant speaking" />}
+        {speaking && <span className="speaking-dot" role="status" aria-label="assistant speaking" />}
       </h2>
       <div className="transcript">
         {utterances.length === 0 && <p className="muted">Nothing yet. Hold the mic or type a turn.</p>}

@@ -15,7 +15,7 @@
   --accent-gold: #c9a227;
   --magic: #6b3fa0;
   --ok: #2d6a4f;
-  --warn: #b07d16;
+  --warn: #6d4e0e;
   --err: #9b2335;
   --ink-soft: #5c4632;
   --parchment-deep: #e8d6b0;
@@ -96,16 +96,18 @@ body::before {
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand-logo {
   width: 50px; height: 50px; object-fit: contain; flex: 0 0 50px;
-  background: #0a0a0c; border-radius: 12px; padding: 3px;
+  background: transparent; border-radius: 12px; padding: 2px;
   box-shadow: 0 0 0 1px var(--accent-gold), 0 0 18px rgba(201, 162, 39, 0.35);
 }
 .brand-copy { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
 .brand-name {
   font-family: Cinzel, "Palatino Linotype", Palatino, serif;
   font-size: 18px; font-weight: 700; letter-spacing: 0.04em;
-  background: linear-gradient(110deg, #6b1d2f 0%, #8b2d4a 28%, #c9a227 52%, #6b3fa0 78%, #8b2d4a 100%);
+  color: var(--accent);
+  background: linear-gradient(110deg, #6b1d2f 0%, var(--accent) 35%, var(--magic) 70%, var(--accent) 100%);
   background-size: 220% 100%;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
   animation: brand-shimmer 8s ease-in-out infinite;
 }
 .brand-byline {
@@ -204,7 +206,7 @@ body::before {
   color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 8px;
 }
 .icon { flex: 0 0 auto; display: inline-block; vertical-align: -2px; }
-.panel-icon { color: var(--accent-gold); }
+.panel-icon { color: var(--accent); }
 .panel h2 .right { font-size: 10px; letter-spacing: 0; text-transform: none; }
 .panel h3 { margin: 15px 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 500; }
 .grow { min-height: 300px; }
@@ -290,7 +292,7 @@ button { font: inherit; cursor: pointer; }
 
 .banner { padding: 10px 14px; border-radius: 8px; margin: 0 20px 14px; }
 .banner.error { background: color-mix(in srgb, var(--err) 12%, transparent); border: 1px solid color-mix(in srgb, var(--err) 40%, transparent); }
-.banner.warn { background: color-mix(in srgb, var(--warn) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); color: #6d4e0e; }
+.banner.warn { background: color-mix(in srgb, var(--warn) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); color: var(--warn); }
 .inline-banner { margin: 10px 0 0; font-size: 11px; line-height: 1.5; padding: 8px 10px; }
 
 /* ------------------------------- rig rail -------------------------------- */
@@ -622,7 +624,7 @@ td.win { color: var(--ok); font-weight: 600; }
   opacity: 0.7;
 }
 .spark:nth-child(odd) { width: 3px; height: 3px; animation-duration: 11s; }
-.spark:nth-child(3n) { background: radial-gradient(circle, #e8d4ff 0 35%, transparent 70%); box-shadow: 0 0 8px 2px rgba(107, 63, 160, 0.35); }
+.spark:nth-child(3n) { background: radial-gradient(circle, #e8d4ff 0 35%, transparent 70%); box-shadow: 0 0 8px 2px color-mix(in srgb, var(--magic) 35%, transparent); }
 .spark:nth-child(1) { left: 8%; top: 18%; animation-delay: 0s; }
 .spark:nth-child(2) { left: 22%; top: 72%; animation-delay: 1.2s; }
 .spark:nth-child(3) { left: 41%; top: 12%; animation-delay: 2.4s; }
@@ -652,12 +654,22 @@ td.win { color: var(--ok); font-weight: 600; }
 .console { background: color-mix(in srgb, var(--panel) 94%, var(--parchment-deep)); }
 .hero-v {
   font-family: Cinzel, Palatino, serif;
+  color: var(--accent);
   background: linear-gradient(180deg, #9a3856, var(--accent));
-  -webkit-background-clip: text; background-clip: text; color: transparent;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 .speaking-dot { box-shadow: 0 0 8px var(--ok); }
 
 @media (prefers-reduced-motion: reduce) {
-  .brand-name, .spark { animation: none; }
+  .brand-name, .spark, .speaking-dot { animation: none; }
   .panel { transition: none; }
+}
+
+@media (forced-colors: active) {
+  .brand-name, .hero-v {
+    background: none;
+    -webkit-text-fill-color: unset;
+    color: CanvasText;
+  }
 }

@@ -55,7 +55,7 @@ export class ErrorBoundary extends Component<Props, { error?: Error }> {
           <strong>The UI crashed.</strong>
           <pre style={{ whiteSpace: 'pre-wrap', margin: '8px 0 0' }}>{error.message}</pre>
         </div>
-        <button type="button" className="primary" onClick={() => this.setState({})}>
+        <button type="button" className="btn primary" onClick={() => this.setState({})}>
           <Icon name="refresh" size={12} />
           Retry render
         </button>

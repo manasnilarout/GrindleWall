@@ -160,7 +160,7 @@ export default function App() {
           <img
             className="brand-logo"
             src="/magickvoice-logo.png"
-            alt="MagickVoice logo featuring a blue and purple gradient robot head and a stylized M-V monogram with sound waves."
+            alt="MagickVoice"
           />
           <span className="brand-copy">
             <span className="brand-name">Grindelwald</span>

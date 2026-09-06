@@ -180,7 +180,7 @@ export function Console({
                 className={`src-row ${mutedSources[source] ? 'off' : ''}`}
                 onClick={() => toggleSource(source)}
               >
-                <i style={{ background: mutedSources[source] ? '#4a515e' : SOURCE_COLOR[source] }} />
+                <i style={{ background: mutedSources[source] ? '#b8a07a' : SOURCE_COLOR[source] }} />
                 {source}
                 <span className="n">{n}</span>
               </button>

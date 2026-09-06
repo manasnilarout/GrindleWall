@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-A harness for A/B-testing voice AI providers on latency and audio quality across two
+Grindelwald is a harness for A/B-testing voice AI providers on latency and audio quality across two
 architectures — **realtime** (one native speech-to-speech model) and **pipeline**
 (STT → LLM → TTS) — behind one interface so the numbers are comparable. See `README.md`
 for the measured vendor findings; they are the record of what the live APIs actually

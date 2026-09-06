@@ -88,8 +88,8 @@ and nowhere to send it.
 ### The UI
 
 The bench is branded **Grindelwald, powered by MagickVoice**: a light parchment theme with house-gold
-accents, Cinzel headings, and small Harry Potter icons on every panel. The MagickVoice logo sits in
-the top bar next to the name.
+accents, Cinzel on the brand name, and small Harry Potter icons on every panel. The MagickVoice logo
+sits in the top bar next to the name.
 
 The frontend is organised around **rigs** — named provider combinations you switch between in one
 click, kept in `localStorage`. Each rig tab carries its own median TTFA, so the A/B is on screen
