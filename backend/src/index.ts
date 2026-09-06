@@ -1,8 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { config, redactSecrets } from './config.js';
 import {
@@ -14,7 +15,7 @@ import {
 } from './auth.js';
 import { catalogWithReadiness } from './providers/catalog.js';
 import { registeredIds } from './providers/factory.js';
-import { handleSocket } from './server/session-socket.js';
+import { drainLiveSockets, handleSocket } from './server/session-socket.js';
 import { CANONICAL_SAMPLE_RATE } from './shared/protocol.js';
 import { sessionStore } from './store/SessionStore.js';
 import { FX_CHECKED_ON, inrPerUsd, rateTable, usdPerInr } from './pricing/rates.js';
@@ -244,6 +245,8 @@ app.get(
   }),
 );
 
+if (config.staticDir) serveUi(app, config.staticDir);
+
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws/session' });
 wss.on('connection', (ws, req) => {
@@ -254,9 +257,11 @@ wss.on('connection', (ws, req) => {
   handleSocket(ws);
 });
 
-server.listen(config.port, () => {
-  console.log(`backend listening on http://localhost:${config.port}`);
-  console.log(`  ws  ws://localhost:${config.port}/ws/session`);
+const onListen = (): void => {
+  const where = `${config.host ?? 'localhost'}:${config.port}`;
+  console.log(`backend listening on http://${where}`);
+  console.log(`  ws  ws://${where}/ws/session`);
+  if (config.staticDir) console.log(`  ui  ${config.staticDir}`);
   console.log(`  registered:`, registeredIds());
   if (config.authPassword && !config.authHmacSecret) {
     console.warn('  auth: AUTH_PASSWORD is set but AUTH_HMAC_SECRET is not — login gate is off');
@@ -265,4 +270,52 @@ server.listen(config.port, () => {
   } else if (authEnabled()) {
     console.log(`  auth: required (session ${Math.round(config.authSessionTtlMs / 3_600_000)}h)`);
   }
-});
+};
+if (config.host) server.listen(config.port, config.host, onListen);
+else server.listen(config.port, onListen);
+
+let shuttingDown = false;
+function shutdown(signal: NodeJS.Signals): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`received ${signal}, draining sessions`);
+  server.close();
+  void drainLiveSockets(8_000)
+    .catch((err) => console.error('drain failed:', err))
+    .finally(() => process.exit(0));
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+/**
+ * Production UI: hashed Vite assets under /assets, everything else from the
+ * build directory, SPA fallback to index.html. API and WebSocket paths stay
+ * 404 JSON rather than the parchment shell.
+ */
+function serveUi(app: express.Express, dir: string): void {
+  const root = resolve(dir);
+  const index = join(root, 'index.html');
+  if (!existsSync(index)) {
+    throw new Error(`STATIC_DIR ${root} does not contain index.html`);
+  }
+  app.use(
+    '/assets',
+    express.static(join(root, 'assets'), { maxAge: '365d', immutable: true, fallthrough: false }),
+  );
+  app.use(
+    express.static(root, {
+      index: false,
+      setHeaders(res, filePath) {
+        if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+      },
+    }),
+  );
+  app.get('*', (req, res) => {
+    if (req.path === '/api' || req.path.startsWith('/api/') || req.path.startsWith('/ws')) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(index);
+  });
+}

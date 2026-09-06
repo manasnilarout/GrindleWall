@@ -2,6 +2,11 @@ import 'dotenv/config';
 
 export const config = {
   port: Number(process.env.PORT ?? 8787),
+  /**
+   * Bind address. Unset locally so Node keeps its dual-stack default. Containers
+   * set `HOST=0.0.0.0` so the published port and compose DNS can reach it.
+   */
+  host: process.env.HOST || undefined,
   /** Comma-separated origins allowed to talk to this server. */
   corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:5173').split(',').map((s) => s.trim()),
   logAudio: process.env.LOG_AUDIO === '1',
@@ -19,6 +24,13 @@ export const config = {
    * file that plainly exists.
    */
   sessionDir: process.env.SESSION_DIR ?? 'data/sessions',
+  /**
+   * When set, Express serves a built frontend from this directory and falls
+   * back to index.html for the SPA. Used by the all-in-one container image so
+   * one process can own HTTP, WebSocket, and the UI. Unset in local `npm run
+   * dev` — Vite serves the UI there.
+   */
+  staticDir: process.env.STATIC_DIR || undefined,
   /**
    * Cap on one recording, in minutes. Sanitised HERE rather than at each use so
    * there is one answer: a junk value used to cap the recorder at the default

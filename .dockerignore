@@ -1,0 +1,19 @@
+# Build context is the repo root (see deploy/docker-compose.yml).
+.git
+.claude
+**/.env
+**/.env.local
+**/.DS_Store
+**/node_modules
+**/dist
+**/dist-check
+**/data
+**/recordings
+**/*.log
+backend/data
+frontend/dist
+frontend/dist-check
+deployment-guide.md
+README.md
+AGENTS.md
+CLAUDE.md
