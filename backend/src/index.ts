@@ -1,8 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { config, redactSecrets } from './config.js';
 import { catalogWithReadiness } from './providers/catalog.js';
@@ -169,6 +170,8 @@ app.get(
   }),
 );
 
+if (config.staticDir) serveUi(app, config.staticDir);
+
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws/session' });
 wss.on('connection', handleSocket);
@@ -176,5 +179,28 @@ wss.on('connection', handleSocket);
 server.listen(config.port, () => {
   console.log(`backend listening on http://localhost:${config.port}`);
   console.log(`  ws  ws://localhost:${config.port}/ws/session`);
+  if (config.staticDir) console.log(`  ui  ${config.staticDir}`);
   console.log(`  registered:`, registeredIds());
 });
+
+/**
+ * Production UI: hashed Vite assets under /assets, everything else from the
+ * build directory, SPA fallback to index.html. API and WebSocket paths stay
+ * 404 JSON rather than the parchment shell.
+ */
+function serveUi(app: express.Express, dir: string): void {
+  const root = resolve(dir);
+  const index = join(root, 'index.html');
+  if (!existsSync(index)) {
+    throw new Error(`STATIC_DIR ${root} does not contain index.html`);
+  }
+  app.use('/assets', express.static(join(root, 'assets'), { maxAge: '365d', immutable: true }));
+  app.use(express.static(root, { index: false, maxAge: '1h' }));
+  app.get('*', (req, res) => {
+    if (req.path === '/api' || req.path.startsWith('/api/') || req.path.startsWith('/ws')) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    res.sendFile(index);
+  });
+}

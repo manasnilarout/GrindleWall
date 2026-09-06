@@ -20,6 +20,13 @@ export const config = {
    */
   sessionDir: process.env.SESSION_DIR ?? 'data/sessions',
   /**
+   * When set, Express serves a built frontend from this directory and falls
+   * back to index.html for the SPA. Used by the all-in-one container image so
+   * one process can own HTTP, WebSocket, and the UI. Unset in local `npm run
+   * dev` — Vite serves the UI there.
+   */
+  staticDir: process.env.STATIC_DIR || undefined,
+  /**
    * Cap on one recording, in minutes. Sanitised HERE rather than at each use so
    * there is one answer: a junk value used to cap the recorder at the default
    * while the warning shown to the user quoted the junk back verbatim.

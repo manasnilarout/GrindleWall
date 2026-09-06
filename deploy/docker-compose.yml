@@ -1,0 +1,63 @@
+# Two-service stack: nginx (UI + reverse proxy) → backend (API + WebSocket).
+# From this directory:
+#   cp .env.example .env    # optional — mocks work with empty keys
+#   docker compose up --build
+# UI: http://localhost:8080
+#
+# Browser getUserMedia needs a secure context. http://localhost is allowed;
+# any other host needs HTTPS in front (see deployment-guide.md).
+
+name: grindelwald
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    image: grindelwald-backend:local
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "8787"
+      SESSION_DIR: /data/sessions
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+    volumes:
+      - session-data:/data/sessions
+    expose:
+      - "8787"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 25s
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    image: grindelwald-frontend:local
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/api/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  session-data:

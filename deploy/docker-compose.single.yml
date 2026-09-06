@@ -1,0 +1,43 @@
+# Single-container stack: one process serves the UI, /api, and /ws/session.
+# From this directory:
+#   cp .env.example .env    # optional — mocks work with empty keys
+#   docker compose -f docker-compose.single.yml up --build
+# UI: http://localhost:8080
+
+name: grindelwald
+
+services:
+  grindelwald:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: grindelwald:local
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "8080"
+      STATIC_DIR: /app/ui
+      SESSION_DIR: /data/sessions
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+    volumes:
+      - session-data:/data/sessions
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 25s
+
+volumes:
+  session-data:
