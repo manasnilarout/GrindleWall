@@ -5,6 +5,7 @@ import { duration, inr, monthly, ms, secs, usd, when } from '../lib/format';
 import { downloadJson } from '../lib/download';
 import { LegTotals, UsagePanel } from './UsagePanel';
 import { LegBars } from './Waterfall';
+import { Icon, PanelIcon } from './Icon';
 
 type Tab = 'legs' | 'turns' | 'record';
 
@@ -41,9 +42,11 @@ export function SessionReport({
   return (
     <section className="panel report">
       <h2>
+        <PanelIcon name="scroll" />
         {title}
         {onDismiss && (
           <button type="button" className="ghost inline" onClick={onDismiss}>
+            <Icon name="close" size={11} />
             dismiss
           </button>
         )}
@@ -146,7 +149,10 @@ export function SessionReport({
         <div className="col">
           {legs.length > 0 && (
             <section className="panel inner">
-              <h2>Median per leg</h2>
+              <h2>
+                <PanelIcon name="hourglass" />
+                Median per leg
+              </h2>
               <LegBars legs={legs} scaleMs={summary.latency.ttfaMedianMs} />
               <p className="muted small foot">
                 Each leg is timed from its own start mark, so these overlap and do not add up to the turn — a pipeline
@@ -159,6 +165,7 @@ export function SessionReport({
 
           <section className="panel inner">
             <h2>
+              <PanelIcon name="cauldron" />
               At production volume
               <span className="right muted">same numbers, bigger</span>
             </h2>
@@ -180,7 +187,10 @@ export function SessionReport({
           </section>
 
           <section className="panel inner">
-            <h2>How much to trust each number</h2>
+            <h2>
+              <PanelIcon name="shield" />
+              How much to trust each number
+            </h2>
             <div className="table-scroll">
               <table>
                 <tbody>
@@ -233,6 +243,7 @@ export function SessionReport({
           className="ghost"
           onClick={() => downloadJson(summary, `session-${summary.recordId}.json`)}
         >
+          <Icon name="download" size={12} />
           Export session as JSON
         </button>
         {/* A conversation with no completed turn is never written to disk. */}

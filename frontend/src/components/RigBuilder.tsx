@@ -5,6 +5,7 @@ import type { Rig } from '../lib/rigs';
 import { switchMode, switchProvider, switchSttModel, switchVoicedLanguage, switchVoicedModel } from '../lib/rigs';
 import { Select } from './Select';
 import { TextField } from './TextField';
+import { Icon, type IconName } from './Icon';
 
 /**
  * The rig editor.
@@ -103,12 +104,16 @@ export function RigBuilder({
         ref={panelRef}
       >
         <div className="drawer-head">
-          <h1>{rig.name}</h1>
+          <h1>
+            <Icon name="hat" size={16} />
+            {rig.name}
+          </h1>
           <span className="muted small">
             {rig.mode === 'realtime' ? 'one speech-to-speech model' : 'three legs, three vendors'}
           </span>
           <span className="spacer" />
           <button type="button" className="btn primary" onClick={onClose}>
+            <Icon name="wand" size={13} />
             Done
           </button>
         </div>
@@ -269,6 +274,13 @@ export function RigBuilder({
   );
 }
 
+const SLOT_ICON: Record<string, IconName> = {
+  'Speech-to-speech': 'lightning',
+  STT: 'mic',
+  LLM: 'crystal',
+  TTS: 'owl',
+};
+
 /** One leg: its providers as chips carrying readiness, then the model controls. */
 function SlotSection({
   title,
@@ -289,7 +301,10 @@ function SlotSection({
 }) {
   return (
     <section className="slot">
-      <h3>{title}</h3>
+      <h3>
+        <Icon name={SLOT_ICON[title] ?? 'sparkle'} size={13} />
+        {title}
+      </h3>
       <div className="p-chips">
         {providers.map((p) => {
           // Not registered means the factory will refuse it outright; a missing

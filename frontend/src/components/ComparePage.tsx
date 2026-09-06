@@ -6,6 +6,7 @@ import { duration, ms, num, secs, usd, when } from '../lib/format';
 import { downloadJson } from '../lib/download';
 import { LegBars } from './Waterfall';
 import { Recordings } from './Recordings';
+import { Icon, PanelIcon } from './Icon';
 
 /**
  * Comparing runs — the thing this bench is for, and the one thing its UI could
@@ -156,8 +157,10 @@ export function ComparePage({ onOpenReport }: { onOpenReport: (s: SessionSummary
         <div className="col">
           <section className="panel">
             <h2>
+              <PanelIcon name="scroll" />
               Runs on disk
               <button type="button" className="ghost inline" onClick={load}>
+                <Icon name="refresh" size={11} />
                 refresh
               </button>
             </h2>
@@ -207,6 +210,7 @@ export function ComparePage({ onOpenReport }: { onOpenReport: (s: SessionSummary
         <div className="col">
           <section className="panel">
             <h2>
+              <PanelIcon name="broom" />
               {metric.title}
               <span className="right muted">bar = median{metric.spread ? ' · tick = p95' : ''}</span>
             </h2>
@@ -277,6 +281,7 @@ export function ComparePage({ onOpenReport }: { onOpenReport: (s: SessionSummary
 
           <section className="panel">
             <h2>
+              <PanelIcon name="hourglass" />
               Per-leg medians
               <span className="right muted">shared scale · legs overlap, they do not sum</span>
             </h2>
@@ -317,6 +322,7 @@ export function ComparePage({ onOpenReport }: { onOpenReport: (s: SessionSummary
 
           <section className="panel">
             <h2>
+              <PanelIcon name="compare" />
               Matrix
               <span className="right muted">green marks the best in its column</span>
             </h2>
@@ -363,6 +369,7 @@ export function ComparePage({ onOpenReport }: { onOpenReport: (s: SessionSummary
                         <td className="muted">{perTurn === undefined ? '—' : usd(perTurn * 1000)}</td>
                         <td>
                           <button type="button" className="ghost inline" onClick={() => onOpenReport(run)}>
+                            <Icon name="book" size={11} />
                             open
                           </button>
                         </td>
@@ -382,12 +389,16 @@ export function ComparePage({ onOpenReport }: { onOpenReport: (s: SessionSummary
 
           {runs.length > 0 && (
             <section className="panel">
-              <h2>Export</h2>
+              <h2>
+                <PanelIcon name="download" />
+                Export
+              </h2>
               <button
                 type="button"
                 className="ghost"
                 onClick={() => downloadJson(runs, `compare-${runs.length}-runs-${Date.now()}.json`)}
               >
+                <Icon name="download" size={12} />
                 Export {runs.length} selected {runs.length === 1 ? 'record' : 'records'} as JSON
               </button>
               <p className="muted small foot">
@@ -421,7 +432,10 @@ function Verdicts({
   if (runs.length < 2) {
     return (
       <section className="panel">
-        <h2>What the numbers say</h2>
+        <h2>
+          <PanelIcon name="crystal" />
+          What the numbers say
+        </h2>
         <p className="muted">Select at least two runs to compare them.</p>
       </section>
     );
@@ -438,7 +452,10 @@ function Verdicts({
 
   return (
     <section className="panel">
-      <h2>What the numbers say</h2>
+      <h2>
+        <PanelIcon name="crystal" />
+        What the numbers say
+      </h2>
 
       {fastRun && (
         <div className="verdict-box win">

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { Utterance } from '../hooks/useVoiceSession';
+import { PanelIcon } from './Icon';
 
 export function Transcript({ utterances, speaking }: { utterances: Utterance[]; speaking: boolean }) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -12,6 +13,7 @@ export function Transcript({ utterances, speaking }: { utterances: Utterance[]; 
   return (
     <section className="panel grow">
       <h2>
+        <PanelIcon name="owl" />
         Conversation
         {speaking && <span className="speaking-dot" aria-label="assistant speaking" />}
       </h2>

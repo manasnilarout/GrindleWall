@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { SessionSummary } from '../lib/protocol';
+import { PanelIcon } from './Icon';
 
 /**
  * Playback for the conversations being compared. One stereo file per run:
@@ -48,6 +49,7 @@ export function Recordings({ runs }: { runs: SessionSummary[] }) {
   return (
     <section className="panel">
       <h2>
+        <PanelIcon name="owl" />
         Recordings
         <span className="right muted">left: you · right: the assistant</span>
       </h2>

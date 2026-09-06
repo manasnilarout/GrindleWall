@@ -25,6 +25,7 @@ import { SessionReport } from './components/SessionReport';
 import { ComparePage } from './components/ComparePage';
 import { Console } from './components/Console';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { Icon, PanelIcon } from './components/Icon';
 
 const DEFAULT_PROMPT = 'You are a voice assistant. Answer in one or two short sentences. Never use lists or markdown.';
 
@@ -149,12 +150,22 @@ export default function App() {
 
   return (
     <div className={`app ${consoleExpanded ? 'console-open' : ''}`}>
+      <div className="enchantment" aria-hidden="true">
+        {Array.from({ length: 16 }, (_, i) => (
+          <i key={i} className="spark" />
+        ))}
+      </div>
       <header className="topbar">
         <span className="brand">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6ea8fe" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-            <path d="M3 12h2.5l2-6 3 15 3-11 2 5h5.5" />
-          </svg>
-          voice bench
+          <img
+            className="brand-logo"
+            src="/magickvoice-logo.png"
+            alt="MagickVoice logo featuring a blue and purple gradient robot head and a stylized M-V monogram with sound waves."
+          />
+          <span className="brand-copy">
+            <span className="brand-name">Grindelwald</span>
+            <span className="brand-byline">powered by MagickVoice</span>
+          </span>
         </span>
 
         {activeRig && (
@@ -174,9 +185,11 @@ export default function App() {
 
         <div className="seg">
           <button type="button" className={view === 'bench' ? 'on' : ''} onClick={() => setView('bench')}>
+            <Icon name="wand" size={12} />
             Bench
           </button>
           <button type="button" className={view === 'compare' ? 'on' : ''} onClick={() => setView('compare')}>
+            <Icon name="snitch" size={12} />
             Compare
           </button>
         </div>
@@ -235,14 +248,17 @@ export default function App() {
                 {connected ? (
                   <>
                     <button type="button" className="btn primary" onClick={() => void session.endConversation()}>
+                      <Icon name="scroll" size={13} />
                       End conversation
                     </button>
                     <button type="button" className="btn" onClick={() => void session.disconnect()} title="Drop the session without a report">
+                      <Icon name="linkOff" size={13} />
                       Disconnect
                     </button>
                   </>
                 ) : ending ? (
                   <button type="button" className="btn primary" disabled>
+                    <Icon name="hourglass" size={13} />
                     Ending…
                   </button>
                 ) : (
@@ -254,6 +270,7 @@ export default function App() {
                     // whose close handler tears down the first.
                     disabled={providers.length === 0 || session.state === 'connecting'}
                   >
+                    <Icon name={session.state === 'connecting' ? 'hourglass' : 'key'} size={13} />
                     {session.state === 'connecting' ? 'Connecting…' : 'Connect'}
                   </button>
                 )}
@@ -266,15 +283,18 @@ export default function App() {
                   disabled={!connected && !session.micOn}
                   onClick={() => (session.micOn ? void session.stopMic() : void session.startMic())}
                 >
+                  <Icon name={session.micOn ? 'micOff' : 'mic'} size={13} />
                   {session.micOn ? 'Stop mic' : 'Start mic'}
                 </button>
 
                 {turnDetection === 'manual' && (
                   <button type="button" className="btn" disabled={!connected || !session.micOn} onClick={session.commitAudio}>
+                    <Icon name="hourglass" size={13} />
                     End my turn
                   </button>
                 )}
                 <button type="button" className="btn" disabled={!connected} onClick={session.interrupt}>
+                  <Icon name="lightning" size={13} />
                   Interrupt
                 </button>
 
@@ -321,6 +341,7 @@ export default function App() {
               </ErrorBoundary>
               <section className="panel">
                 <h2>
+                  <PanelIcon name="castle" />
                   This rig
                   <span className="right" style={{ color: rigColor(activeRig) }}>
                     ●

@@ -4,6 +4,7 @@ import { bandsOf, slowestLeg, type LegBandKey, type LegMedian } from '../lib/leg
 import { medianOf, summarize } from '../lib/stats';
 import { inr, ms, monthly, num, usd } from '../lib/format';
 import { LegBars } from './Waterfall';
+import { PanelIcon } from './Icon';
 
 /**
  * The right-hand rail: the two numbers a run is judged on, and one sentence
@@ -33,7 +34,10 @@ export function InsightsPanel({ turns }: { turns: TurnRecord[] }) {
   if (!ttfa) {
     return (
       <section className="panel">
-        <h2>Time to first audio</h2>
+        <h2>
+          <PanelIcon name="lightning" />
+          Time to first audio
+        </h2>
         <p className="muted">Complete a turn to collect numbers.</p>
       </section>
     );
@@ -61,6 +65,7 @@ export function InsightsPanel({ turns }: { turns: TurnRecord[] }) {
   return (
     <section className="panel">
       <h2>
+        <PanelIcon name="lightning" />
         Time to first audio
         <span className="right muted">median of {ttfa.n}</span>
       </h2>
@@ -115,7 +120,10 @@ export function CostPanel({ usage }: { usage: TurnUsage[] }) {
   if (usage.length === 0) {
     return (
       <section className="panel">
-        <h2>Cost</h2>
+        <h2>
+          <PanelIcon name="potion" />
+          Cost
+        </h2>
         <p className="muted">No turn completed, so nothing was consumed.</p>
       </section>
     );
@@ -145,6 +153,7 @@ export function CostPanel({ usage }: { usage: TurnUsage[] }) {
   return (
     <section className="panel">
       <h2>
+        <PanelIcon name="potion" />
         Cost
         {inrPerUsd !== undefined && <span className="right muted">₹{inrPerUsd.toFixed(2)} / $1 · assumed</span>}
       </h2>
