@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  AUTH_STORAGE_KEY,
   AUTH_USERNAME,
   clearSession,
   fetchAuthConfig,
+  fetchAuthSession,
   login as postLogin,
   logout as postLogout,
   readSession,
@@ -12,28 +14,36 @@ import {
 
 export type AuthStatus = 'loading' | 'login' | 'ready';
 
+/** `setTimeout` overflows (and fires immediately) above this. */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 export function useAuth() {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [config, setConfig] = useState<AuthConfig | null>(null);
   const [session, setSession] = useState<AuthSession | null>(() => readSession());
-  const [error, setError] = useState<string>();
 
   useEffect(() => {
     let cancelled = false;
     fetchAuthConfig()
-      .then((cfg) => {
+      .then(async (cfg) => {
         if (cancelled) return;
         setConfig(cfg);
         if (!cfg.required) {
+          // A leftover token from a previous gated run would still render the
+          // username in the topbar with no Sign out — drop it.
+          clearSession();
+          setSession(null);
           setStatus('ready');
           return;
         }
-        const existing = readSession();
+        const existing = await fetchAuthSession();
+        if (cancelled) return;
         if (existing) {
           setSession(existing);
           setStatus('ready');
           return;
         }
+        setSession(null);
         setStatus('login');
       })
       .catch(() => {
@@ -52,8 +62,16 @@ export function useAuth() {
       setSession(null);
       setStatus((prev) => (prev === 'loading' ? prev : 'login'));
     };
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key !== AUTH_STORAGE_KEY) return;
+      if (!ev.newValue) kick();
+    };
     window.addEventListener('auth:expired', kick);
-    return () => window.removeEventListener('auth:expired', kick);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('auth:expired', kick);
+      window.removeEventListener('storage', onStorage);
+    };
   }, []);
 
   useEffect(() => {
@@ -69,13 +87,12 @@ export function useAuth() {
       clearSession();
       setSession(null);
       setStatus('login');
-    }, ms);
+    }, Math.min(ms, MAX_TIMEOUT_MS));
     return () => window.clearTimeout(t);
   }, [session]);
 
   const signIn = useCallback(async (username: string, password: string) => {
     if (!config?.hmacSecret) throw new Error('HMAC secret is not available');
-    setError(undefined);
     const next = await postLogin(username, password, config.hmacSecret);
     setSession(next);
     setStatus('ready');
@@ -93,8 +110,6 @@ export function useAuth() {
     username: config?.username ?? AUTH_USERNAME,
     sessionTtlMs: config?.sessionTtlMs ?? 3 * 60 * 60 * 1000,
     session,
-    error,
-    setError,
     signIn,
     signOut,
   };

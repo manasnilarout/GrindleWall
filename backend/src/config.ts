@@ -37,8 +37,12 @@ export const config = {
    * digest of `authPassword` and compares. Not encryption — HMAC is one-way.
    */
   authHmacSecret: process.env.AUTH_HMAC_SECRET ?? '',
-  /** How long a UI/API session lasts after a successful login. Default 3 hours. */
-  authSessionTtlMs: Math.round(sanePositive(process.env.AUTH_SESSION_HOURS, 3) * 3_600_000),
+  /**
+   * How long a UI/API session lasts after a successful login. Default 3 hours.
+   * Capped at 24h: `setTimeout` overflows above ~24.8 days and would fire
+   * immediately on the client while the server session was still live.
+   */
+  authSessionTtlMs: Math.round(Math.min(sanePositive(process.env.AUTH_SESSION_HOURS, 3), 24) * 3_600_000),
 };
 
 function sanePositive(raw: string | undefined, fallback: number): number {
@@ -61,6 +65,15 @@ export function credentials(): Record<string, string | undefined> {
  */
 export function redactSecrets(text: string): string {
   let out = text;
+  // Human passwords and HMAC keys are often shorter than the floor below.
+  // Always scrub the ones we actually use for the login gate.
+  for (const [key, value] of [
+    ['AUTH_PASSWORD', config.authPassword],
+    ['AUTH_HMAC_SECRET', config.authHmacSecret],
+  ] as const) {
+    if (!value) continue;
+    while (out.includes(value)) out = out.replace(value, `«${key} redacted»`);
+  }
   for (const [key, value] of Object.entries(process.env)) {
     // Short values produce false positives (PATH fragments, "1", locale names).
     if (!value || value.length < 12) continue;

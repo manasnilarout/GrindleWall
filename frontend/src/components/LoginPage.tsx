@@ -26,7 +26,11 @@ export function LoginPage({
   const [localError, setLocalError] = useState<string>();
   const [busy, setBusy] = useState(false);
 
-  const hours = Math.round(sessionTtlMs / 3_600_000);
+  const hours = sessionTtlMs / 3_600_000;
+  const ttlLabel =
+    hours >= 1
+      ? `${Math.round(hours)} hour${Math.round(hours) === 1 ? '' : 's'}`
+      : `${Math.max(1, Math.round(sessionTtlMs / 60_000))} minutes`;
   const message = error ?? localError;
   const waiting = submitting || busy;
 
@@ -61,7 +65,7 @@ export function LoginPage({
           <h1>Sign in</h1>
           <p className="muted">
             A single static account. The password is HMAC&apos;d in the browser before
-            it is sent; the session lasts {hours} hour{hours === 1 ? '' : 's'}.
+            it is sent; the session lasts {ttlLabel}.
           </p>
 
           <label className="field">

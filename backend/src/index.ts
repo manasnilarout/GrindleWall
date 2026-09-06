@@ -260,6 +260,8 @@ server.listen(config.port, () => {
   console.log(`  registered:`, registeredIds());
   if (config.authPassword && !config.authHmacSecret) {
     console.warn('  auth: AUTH_PASSWORD is set but AUTH_HMAC_SECRET is not — login gate is off');
+  } else if (config.authHmacSecret && !config.authPassword) {
+    console.warn('  auth: AUTH_HMAC_SECRET is set but AUTH_PASSWORD is not — login gate is off');
   } else if (authEnabled()) {
     console.log(`  auth: required (session ${Math.round(config.authSessionTtlMs / 3_600_000)}h)`);
   }

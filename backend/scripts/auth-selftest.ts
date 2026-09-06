@@ -8,7 +8,7 @@
  * the same digest the login page will send (UTF-8 key + message, hex output)
  * and that a stale token is a miss.
  */
-import { createHmac } from 'node:crypto';
+import { createHmac, webcrypto } from 'node:crypto';
 import {
   AUTH_USERNAME,
   hmacEquals,
@@ -19,6 +19,7 @@ import {
   tokenFromUrl,
   verifyLogin,
 } from '../src/auth.js';
+import { config, redactSecrets } from '../src/config.js';
 
 let passed = 0;
 const failures: string[] = [];
@@ -36,11 +37,14 @@ function check(name: string, actual: unknown, expected: unknown): void {
 
 const SECRET = 'bench-hmac-secret';
 const PASSWORD = 'correct-horse';
+/** HMAC-SHA256("bench-hmac-secret", "correct-horse") — pinned, not derived in this file. */
+const KNOWN = '5c844644fe1e7484b03b6f74b796afd7a10727ae5578a047bf404fda059a99d4';
 const known = createHmac('sha256', SECRET).update(PASSWORD, 'utf8').digest('hex');
 
 console.log('\nHMAC construction');
 {
-  check('hmacHex matches Node createHmac SHA-256 hex', hmacHex(SECRET, PASSWORD), known);
+  check('pinned vector still matches Node createHmac', known, KNOWN);
+  check('hmacHex matches the pinned SHA-256 hex', hmacHex(SECRET, PASSWORD), KNOWN);
   check('hmacEquals accepts the matching digest', hmacEquals(SECRET, PASSWORD, known), true);
   check('hmacEquals is case-insensitive on hex', hmacEquals(SECRET, PASSWORD, known.toUpperCase()), true);
   check('hmacEquals rejects a wrong password', hmacEquals(SECRET, 'wrong', known), false);
@@ -106,6 +110,39 @@ console.log('\ntoken extraction');
     url: '/api/catalog',
     query: { token: 'from-query' },
   }), 'from-query');
+  check('upgrade URL with no Express query (the real ws IncomingMessage)', tokenFromRequest({
+    headers: {},
+    url: '/ws/session?token=from-upgrade',
+  }), 'from-upgrade');
+}
+
+console.log('\nshort login secrets are still redacted');
+{
+  const savedPassword = config.authPassword;
+  const savedSecret = config.authHmacSecret;
+  try {
+    config.authPassword = 'shortpw';
+    config.authHmacSecret = 'shortsec';
+    check('AUTH_PASSWORD shorter than 12 is still scrubbed', redactSecrets('pw=shortpw'), 'pw=«AUTH_PASSWORD redacted»');
+    check('AUTH_HMAC_SECRET shorter than 12 is still scrubbed', redactSecrets('k=shortsec'), 'k=«AUTH_HMAC_SECRET redacted»');
+  } finally {
+    config.authPassword = savedPassword;
+    config.authHmacSecret = savedSecret;
+  }
+}
+
+{
+  const enc = new TextEncoder();
+  const key = await webcrypto.subtle.importKey(
+    'raw',
+    enc.encode(SECRET),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await webcrypto.subtle.sign('HMAC', key, enc.encode(PASSWORD));
+  const web = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  check('Web Crypto HMAC matches the pinned vector (same construction as the login page)', web, KNOWN);
 }
 
 if (failures.length) {

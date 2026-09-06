@@ -3,7 +3,7 @@ import type { DerivedMetrics, MetricMark, ServerMessage, SessionSummary, StartCo
 import { MicRecorder } from '../audio/recorder';
 import { AudioSink } from '../audio/player';
 import { MARK_NOTE, sourceOfMark, sourceOfMessage, type LogSource } from '../lib/logsource';
-import { sessionWsUrl } from '../lib/auth';
+import { clearSession, sessionWsUrl } from '../lib/auth';
 
 /** 'ending' is the window between asking for the bill and the summary arriving. */
 export type ConnState = 'idle' | 'connecting' | 'ready' | 'ending' | 'error' | 'closed' | 'ended';
@@ -319,8 +319,16 @@ export function useVoiceSession() {
         // recording indicator lit with nowhere for the audio to go.
         void stopMic();
       };
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         if (!current()) return;
+        if (ev.code === 4401) {
+          // The upgrade was rejected (or the in-memory book was wiped by a
+          // restart). Kick the UI rather than leaving a "is the backend up?"
+          // error on a socket that is working and just unauthorized.
+          clearSession();
+          window.dispatchEvent(new Event('auth:expired'));
+          log('error', 'session expired — sign in again');
+        }
         setState((prev) => (prev === 'error' || prev === 'ended' ? prev : 'closed'));
         void stopMic();
       };

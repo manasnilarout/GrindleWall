@@ -1,7 +1,7 @@
 /** The only account the naive layer accepts. Mirrored on the backend. */
 export const AUTH_USERNAME = 'admin@magickvoice.com';
 
-const STORAGE_KEY = 'voice-bench.auth';
+export const AUTH_STORAGE_KEY = 'voice-bench.auth';
 
 export interface AuthConfig {
   required: boolean;
@@ -20,6 +20,27 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
   const res = await fetch('/api/auth/config');
   if (!res.ok) throw new Error(`Auth config failed: ${res.status}`);
   return res.json();
+}
+
+/**
+ * Ask the server whether a stored token is still live. Sessions live in the
+ * backend process, so a `tsx watch` restart (or any restart) invalidates them
+ * while localStorage still looks fine. A 401 here is a real miss, not a
+ * network blip — the token is dropped.
+ */
+export async function fetchAuthSession(): Promise<AuthSession | null> {
+  const stored = readSession();
+  if (!stored) return null;
+  const res = await fetch('/api/auth/session', {
+    headers: { Authorization: `Bearer ${stored.token}` },
+  });
+  if (res.status === 401) {
+    clearSession();
+    return null;
+  }
+  if (!res.ok) throw new Error(`Auth session failed: ${res.status}`);
+  const body = (await res.json()) as { session?: AuthSession };
+  return body.session ?? stored;
 }
 
 /**
@@ -71,12 +92,12 @@ export async function logout(): Promise<void> {
 export function readSession(): AuthSession | null {
   if (typeof localStorage === 'undefined') return null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as AuthSession;
     if (typeof parsed.token !== 'string' || typeof parsed.expiresAt !== 'number') return null;
     if (parsed.expiresAt <= Date.now()) {
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(AUTH_STORAGE_KEY);
       return null;
     }
     return parsed;
@@ -87,17 +108,12 @@ export function readSession(): AuthSession | null {
 
 export function writeSession(session: AuthSession): void {
   if (typeof localStorage === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
 }
 
 export function clearSession(): void {
   if (typeof localStorage === 'undefined') return;
-  localStorage.removeItem(STORAGE_KEY);
-}
-
-export function authHeaders(): HeadersInit {
-  const session = readSession();
-  return session ? { Authorization: `Bearer ${session.token}` } : {};
+  localStorage.removeItem(AUTH_STORAGE_KEY);
 }
 
 /** fetch that attaches the session token and treats 401 as a kick-out. */

@@ -57,7 +57,6 @@ export default function App() {
       <LoginPage
         username={auth.username}
         sessionTtlMs={auth.sessionTtlMs}
-        error={auth.error}
         onSubmit={auth.signIn}
       />
     );
