@@ -6,6 +6,7 @@ import { envCommandOf, slotsOf } from '../lib/rigs';
 import { bandsOf } from '../lib/legs';
 import { medianOf } from '../lib/stats';
 import { ms } from '../lib/format';
+import { Icon, PanelIcon } from './Icon';
 
 /**
  * The active rig, as a chain you read top to bottom in the order the audio
@@ -71,6 +72,7 @@ export function RigRail({
   return (
     <section className="panel">
       <h2>
+        <PanelIcon name="castle" />
         Rig
         <input
           className="rig-name"
@@ -82,10 +84,12 @@ export function RigRail({
         />
         <span className="right">
           <button type="button" className="ghost inline" onClick={onEdit}>
+            <Icon name="wand" size={11} />
             edit
           </button>
           {canDelete && (
             <button type="button" className="ghost inline danger" disabled={locked} onClick={onDelete}>
+              <Icon name="close" size={11} />
               delete
             </button>
           )}
@@ -144,6 +148,7 @@ export function RigRail({
       */}
       <div className="cmd">
         <button type="button" className="cmd-copy" onClick={copy}>
+          <Icon name="copy" size={10} />
           {copied ? 'copied' : 'copy'}
         </button>
         {command}

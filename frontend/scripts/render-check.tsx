@@ -844,7 +844,7 @@ check('summarize matches the backend median on an even count', () => {
 
 // The whole app, shell only — effects do not run server-side, so this catches
 // the class of failure that takes the page down before anything is fetched.
-check('App (shell)', () => renderToString(h(App)), ['voice bench', 'Console']);
+check('App (shell)', () => renderToString(h(App)), ['Grindelwald', 'powered by MagickVoice', 'Console']);
 
 /* --------------------- against the real catalog ------------------------ */
 /**

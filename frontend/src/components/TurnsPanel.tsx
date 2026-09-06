@@ -8,6 +8,7 @@ import { medianOf } from '../lib/stats';
 import { downloadJson } from '../lib/download';
 import { UsagePanel } from './UsagePanel';
 import { Waterfall, WaterfallAxis, WaterfallLegend, type WaterfallRow } from './Waterfall';
+import { Icon, PanelIcon } from './Icon';
 
 type Tab = 'turns' | 'usage' | 'marks';
 
@@ -54,6 +55,7 @@ export function TurnsPanel({ turns, usage }: { turns: TurnRecord[]; usage: TurnU
   return (
     <section className="panel grow">
       <h2>
+        <PanelIcon name="hourglass" />
         <TabButton tab="turns" active={tab} onSelect={setTab}>
           Turns
         </TabButton>
@@ -86,6 +88,7 @@ export function TurnsPanel({ turns, usage }: { turns: TurnRecord[]; usage: TurnU
             )}
           </p>
           <button type="button" className="ghost" onClick={() => downloadJson(turns, `turns-${Date.now()}.json`)}>
+            <Icon name="download" size={12} />
             Export turns as JSON
           </button>
         </div>

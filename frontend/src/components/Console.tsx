@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { LogLine } from '../hooks/useVoiceSession';
 import { SOURCE_COLOR, type LogSource } from '../lib/logsource';
 import { ms } from '../lib/format';
+import { Icon, PanelIcon } from './Icon';
 
 type Level = LogLine['level'];
 
@@ -67,7 +68,10 @@ export function Console({
   return (
     <section className={`console ${expanded ? 'expanded' : ''}`}>
       <div className="console-head">
-        <h2>Console</h2>
+        <h2>
+          <PanelIcon name="scroll" />
+          Console
+        </h2>
 
         <div className="seg">
           {LEVELS.map((level) => (
@@ -120,9 +124,11 @@ export function Console({
           onClick={() => void navigator.clipboard?.writeText(shown.map(asText).join('\n'))}
           title="Copy the filtered lines"
         >
+          <Icon name="copy" size={11} />
           copy
         </button>
         <button type="button" className="ghost inline" onClick={onToggleExpand}>
+          <Icon name={expanded ? 'collapse' : 'expand'} size={11} />
           {expanded ? 'collapse' : 'expand'}
         </button>
       </div>
@@ -174,7 +180,7 @@ export function Console({
                 className={`src-row ${mutedSources[source] ? 'off' : ''}`}
                 onClick={() => toggleSource(source)}
               >
-                <i style={{ background: mutedSources[source] ? '#4a515e' : SOURCE_COLOR[source] }} />
+                <i style={{ background: mutedSources[source] ? '#b8a07a' : SOURCE_COLOR[source] }} />
                 {source}
                 <span className="n">{n}</span>
               </button>

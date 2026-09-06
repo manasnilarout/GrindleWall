@@ -16,7 +16,7 @@ import type { MetricName, StartConfig } from './protocol';
 export type LogSource = 'session' | 'stt' | 'llm' | 'tts' | 'realtime' | 'mic' | 'client';
 
 export const SOURCE_COLOR: Record<LogSource, string> = {
-  session: '#8b93a1',
+  session: '#5c4632',
   stt: '#3987e5',
   llm: '#d95926',
   tts: '#199e70',

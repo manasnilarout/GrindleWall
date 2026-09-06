@@ -1,5 +1,6 @@
 import type { LegUsage, TurnUsage } from '../lib/protocol';
 import { UNIT_LABEL, inr, isPipeline, legOf, num, usd } from '../lib/format';
+import { PanelIcon } from './Icon';
 
 /**
  * Live token/character/audio consumption, one row per completed turn.
@@ -12,7 +13,12 @@ export function UsagePanel({ usage, compact }: { usage: TurnUsage[]; compact?: b
   if (usage.length === 0) {
     return (
       <section className="panel">
-        {!compact && <h2>Tokens &amp; cost</h2>}
+        {!compact && (
+          <h2>
+            <PanelIcon name="potion" />
+            Tokens &amp; cost
+          </h2>
+        )}
         <p className="muted">No turn completed, so nothing was consumed.</p>
       </section>
     );
@@ -32,7 +38,12 @@ export function UsagePanel({ usage, compact }: { usage: TurnUsage[]; compact?: b
     <section className="panel">
       {/* Inside the end-of-session report the heading and headline stats are
           already above this table, so only the per-turn rows are wanted. */}
-      {!compact && <h2>Tokens &amp; cost</h2>}
+      {!compact && (
+        <h2>
+          <PanelIcon name="potion" />
+          Tokens &amp; cost
+        </h2>
+      )}
 
       {!compact && (
       <div className="summary">

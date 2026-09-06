@@ -6,9 +6,11 @@ import type { DerivedMetrics, MetricMark, MetricName, SessionSummary } from './p
  * The colours are a validated categorical palette rather than the app's status
  * colours: `--ok` and `--warn` mean "ready" and "estimated" everywhere else in
  * this UI, and reusing them for a series would make a green TTS band read as a
- * verdict on the TTS leg. Checked against a #1e222a surface — worst adjacent
+ * verdict on the TTS leg. Measured on the old #1e222a shell — worst adjacent
  * pair 9.4 ΔE under deuteranopia, 26.5 with normal vision, all three above 3:1
- * contrast.
+ * contrast. The hexes did not change for the parchment restyle: they are
+ * categorical fills, not chrome, and still read on `--panel`. Don't retint
+ * them to match the theme.
  *
  * Order is the CVD-safety mechanism, not decoration: STT and TTS sit either
  * side of LLM precisely because blue↔aqua is the pair that would fail if they

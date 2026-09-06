@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Icon, PanelIcon } from './Icon';
 
 /**
  * Without this, one throwing component renders a blank page and the only clue
@@ -32,12 +33,16 @@ export class ErrorBoundary extends Component<Props, { error?: Error }> {
     if (this.props.panel) {
       return (
         <section className="panel">
-          <h2>{this.props.panel}</h2>
+          <h2>
+            <PanelIcon name="lightning" />
+            {this.props.panel}
+          </h2>
           <div className="banner error">
             <strong>This panel crashed.</strong>
             <pre style={{ whiteSpace: 'pre-wrap', margin: '8px 0 0' }}>{error.message}</pre>
           </div>
           <button type="button" className="ghost" onClick={() => this.setState({})}>
+            <Icon name="refresh" size={12} />
             Retry
           </button>
         </section>
@@ -50,7 +55,8 @@ export class ErrorBoundary extends Component<Props, { error?: Error }> {
           <strong>The UI crashed.</strong>
           <pre style={{ whiteSpace: 'pre-wrap', margin: '8px 0 0' }}>{error.message}</pre>
         </div>
-        <button type="button" className="primary" onClick={() => this.setState({})}>
+        <button type="button" className="btn primary" onClick={() => this.setState({})}>
+          <Icon name="refresh" size={12} />
           Retry render
         </button>
       </div>

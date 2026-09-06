@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Icon, PanelIcon } from './Icon';
 
 interface Props {
   systemPrompt: string;
@@ -45,7 +46,10 @@ export function PromptWidget({
 
   return (
     <section className="panel">
-      <h2>Prompt</h2>
+      <h2>
+        <PanelIcon name="book" />
+        Prompt
+      </h2>
 
       <label className="field">
         <span className="field-label">System prompt</span>
@@ -61,6 +65,7 @@ export function PromptWidget({
       <div className="preset-row">
         {PRESETS.map((p) => (
           <button key={p.name} type="button" disabled={locked} onClick={() => onSystemPromptChange(p.text)}>
+            <Icon name={p.name === 'Naturalness probe' ? 'owl' : p.name === 'Latency probe' ? 'lightning' : 'hat'} size={12} />
             {p.name}
           </button>
         ))}
@@ -86,6 +91,7 @@ export function PromptWidget({
           disabled={!canSend}
         />
         <button type="submit" disabled={!canSend || !text.trim()}>
+          <Icon name="quill" size={13} />
           Send
         </button>
       </form>

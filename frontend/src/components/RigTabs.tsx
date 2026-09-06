@@ -1,6 +1,7 @@
 import type { Rig } from '../lib/rigs';
 import { rigColor } from '../lib/rigs';
 import { ms } from '../lib/format';
+import { Icon } from './Icon';
 
 export interface RigScore {
   /** Median TTFA of the last run of this rig, in this browser session. */
@@ -62,12 +63,14 @@ export function RigTabs({
       })}
 
       <button type="button" className="rig-add" onClick={onAdd} disabled={locked} title="Add a rig">
-        + rig
+        <Icon name="plus" size={11} />
+        rig
       </button>
 
       <span className="spacer" />
       <button type="button" className="ghost inline" onClick={onCompare}>
-        Compare runs ↗
+        <Icon name="snitch" size={11} />
+        Compare runs
       </button>
     </div>
   );
