@@ -21,11 +21,15 @@ services:
     image: grindelwald-backend:local
     restart: unless-stopped
     init: true
+    stop_grace_period: 15s
     env_file:
       - .env
     environment:
       HOST: "0.0.0.0"
       PORT: "8787"
+      # This image has no Vite build. Clear a STATIC_DIR left in the shared
+      # .env from an all-in-one `docker run` or it exits looking for /app/ui.
+      STATIC_DIR: ""
       SESSION_DIR: /data/sessions
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
     volumes:

@@ -10,6 +10,27 @@ import { sessionStore } from '../store/SessionStore.js';
 import { SessionRecorder } from '../audio/SessionRecorder.js';
 
 /**
+ * Live sockets and the work that must finish after they close — provider
+ * teardown plus `SessionRecorder.stop()`, which is what turns the `.mic` /
+ * `.bot` temps into the stereo WAV. `docker stop` / Cloud Run SIGTERM has to
+ * wait for these or a mid-call replace leaves the temps and no recording.
+ */
+const live = new Set<{ ws: WebSocket; finish: () => Promise<void> }>();
+
+export async function drainLiveSockets(timeoutMs = 8_000): Promise<void> {
+  const entries = [...live];
+  for (const { ws } of entries) {
+    if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+      ws.close(1001, 'server shutting down');
+    }
+  }
+  await Promise.race([
+    Promise.all(entries.map((e) => e.finish())),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
+/**
  * One WebSocket == one voice session. Text frames are JSON control messages,
  * binary frames are raw PCM16 in both directions.
  */
@@ -32,9 +53,9 @@ export function handleSocket(ws: WebSocket): void {
    * never formally ended — closed tab, lost connection, crash — still leaves its
    * token counts on disk.
    */
-  const persist = () => {
-    if (!ledger || ledger.turnCount === 0) return;
-    void sessionStore.save(ledger.summary()).catch((err) => {
+  const persist = (): Promise<void> => {
+    if (!ledger || ledger.turnCount === 0) return Promise.resolve();
+    return sessionStore.save(ledger.summary()).catch((err) => {
       console.error(`[${socketId}] failed to persist session:`, err);
     });
   };
@@ -235,15 +256,26 @@ export function handleSocket(ws: WebSocket): void {
     }
   });
 
-  ws.on('close', async () => {
-    await session?.close();
-    session = undefined;
-    // A closed tab still gets its audio filed, the same way it still gets billed.
-    await closeRecording();
-    // The socket is gone, so the summary cannot be delivered — but it is still filed.
-    persist();
-    ledger = undefined;
-    console.log(`[${socketId}] socket closed`);
+  let finished: Promise<void> | undefined;
+  const finish = (): Promise<void> => {
+    finished ??= (async () => {
+      await session?.close();
+      session = undefined;
+      // A closed tab still gets its audio filed, the same way it still gets billed.
+      await closeRecording();
+      // The socket is gone, so the summary cannot be delivered — but it is still filed.
+      await persist();
+      ledger = undefined;
+      live.delete(entry);
+      console.log(`[${socketId}] socket closed`);
+    })();
+    return finished;
+  };
+  const entry = { ws, finish };
+  live.add(entry);
+
+  ws.on('close', () => {
+    void finish();
   });
 
   ws.on('error', (err) => console.error(`[${socketId}] socket error:`, err));

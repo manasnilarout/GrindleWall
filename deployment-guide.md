@@ -114,7 +114,7 @@ bake keys into an image.** Pass them at run time:
 | `SESSION_AUDIO_MAX_MINUTES` | `60` | Cap on one recording. Stereo PCM16 @ 24 kHz is ~5.8 MB per recorded minute. |
 | `SESSION_MAX_RECORDS` | unset (keep all) | Prune oldest conversations when set to a positive integer. |
 | `CARTESIA_USD_PER_CREDIT` | `0.00005` | Cartesia credit → USD. |
-| `USD_PER_INR` | `0.0113` | Assumed FX, not a feed. Travels in every session summary. |
+| `USD_PER_INR` | `1/94.43` (~0.01059) | Assumed FX, not a feed. Travels in every session summary. Unset uses that default. |
 
 Vendor keys — set only those you use. A missing key leaves that provider
 **not ready** in `/api/catalog`; it does not fail the process.
@@ -328,7 +328,7 @@ curl -fsS https://bench.example.com/api/health
 curl -fsS -o /dev/null -w '%{http_code}\n' https://bench.example.com/
 
 # catalog is JSON and lists mock providers as ready
-curl -fsS https://bench.example.com/api/catalog | grep -E '"id": "mock-'
+curl -fsS https://bench.example.com/api/catalog | grep -E '"id": ?"mock-'
 
 # WebSocket upgrade (should be 101; needs wscat or similar)
 # npx wscat -c wss://bench.example.com/ws/session

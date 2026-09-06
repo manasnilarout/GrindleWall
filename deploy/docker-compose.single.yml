@@ -18,6 +18,7 @@ services:
     image: grindelwald:local
     restart: unless-stopped
     init: true
+    stop_grace_period: 15s
     env_file:
       - .env
     environment:

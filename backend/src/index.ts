@@ -15,7 +15,7 @@ import {
 } from './auth.js';
 import { catalogWithReadiness } from './providers/catalog.js';
 import { registeredIds } from './providers/factory.js';
-import { handleSocket } from './server/session-socket.js';
+import { drainLiveSockets, handleSocket } from './server/session-socket.js';
 import { CANONICAL_SAMPLE_RATE } from './shared/protocol.js';
 import { sessionStore } from './store/SessionStore.js';
 import { FX_CHECKED_ON, inrPerUsd, rateTable, usdPerInr } from './pricing/rates.js';
@@ -274,6 +274,19 @@ const onListen = (): void => {
 if (config.host) server.listen(config.port, config.host, onListen);
 else server.listen(config.port, onListen);
 
+let shuttingDown = false;
+function shutdown(signal: NodeJS.Signals): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`received ${signal}, draining sessions`);
+  server.close();
+  void drainLiveSockets(8_000)
+    .catch((err) => console.error('drain failed:', err))
+    .finally(() => process.exit(0));
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 /**
  * Production UI: hashed Vite assets under /assets, everything else from the
  * build directory, SPA fallback to index.html. API and WebSocket paths stay
@@ -285,7 +298,10 @@ function serveUi(app: express.Express, dir: string): void {
   if (!existsSync(index)) {
     throw new Error(`STATIC_DIR ${root} does not contain index.html`);
   }
-  app.use('/assets', express.static(join(root, 'assets'), { maxAge: '365d', immutable: true }));
+  app.use(
+    '/assets',
+    express.static(join(root, 'assets'), { maxAge: '365d', immutable: true, fallthrough: false }),
+  );
   app.use(
     express.static(root, {
       index: false,
