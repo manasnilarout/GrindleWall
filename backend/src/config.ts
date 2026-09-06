@@ -2,6 +2,11 @@ import 'dotenv/config';
 
 export const config = {
   port: Number(process.env.PORT ?? 8787),
+  /**
+   * Bind address. Unset locally so Node keeps its dual-stack default. Containers
+   * set `HOST=0.0.0.0` so the published port and compose DNS can reach it.
+   */
+  host: process.env.HOST || undefined,
   /** Comma-separated origins allowed to talk to this server. */
   corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:5173').split(',').map((s) => s.trim()),
   logAudio: process.env.LOG_AUDIO === '1',

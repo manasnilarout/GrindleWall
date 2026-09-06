@@ -114,7 +114,7 @@ function requireFrom<T>(registry: Map<string, T>, id: string | undefined, kind: 
   }
   const missing = entry.envKeys.filter((k) => !process.env[k]);
   if (missing.length) {
-    throw new ProviderError(`${entry.name} needs ${missing.join(', ')} in backend/.env`);
+    throw new ProviderError(`${entry.name} needs ${missing.join(', ')} in the environment`);
   }
   return impl;
 }

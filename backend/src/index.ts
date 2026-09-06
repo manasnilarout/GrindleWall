@@ -176,12 +176,15 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws/session' });
 wss.on('connection', handleSocket);
 
-server.listen(config.port, () => {
-  console.log(`backend listening on http://localhost:${config.port}`);
-  console.log(`  ws  ws://localhost:${config.port}/ws/session`);
+const onListen = (): void => {
+  const where = `${config.host ?? 'localhost'}:${config.port}`;
+  console.log(`backend listening on http://${where}`);
+  console.log(`  ws  ws://${where}/ws/session`);
   if (config.staticDir) console.log(`  ui  ${config.staticDir}`);
   console.log(`  registered:`, registeredIds());
-});
+};
+if (config.host) server.listen(config.port, config.host, onListen);
+else server.listen(config.port, onListen);
 
 /**
  * Production UI: hashed Vite assets under /assets, everything else from the
@@ -195,12 +198,20 @@ function serveUi(app: express.Express, dir: string): void {
     throw new Error(`STATIC_DIR ${root} does not contain index.html`);
   }
   app.use('/assets', express.static(join(root, 'assets'), { maxAge: '365d', immutable: true }));
-  app.use(express.static(root, { index: false, maxAge: '1h' }));
+  app.use(
+    express.static(root, {
+      index: false,
+      setHeaders(res, filePath) {
+        if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+      },
+    }),
+  );
   app.get('*', (req, res) => {
     if (req.path === '/api' || req.path.startsWith('/api/') || req.path.startsWith('/ws')) {
       res.status(404).json({ error: 'Not found' });
       return;
     }
+    res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(index);
   });
 }

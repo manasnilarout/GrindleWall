@@ -13,11 +13,12 @@ RUN npm run build
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY backend/package.json backend/package-lock.json ./
-RUN npm ci
+RUN npm ci --omit=dev
 
 FROM node:22-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
     PORT=8080 \
     STATIC_DIR=/app/ui \
     SESSION_DIR=/data/sessions
@@ -34,4 +35,6 @@ EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=3s --start-period=25s --retries=5 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 
-CMD ["npx", "tsx", "src/index.ts"]
+# node is PID 1 so SIGTERM from Cloud Run / docker stop reaches the process.
+# `tsx` is a runtime dependency — do not switch this stage to omit it.
+CMD ["node", "--import", "tsx", "src/index.ts"]

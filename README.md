@@ -27,6 +27,12 @@ cd backend && npm install && cp .env.example .env && npm run dev
 cd frontend && npm install && npm run dev     # http://localhost:5173
 ```
 
+Docker (one public port, production build): see `deployment-guide.md`.
+
+```bash
+cd deploy && cp .env.example .env && docker compose up --build   # http://localhost:8080
+```
+
 Ships with mock providers for every slot, so it works end to end with **no API keys**:
 click **Connect**, then **Start mic**, or just type a turn. You'll hear synthetic beeps and get real
 latency numbers for the transport.

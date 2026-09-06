@@ -1,10 +1,14 @@
 # Single-container stack: one process serves the UI, /api, and /ws/session.
 # From this directory:
-#   cp .env.example .env    # optional — mocks work with empty keys
+#   cp .env.example .env    # required by env_file; empty keys use mocks
 #   docker compose -f docker-compose.single.yml up --build
 # UI: http://localhost:8080
+#
+# Project name is grindelwald-single so this can sit beside the two-service
+# stack without colliding on the compose project. They still both default to
+# host port 8080 — change HTTP_PORT on one of them if you run both.
 
-name: grindelwald
+name: grindelwald-single
 
 services:
   grindelwald:
@@ -15,9 +19,9 @@ services:
     restart: unless-stopped
     init: true
     env_file:
-      - path: .env
-        required: false
+      - .env
     environment:
+      HOST: "0.0.0.0"
       PORT: "8080"
       STATIC_DIR: /app/ui
       SESSION_DIR: /data/sessions

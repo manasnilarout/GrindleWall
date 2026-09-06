@@ -1,0 +1,28 @@
+# All-in-one image for Cloud Run / Artifact Registry.
+# From the repository root:
+#   gcloud builds submit --config deploy/cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_REPO=grindelwald
+#
+# PROJECT_ID is supplied by Cloud Build. Create the Artifact Registry repo
+# first (`gcloud artifacts repositories create …`).
+
+substitutions:
+  _REGION: us-central1
+  _REPO: grindelwald
+  _IMAGE_NAME: grindelwald
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - deploy/Dockerfile
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE_NAME}
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE_NAME}
+
+options:
+  logging: CLOUD_LOGGING_ONLY

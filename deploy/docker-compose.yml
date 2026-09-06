@@ -1,8 +1,12 @@
 # Two-service stack: nginx (UI + reverse proxy) → backend (API + WebSocket).
 # From this directory:
-#   cp .env.example .env    # optional — mocks work with empty keys
+#   cp .env.example .env    # required by env_file; empty keys use mocks
 #   docker compose up --build
 # UI: http://localhost:8080
+#
+# Do not run this and docker-compose.single.yml at the same time — they both
+# want host port 8080. This project is `grindelwald`; the single-container
+# file is `grindelwald-single`.
 #
 # Browser getUserMedia needs a secure context. http://localhost is allowed;
 # any other host needs HTTPS in front (see deployment-guide.md).
@@ -18,9 +22,9 @@ services:
     restart: unless-stopped
     init: true
     env_file:
-      - path: .env
-        required: false
+      - .env
     environment:
+      HOST: "0.0.0.0"
       PORT: "8787"
       SESSION_DIR: /data/sessions
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
@@ -53,7 +57,7 @@ services:
     ports:
       - "${HTTP_PORT:-8080}:80"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/api/health"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/api/health | grep -q '\"ok\":true'"]
       interval: 15s
       timeout: 3s
       retries: 5
