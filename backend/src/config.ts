@@ -25,6 +25,20 @@ export const config = {
    * while the warning shown to the user quoted the junk back verbatim.
    */
   recordAudioMaxMinutes: sanePositive(process.env.SESSION_AUDIO_MAX_MINUTES, 60),
+  /**
+   * Naive login. Both AUTH_PASSWORD and AUTH_HMAC_SECRET must be set to turn
+   * the gate on — unset, the bench stays open so smoke and render-check keep
+   * working. The username is fixed in `auth.ts`, not here.
+   */
+  authPassword: process.env.AUTH_PASSWORD ?? '',
+  /**
+   * HMAC key the login page is handed so the password itself never crosses
+   * the wire. Served on GET /api/auth/config; the backend recomputes the same
+   * digest of `authPassword` and compares. Not encryption — HMAC is one-way.
+   */
+  authHmacSecret: process.env.AUTH_HMAC_SECRET ?? '',
+  /** How long a UI/API session lasts after a successful login. Default 3 hours. */
+  authSessionTtlMs: Math.round(sanePositive(process.env.AUTH_SESSION_HOURS, 3) * 3_600_000),
 };
 
 function sanePositive(raw: string | undefined, fallback: number): number {

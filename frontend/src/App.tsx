@@ -26,12 +26,53 @@ import { ComparePage } from './components/ComparePage';
 import { Console } from './components/Console';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Icon, PanelIcon } from './components/Icon';
+import { LoginPage } from './components/LoginPage';
+import { useAuth } from './hooks/useAuth';
 
 const DEFAULT_PROMPT = 'You are a voice assistant. Answer in one or two short sentences. Never use lists or markdown.';
 
 type View = 'bench' | 'compare';
 
 export default function App() {
+  const auth = useAuth();
+
+  if (auth.status === 'loading') {
+    return (
+      <div className="app login-app">
+        <header className="topbar">
+          <span className="brand">
+            <img className="brand-logo" src="/magickvoice-logo.png" alt="MagickVoice" />
+            <span className="brand-copy">
+              <span className="brand-name">Grindelwald</span>
+              <span className="brand-byline">powered by MagickVoice</span>
+            </span>
+          </span>
+        </header>
+      </div>
+    );
+  }
+
+  if (auth.status === 'login') {
+    return (
+      <LoginPage
+        username={auth.username}
+        sessionTtlMs={auth.sessionTtlMs}
+        error={auth.error}
+        onSubmit={auth.signIn}
+      />
+    );
+  }
+
+  return <Bench onLogout={auth.required ? auth.signOut : undefined} username={auth.session?.username} />;
+}
+
+export function Bench({
+  onLogout,
+  username,
+}: {
+  onLogout?: () => void;
+  username?: string;
+}) {
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [catalogError, setCatalogError] = useState<string>();
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_PROMPT);
@@ -197,6 +238,19 @@ export default function App() {
         <span className="muted small">24 kHz PCM16</span>
         <span className={`badge ${session.state}`}>{session.state}</span>
         {session.sessionId && <code className="mono muted small">{session.sessionId.slice(0, 12)}</code>}
+        {username && <span className="muted small">{username}</span>}
+        {onLogout && (
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              void session.disconnect();
+              void onLogout();
+            }}
+          >
+            Sign out
+          </button>
+        )}
       </header>
 
       {catalogError && <div className="banner error">Cannot reach the backend: {catalogError}</div>}

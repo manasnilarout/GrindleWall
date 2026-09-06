@@ -3,6 +3,7 @@ import type { DerivedMetrics, MetricMark, ServerMessage, SessionSummary, StartCo
 import { MicRecorder } from '../audio/recorder';
 import { AudioSink } from '../audio/player';
 import { MARK_NOTE, sourceOfMark, sourceOfMessage, type LogSource } from '../lib/logsource';
+import { sessionWsUrl } from '../lib/auth';
 
 /** 'ending' is the window between asking for the bill and the summary arriving. */
 export type ConnState = 'idle' | 'connecting' | 'ready' | 'ending' | 'error' | 'closed' | 'ended';
@@ -64,9 +65,10 @@ export interface Utterance {
  * Resolved on connect rather than at module load. A browser global read while
  * the module is being evaluated makes the whole file unimportable outside a
  * browser, which takes `render-check` — the only thing in this project that
- * actually proves a component renders — down with it.
+ * actually proves a component renders — down with it. The session token is
+ * appended here so a gated backend can authorize the upgrade.
  */
-const wsUrl = (): string => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/session`;
+const wsUrl = (): string => sessionWsUrl();
 
 /** How long to wait for a summary before letting the user move on. */
 const END_TIMEOUT_MS = 8000;

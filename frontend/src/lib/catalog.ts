@@ -1,3 +1,5 @@
+import { authFetch } from './auth';
+
 export type ProviderKind = 'realtime' | 'stt' | 'llm' | 'tts';
 
 export interface ModelEntry {
@@ -99,7 +101,7 @@ export function languagesFor(
 }
 
 export async function fetchCatalog(): Promise<CatalogResponse> {
-  const res = await fetch('/api/catalog');
+  const res = await authFetch('/api/catalog');
   if (!res.ok) throw new Error(`Catalog request failed: ${res.status}`);
   return res.json();
 }

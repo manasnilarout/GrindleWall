@@ -13,10 +13,12 @@
  *   TTS=sarvam-tts TTS_MODEL=bulbul:v3 VOICE=shubh LANG_CODE=en-IN \
  *   node scripts/smoke.mjs pipeline
  */
+import { createHmac } from 'node:crypto';
 import WebSocket from 'ws';
 
 const MODE = process.argv[2] ?? 'pipeline';
-const URL = process.env.WS_URL ?? 'ws://127.0.0.1:8787/ws/session';
+const BASE_URL = process.env.WS_URL ?? 'ws://127.0.0.1:8787/ws/session';
+const AUTH_USERNAME = 'admin@magickvoice.com';
 
 const env = process.env;
 const PROMPT = env.PROMPT ?? 'Answer in one short sentence: how fast are you?';
@@ -77,7 +79,31 @@ for (const [prov, model, label] of [
   }
 }
 
-const ws = new WebSocket(URL);
+/**
+ * When AUTH_PASSWORD is set the socket is gated. HMAC the password the same
+ * way the login page does and pass the issued token as `?token=`.
+ */
+async function sessionUrl() {
+  const password = env.AUTH_PASSWORD;
+  const secret = env.AUTH_HMAC_SECRET;
+  if (!password || !secret) return BASE_URL;
+  const hmac = createHmac('sha256', secret).update(password, 'utf8').digest('hex');
+  const api = (env.API_URL ?? 'http://127.0.0.1:8787') + '/api/auth/login';
+  const res = await fetch(api, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: AUTH_USERNAME, hmac }),
+  });
+  if (!res.ok) {
+    console.error(`FAIL: login returned HTTP ${res.status}`);
+    process.exit(1);
+  }
+  const { token } = await res.json();
+  const join = BASE_URL.includes('?') ? '&' : '?';
+  return `${BASE_URL}${join}token=${encodeURIComponent(token)}`;
+}
+
+const ws = new WebSocket(await sessionUrl());
 const seen = { audioFrames: 0, audioBytes: 0, transcripts: [], metrics: null, started: null, usage: null, summary: null };
 
 const fail = (msg) => {
