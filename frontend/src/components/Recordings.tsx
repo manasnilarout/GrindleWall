@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { SessionSummary } from '../lib/protocol';
 import { PanelIcon } from './Icon';
+import { sessionAudioUrl } from '../lib/auth';
 
 /**
  * Playback for the conversations being compared. One stereo file per run:
@@ -68,7 +69,7 @@ export function Recordings({ runs }: { runs: SessionSummary[] }) {
                 // missing without pulling megabytes per row.
                 preload="metadata"
                 aria-label={`Recording of ${run.label}`}
-                src={`/api/sessions/${encodeURIComponent(run.recordId)}/audio`}
+                src={sessionAudioUrl(run.recordId)}
                 onError={() => setMissing((prev) => ({ ...prev, [run.recordId]: true }))}
               />
             )}

@@ -7,9 +7,11 @@
  */
 import { renderToString } from 'react-dom/server';
 import { createElement as h } from 'react';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { SessionSummary } from '../src/lib/protocol';
-import App from '../src/App';
+import App, { Bench } from '../src/App';
+import { LoginPage } from '../src/components/LoginPage';
 import { SessionReport } from '../src/components/SessionReport';
 import { UsagePanel } from '../src/components/UsagePanel';
 import { ComparePage } from '../src/components/ComparePage';
@@ -844,7 +846,18 @@ check('summarize matches the backend median on an even count', () => {
 
 // The whole app, shell only — effects do not run server-side, so this catches
 // the class of failure that takes the page down before anything is fetched.
-check('App (shell)', () => renderToString(h(App)), ['Grindelwald', 'powered by MagickVoice', 'Console']);
+// App now gates on login (auth config is fetched in an effect), so the SSR
+// shell is the splash; the bench itself is `Bench`.
+check('App (shell)', () => renderToString(h(App)), ['Grindelwald', 'powered by MagickVoice']);
+check('Bench (shell)', () => renderToString(h(Bench, {})), ['Grindelwald', 'powered by MagickVoice', 'Console']);
+check('Bench (signed in)', () => renderToString(h(Bench, {
+  onLogout: () => {},
+  username: 'admin@magickvoice.com',
+})), ['Sign out', 'admin@magickvoice.com']);
+check('LoginPage', () => renderToString(h(LoginPage, {
+  username: 'admin@magickvoice.com',
+  sessionTtlMs: 3 * 60 * 60 * 1000,
+})), ['Sign in', 'admin@magickvoice.com', 'Password', 'session lasts']);
 
 /* --------------------- against the real catalog ------------------------ */
 /**
@@ -860,14 +873,60 @@ check('App (shell)', () => renderToString(h(App)), ['Grindelwald', 'powered by M
  */
 const CATALOG_URL = process.env.CATALOG_URL ?? 'http://localhost:8787/api/catalog';
 
+/**
+ * The backend's `.env` is what arms the gate. This script is launched from
+ * `frontend/`, so AUTH_* are not in `process.env` unless we read that file.
+ * Missing them against a gated backend used to 401 and get reported as
+ * "start the backend" — the backend was up; we just had no token.
+ */
+function loadBackendEnv(): void {
+  const path = resolve(process.cwd(), '..', 'backend', '.env');
+  if (!existsSync(path)) return;
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq);
+    const value = trimmed.slice(eq + 1);
+    if (process.env[key] === undefined) process.env[key] = value;
+  }
+}
+
+async function catalogHeaders(): Promise<HeadersInit> {
+  loadBackendEnv();
+  const password = process.env.AUTH_PASSWORD;
+  const secret = process.env.AUTH_HMAC_SECRET;
+  if (!password || !secret) return {};
+  const { createHmac } = await import('node:crypto');
+  const hmac = createHmac('sha256', secret).update(password, 'utf8').digest('hex');
+  const loginUrl = (process.env.API_URL ?? 'http://localhost:8787') + '/api/auth/login';
+  const res = await fetch(loginUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'admin@magickvoice.com', hmac }),
+    signal: AbortSignal.timeout(2500),
+  });
+  if (!res.ok) throw new Error(`login HTTP ${res.status}`);
+  const { token } = (await res.json()) as { token?: string };
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 const againstRealCatalog = async () => {
   let providers: ProviderEntry[];
   try {
-    const res = await fetch(CATALOG_URL, { signal: AbortSignal.timeout(2500) });
+    const res = await fetch(CATALOG_URL, { signal: AbortSignal.timeout(2500), headers: await catalogHeaders() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     providers = ((await res.json()) as { providers: ProviderEntry[] }).providers;
   } catch (err) {
-    console.log(`\n  skip live catalog (${CATALOG_URL}: ${(err as Error).message}) — start the backend to include it`);
+    const detail = (err as Error).message;
+    const gated = /HTTP 401|login HTTP/.test(detail);
+    console.log(
+      `\n  skip live catalog (${CATALOG_URL}: ${detail}) — ` +
+        (gated
+          ? 'backend is gated; set AUTH_PASSWORD and AUTH_HMAC_SECRET'
+          : 'start the backend to include it'),
+    );
     return;
   }
 

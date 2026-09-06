@@ -32,6 +32,7 @@ Verification scripts, all in `backend/`:
 | Command | Needs a key | What it proves |
 |---|---|---|
 | `npm run smoke` | no | one full turn over the real WS protocol, both modes (needs `npm run dev` running) |
+| `npm run auth:selftest` | no | HMAC construction, login verify, session TTL/revoke, token extraction — the naive login layer |
 | `npm run gemini:selftest` | no | Gemini SSE/wire handling against a local fake |
 | `npm run usage:selftest` | no | cost arithmetic, persistence, secret redaction — vs hand-computed vendor denominations |
 | `npm run turn:selftest` | no | turn attribution: silence, barge-in, overlapping turns, TTS failure, tails |
