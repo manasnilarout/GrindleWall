@@ -13,6 +13,7 @@
  *   TTS=sarvam-tts TTS_MODEL=bulbul:v3 VOICE=shubh LANG_CODE=en-IN \
  *   node scripts/smoke.mjs pipeline
  */
+import 'dotenv/config';
 import { createHmac } from 'node:crypto';
 import WebSocket from 'ws';
 
