@@ -9,7 +9,10 @@
 # file is `grindelwald-single`.
 #
 # Browser getUserMedia needs a secure context. http://localhost is allowed;
-# any other host needs HTTPS in front (see deployment-guide.md).
+# any other host needs HTTPS in front. For a public hostname, layer the TLS
+# overlay on top of this file:
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
+# See deployment-guide.md, "HTTPS on a VM".
 
 name: grindelwald
 
@@ -60,6 +63,12 @@ services:
         condition: service_healthy
     ports:
       - "${HTTP_PORT:-8080}:80"
+    volumes:
+      # The ACME HTTP-01 webroot, shared with the certbot container in the TLS
+      # overlay. It is mounted here too so the FIRST certificate can be issued
+      # while this plain-HTTP stack is serving — the TLS config cannot start
+      # until that certificate exists. Empty and unused otherwise.
+      - certbot-webroot:/var/www/certbot:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/api/health | grep -q '\"ok\":true'"]
       interval: 15s
@@ -69,3 +78,4 @@ services:
 
 volumes:
   session-data:
+  certbot-webroot:

@@ -1,0 +1,75 @@
+# TLS overlay for grindelwald.magickvoice.com. Layers on docker-compose.yml —
+# it is not standalone:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
+#
+# It swaps nginx onto nginx.https.conf (443 + a redirect on 80), adds a
+# certbot container that renews the certificate, and points the backend's
+# allowed origin at the public URL.
+#
+# Two things must be true before this will start:
+#   - DNS for grindelwald.magickvoice.com points at this host, with ports 80
+#     and 443 reachable from the internet. ACME HTTP-01 validates on port 80,
+#     so this file publishes it whatever HTTP_PORT says.
+#   - a certificate already exists in the `letsencrypt` volume. nginx will
+#     not start without one. deployment-guide.md, "HTTPS on a VM", issues it
+#     under the plain-HTTP stack first.
+
+services:
+  backend:
+    environment:
+      # Same-origin through nginx does not use CORS at all; this only matters
+      # if something calls the API from another origin. A CORS_ORIGINS left in
+      # .env overrides this — check it is not still http://localhost:8080.
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://grindelwald.magickvoice.com}
+
+  frontend:
+    ports:
+      # Port 80 is published here rather than left to HTTP_PORT: renewal is
+      # HTTP-01 and dies silently without it — the site keeps serving HTTPS
+      # for another 60 days and then expires. Compose dedupes this against the
+      # base's ${HTTP_PORT:-8080}:80 when HTTP_PORT=80, and simply publishes
+      # both host ports when it is not.
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Read-only, so the image's 10-listen-on-ipv6-by-default.sh logs that it
+      # cannot edit this file on startup. Harmless: that script only strips
+      # `listen [::]` on hosts without IPv6, and it says so as info, not error.
+      - ./nginx.https.conf:/etc/nginx/conf.d/default.conf:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot-webroot:/var/www/certbot:ro
+    healthcheck:
+      # Port 80 answers 301 now, so health is asked over TLS. The certificate
+      # is for the public name, not 127.0.0.1, hence --no-check-certificate on
+      # a request that never leaves the container.
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-check-certificate -qO- https://127.0.0.1/api/health | grep -q '\"ok\":true'",
+        ]
+
+  certbot:
+    image: certbot/certbot:latest
+    restart: unless-stopped
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    # `certbot renew` is a no-op until the certificate is inside 30 days of
+    # expiry, so twice a day is the shape Let's Encrypt asks for, not a retry
+    # storm. Not --quiet: this container's log is the only place an operator
+    # can see that renewal is alive, and "no renewals were attempted" twice a
+    # day is worth more than a silent loop. nginx only re-reads the
+    # certificate on reload — see the cron line in deployment-guide.md.
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        trap exit TERM
+        while :; do
+          certbot renew --webroot -w /var/www/certbot
+          sleep 12h & wait $${!}
+        done
+
+volumes:
+  letsencrypt:
