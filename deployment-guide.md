@@ -300,16 +300,23 @@ docker compose -f docker-compose.yml -f docker-compose.https.yml \
   --email ops@magickvoice.com --agree-tos --no-eff-email
 ```
 
-Use an address you actually read — it is where expiry warnings go — and one
-on a real domain; reserved example domains are not always accepted as ACME
-contacts.
+Use a real address on a real domain — reserved example domains are not always
+accepted as ACME contacts. Do not treat it as an expiry alarm, though: Let's
+Encrypt stopped sending certificate-expiration emails in June 2025, so this
+address now only gets the occasional policy or security notice. Nothing will
+tell you the certificate is about to lapse. Watch the expiry date yourself —
+the `openssl x509 -noout -dates` one-liner in step 4 below is what to point a
+monitor at.
 
 Rehearse it first by adding `--dry-run` (anywhere after `certonly`): that
 runs the whole path against the staging CA and issues nothing, so a mistake
 costs no rate limit. Then drop the flag and run it again for the real
-certificate. If it fails, the error is in the command's own output and in
-`/var/log/letsencrypt/letsencrypt.log` inside that throwaway container — add
-`-v` to the command to see it on stdout instead.
+certificate. If it fails, the error is on stdout — and that is the only place
+it survives. certbot's last line points you at
+`/var/log/letsencrypt/letsencrypt.log`, but ignore it: `--rm` deletes the
+container and neither mounted volume covers `/var/log`. Re-run with `-vv`
+instead (certbot suggests `-v`; that adds one line, `-vv` is what reaches
+debug level) and you get the traceback and the raw ACME error on stdout.
 
 The result lands in the `grindelwald_letsencrypt` volume as
 `/etc/letsencrypt/live/grindelwald.magickvoice.com/{fullchain,privkey}.pem` —
