@@ -6,6 +6,13 @@ import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { config, redactSecrets } from './config.js';
+import {
+  AUTH_USERNAME,
+  authEnabled,
+  SessionBook,
+  tokenFromRequest,
+  verifyLogin,
+} from './auth.js';
 import { catalogWithReadiness } from './providers/catalog.js';
 import { registeredIds } from './providers/factory.js';
 import { handleSocket } from './server/session-socket.js';
@@ -17,12 +24,77 @@ const app = express();
 app.use(cors({ origin: config.corsOrigins }));
 app.use(express.json());
 
+const sessions = new SessionBook(config.authSessionTtlMs);
+
+function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (!authEnabled()) {
+    next();
+    return;
+  }
+  if (sessions.get(tokenFromRequest(req))) {
+    next();
+    return;
+  }
+  res.status(401).json({ error: 'Unauthorized' });
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, sampleRate: CANONICAL_SAMPLE_RATE, registered: registeredIds() });
 });
 
+/**
+ * HMAC secret the login page HMACs the password with. Public on purpose —
+ * the password itself is what is secret; this key just keeps it off the wire.
+ */
+app.get('/api/auth/config', (_req, res) => {
+  const required = authEnabled();
+  res.json({
+    required,
+    username: AUTH_USERNAME,
+    sessionTtlMs: config.authSessionTtlMs,
+    ...(required ? { hmacSecret: config.authHmacSecret } : {}),
+  });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!authEnabled()) {
+    res.status(503).json({ error: 'Login is not configured (set AUTH_PASSWORD and AUTH_HMAC_SECRET)' });
+    return;
+  }
+  const username = typeof req.body?.username === 'string' ? req.body.username : '';
+  const hmac = typeof req.body?.hmac === 'string' ? req.body.hmac : '';
+  const ok = verifyLogin(
+    { username, hmac },
+    { username: AUTH_USERNAME, password: config.authPassword, hmacSecret: config.authHmacSecret },
+  );
+  if (!ok) {
+    res.status(401).json({ error: 'Invalid credentials' });
+    return;
+  }
+  res.json(sessions.create(username));
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const token = tokenFromRequest(req);
+  if (token) sessions.revoke(token);
+  res.json({ ok: true });
+});
+
+app.get('/api/auth/session', (req, res) => {
+  if (!authEnabled()) {
+    res.json({ required: false, session: null });
+    return;
+  }
+  const session = sessions.get(tokenFromRequest(req));
+  if (!session) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  res.json({ required: true, session });
+});
+
 /** Everything the frontend needs to render its provider/model toggles. */
-app.get('/api/catalog', (_req, res) => {
+app.get('/api/catalog', requireAuth, (_req, res) => {
   const registered = registeredIds();
   const all = new Set([...registered.realtime, ...registered.stt, ...registered.llm, ...registered.tts]);
   res.json({
@@ -36,7 +108,7 @@ app.get('/api/catalog', (_req, res) => {
  * date each was read. Surfaced so a number in the UI can always be traced back
  * to a vendor page rather than taken on faith.
  */
-app.get('/api/pricing', (_req, res) => {
+app.get('/api/pricing', requireAuth, (_req, res) => {
   res.json({ usdPerInr, inrPerUsd, fxCheckedOn: FX_CHECKED_ON, rates: rateTable() });
 });
 
@@ -60,6 +132,7 @@ const route =
 /** Completed conversations, newest first. */
 app.get(
   '/api/sessions',
+  requireAuth,
   route(async (_req, res) => {
     res.json({ sessions: await sessionStore.list() });
   }),
@@ -67,6 +140,7 @@ app.get(
 
 app.get(
   '/api/sessions/:id',
+  requireAuth,
   route(async (req, res) => {
     const summary = await sessionStore.get(req.params.id);
     if (!summary) {
@@ -114,6 +188,7 @@ function sendFile(res: express.Response, stream: ReturnType<typeof createReadStr
  */
 app.get(
   '/api/sessions/:id/audio',
+  requireAuth,
   route(async (req, res) => {
     let path: string;
     try {
@@ -174,7 +249,13 @@ if (config.staticDir) serveUi(app, config.staticDir);
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws/session' });
-wss.on('connection', handleSocket);
+wss.on('connection', (ws, req) => {
+  if (authEnabled() && !sessions.get(tokenFromRequest(req))) {
+    ws.close(4401, 'unauthorized');
+    return;
+  }
+  handleSocket(ws);
+});
 
 const onListen = (): void => {
   const where = `${config.host ?? 'localhost'}:${config.port}`;
@@ -182,6 +263,13 @@ const onListen = (): void => {
   console.log(`  ws  ws://${where}/ws/session`);
   if (config.staticDir) console.log(`  ui  ${config.staticDir}`);
   console.log(`  registered:`, registeredIds());
+  if (config.authPassword && !config.authHmacSecret) {
+    console.warn('  auth: AUTH_PASSWORD is set but AUTH_HMAC_SECRET is not — login gate is off');
+  } else if (config.authHmacSecret && !config.authPassword) {
+    console.warn('  auth: AUTH_HMAC_SECRET is set but AUTH_PASSWORD is not — login gate is off');
+  } else if (authEnabled()) {
+    console.log(`  auth: required (session ${Math.round(config.authSessionTtlMs / 3_600_000)}h)`);
+  }
 };
 if (config.host) server.listen(config.port, config.host, onListen);
 else server.listen(config.port, onListen);

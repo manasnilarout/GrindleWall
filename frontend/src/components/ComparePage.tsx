@@ -7,6 +7,7 @@ import { downloadJson } from '../lib/download';
 import { LegBars } from './Waterfall';
 import { Recordings } from './Recordings';
 import { Icon, PanelIcon } from './Icon';
+import { authFetch } from '../lib/auth';
 
 /**
  * Comparing runs — the thing this bench is for, and the one thing its UI could
@@ -79,7 +80,7 @@ export function ComparePage({ onOpenReport }: { onOpenReport: (s: SessionSummary
     // the verdicts kept the numbers from the first fetch, with no marker to
     // say which panel was stale.
     setLoaded({});
-    fetch('/api/sessions')
+    authFetch('/api/sessions')
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d: { sessions: SessionIndexEntry[] }) => {
         if (mine !== generation.current) return;
@@ -116,7 +117,7 @@ export function ComparePage({ onOpenReport }: { onOpenReport: (s: SessionSummary
     for (const id of selected) {
       if (loaded[id] || inFlight.current.has(id)) continue;
       inFlight.current.add(id);
-      void fetch(`/api/sessions/${encodeURIComponent(id)}`)
+      void authFetch(`/api/sessions/${encodeURIComponent(id)}`)
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((raw) => setLoaded((prev) => ({ ...prev, [id]: normalizeSummary(raw) })))
         // Its own message: one missing record file used to render as

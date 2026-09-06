@@ -27,6 +27,7 @@
     "sarvam": "TTS=sarvam-tts TTS_MODEL=bulbul:v3 STT=sarvam-stt STT_MODEL=saaras:v3-realtime@fast VOICE=shubh LANG_CODE=en-IN tsx scripts/roundtrip.ts",
     "smoke": "node scripts/smoke.mjs pipeline && node scripts/smoke.mjs realtime",
     "start": "tsx src/index.ts",
+    "auth:selftest": "tsx scripts/auth-selftest.ts",
     "turn:selftest": "tsx scripts/turn-selftest.ts",
     "typecheck": "tsc --noEmit",
     "usage:selftest": "tsx scripts/usage-selftest.ts"

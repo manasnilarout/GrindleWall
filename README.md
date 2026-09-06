@@ -37,6 +37,11 @@ Ships with mock providers for every slot, so it works end to end with **no API k
 click **Connect**, then **Start mic**, or just type a turn. You'll hear synthetic beeps and get real
 latency numbers for the transport.
 
+An optional login gate sits in front of the UI. Set both `AUTH_PASSWORD` and `AUTH_HMAC_SECRET` in
+`backend/.env` to turn it on — username is always `admin@magickvoice.com`. Unset, the bench stays
+open. `npm run smoke` still works when the gate is on: it loads `.env` and signs in before opening
+the socket.
+
 ```bash
 cd backend
 npm run smoke            # one full turn over the real WS protocol, both modes

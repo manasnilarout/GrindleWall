@@ -104,6 +104,8 @@ bake keys into an image.** Pass them at run time:
 |---|---|---|
 | `PORT` | `8787` (backend image) / `8080` (all-in-one) | Listen port inside the container. Cloud hosts often inject this — keep it. Compose pins it; a raw `docker run --env-file` does not, so do not set `PORT=8787` in `.env` for the all-in-one image. |
 | `HOST` | `0.0.0.0` in the images | Bind address. Unset locally so Node keeps its dual-stack default. |
+| `AUTH_PASSWORD` / `AUTH_HMAC_SECRET` | unset (gate off) | Both required to turn the login gate on. Username is always `admin@magickvoice.com`. Sessions live in the process — a restart or a second replica signs people out. Run one instance (or rely on session affinity) if the gate is on. |
+| `AUTH_SESSION_HOURS` | `3` (capped at 24) | How long a UI session lasts after login. |
 | `STATIC_DIR` | unset / `/app/ui` in the all-in-one image | Directory of the Vite build. When set, Express serves the UI. |
 | `SESSION_DIR` | `/data/sessions` | JSON records + stereo WAVs. Mount a volume here. |
 | `CORS_ORIGINS` | `http://localhost:8080` | Comma-separated allowed origins. |
@@ -367,6 +369,7 @@ The `session-data` volume survives `up --build`; only `down -v` deletes it.
 | Disk fills | WAVs are ~5.8 MB/minute. Lower `SESSION_AUDIO_MAX_MINUTES` or set `SESSION_MAX_RECORDS`. |
 | CORS errors in the browser | You are calling the API from a different origin than `CORS_ORIGINS`. Same-origin through :8080 should not hit this. |
 | Container exits on boot: `STATIC_DIR … does not contain index.html` | You ran the backend image with `STATIC_DIR` set. That variable belongs on the all-in-one image only. |
+| Login page after a restart / second replica | Sessions are in-process. A replace invalidates tokens; two instances do not share the book. Set both `AUTH_PASSWORD` and `AUTH_HMAC_SECRET`, keep one replica, or leave them unset to keep the bench open. |
 
 ## Files in `deploy/`
 
