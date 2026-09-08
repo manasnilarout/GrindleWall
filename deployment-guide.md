@@ -287,6 +287,29 @@ That is the exact path ACME is about to take. If it fails, fix it now:
 Let's Encrypt allows 5 failed validations per hostname per hour, and burning
 them makes the next hour a waiting game.
 
+**The way it fails says where to look**, and the two causes have nothing to do
+with each other:
+
+- **`Connection refused`, in tens of milliseconds.** The packet reached the
+  host and nothing was listening. The firewall is already fine — this is
+  almost always `HTTP_PORT` still at its `8080` default, leaving nginx
+  published on the wrong host port. `docker compose ps` settles it: you want
+  `0.0.0.0:80->80/tcp`, not `0.0.0.0:8080->80/tcp`.
+- **A timeout, after seconds of nothing.** The packet was dropped, which is
+  what a closed security group does. Open 80 inbound.
+
+To confirm which you are looking at, compare port 80 against a port you know
+is closed — a fast refusal on 80 next to an 8-second timeout on 9999 proves
+the firewall is open and the container is the problem:
+
+```bash
+# a fast "Connection refused" is the container; a slow timeout is the firewall
+curl -sS -m 8 -o /dev/null -w 'port 80:   %{time_total}s\n' \
+  http://grindelwald.magickvoice.com/
+curl -sS -m 8 -o /dev/null -w 'port 9999: %{time_total}s\n' \
+  http://grindelwald.magickvoice.com:9999/
+```
+
 ### 3. Issue the certificate
 
 `certbot` writes the challenge into the `certbot-webroot` volume, which the
@@ -540,9 +563,40 @@ curl -fsS -o /dev/null -w '%{http_code}\n' https://grindelwald.magickvoice.com/
 # catalog is JSON and lists mock providers as ready
 curl -fsS https://grindelwald.magickvoice.com/api/catalog | grep -E '"id": ?"mock-'
 
-# WebSocket upgrade (should be 101; needs wscat or similar)
-# npx wscat -c wss://grindelwald.magickvoice.com/ws/session
+# WebSocket upgrade, without wscat. Expect "101 Switching Protocols"; curl
+# then holds the upgraded socket until -m fires, which is not a failure.
+curl -sS -m 5 -i --http1.1 \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  https://grindelwald.magickvoice.com/ws/session | head -1
 ```
+
+On a TLS deployment, four more — all from off the VM. The ACME line is the one
+worth keeping: a `301` there instead of `404` means the redirect has swallowed
+the challenge path and **renewal will fail in 60 days**, while the site looks
+perfectly healthy today.
+
+```bash
+# 80 redirects — but not the ACME challenge, which must stay on 80
+curl -sSI -m 8 http://grindelwald.magickvoice.com/ | head -1                  # 301
+curl -sS  -m 8 -o /dev/null -w '%{http_code}\n' \
+  http://grindelwald.magickvoice.com/.well-known/acme-challenge/probe         # 404
+
+# HSTS over TLS, and never over plain HTTP
+curl -sSI -m 8 https://grindelwald.magickvoice.com/ | grep -i strict-transport
+curl -sSI -m 8 http://grindelwald.magickvoice.com/  | grep -ci strict-transport   # 0
+
+# what is served, by whom, until when
+openssl s_client -connect grindelwald.magickvoice.com:443 \
+  -servername grindelwald.magickvoice.com </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+```
+
+With the login gate on (`AUTH_PASSWORD` and `AUTH_HMAC_SECRET` both set),
+`/api/catalog` answers `{"error":"Unauthorized"}` until you log in — that is
+the gate working, not a broken deployment, and the catalog check above will
+fail until you do. `/api/health` stays open, which is what makes it the right
+target for a monitor.
 
 In the browser, on HTTPS (or localhost):
 
@@ -577,6 +631,13 @@ visited it will refuse to fall back to `http://` — so this does not degrade
 the deployment to HTTP, it takes it **down**, with no click-through, until you
 re-run the command with both flags.
 
+The same applies to `docker compose down`. The `certbot` service is declared
+only in the overlay, so a bare `down` does not know it exists: it stops the
+app, leaves certbot running, and then cannot delete the network that container
+is still attached to — `! Network grindelwald_default  Resource is still in
+use`. The stack is down but an orphan keeps looping in the background. Pass
+both `-f` flags to `down` as well, or `docker compose down --remove-orphans`.
+
 Images do not include `deploy/.env` or `backend/.env`. Keys survive a rebuild.
 The `session-data` volume survives `up --build`; only `down -v` deletes it —
 and under the TLS overlay `down -v` also destroys `letsencrypt`, taking the
@@ -591,8 +652,10 @@ volume is declared in the overlay, so the blast radius follows the flags.)
 |---|---|
 | UI loads, **Connect** fails / console says backend :8787 | `/ws/session` is not reaching the backend. Check the proxy upgrade headers and that nothing strips `/ws`. |
 | **Start mic** denied or `getUserMedia` throws | The page is HTTP on a non-localhost host. Serve HTTPS. |
-| frontend container restarts, logs `cannot load certificate … no such file` | You started the TLS overlay before the certificate existed. Bring up the plain stack, issue it (step 3), then switch. |
-| ACME order fails on `Invalid response … 404` | Port 80 is not published (`HTTP_PORT=80` in `.env`) or not open in the firewall, or DNS still points elsewhere. `curl http://grindelwald.magickvoice.com/api/health` from off the VM. |
+| frontend container restarts, logs `cannot load certificate … no such file` | You started the TLS overlay before the certificate existed. nginx dies during startup, so **80 goes dead along with 443** — the site is unreachable rather than downgraded, and the restart loop means it may answer one request and refuse the next. Bring up the plain stack (`docker compose up -d`, no overlay flags), issue the certificate (step 3), then switch. |
+| ACME order fails on `Connection refused` | Nothing is listening on port 80 at all. Usually `HTTP_PORT` is still `8080`, so nginx is on the wrong host port; `docker compose ps` should read `0.0.0.0:80->80/tcp`. A *refusal* means the firewall is already open — a timeout is the firewall. See step 2. |
+| ACME order fails on `Invalid response … 404` | Something answered on port 80 but not with the challenge (a refusal would mean nothing is listening at all). Either the `certbot-webroot` volume is not shared with nginx — `nginx.conf` serves that path with `try_files … =404` — or DNS points at a different host. |
+| `docker compose down` warns `Network … Resource is still in use` | The overlay-only `certbot` container is still attached. Use both `-f` flags on `down`, or `--remove-orphans`. See [Updating](#updating). |
 | Browser warns the certificate expired | Renewal happened but nginx was never reloaded. Run the reload from step 5 by hand, then check `docker compose -f docker-compose.yml -f docker-compose.https.yml logs certbot`. |
 | Renewal never runs (`certbot` log shows failures, or the cert nears expiry) | Port 80 is not reachable — HTTP-01 renewal needs it just as issuance did. Rehearse with `run --rm --entrypoint certbot certbot renew --dry-run`. |
 | Site unreachable after a deploy, browser will not fall back to HTTP | `docker compose up -d` without both `-f` flags dropped nginx back to `nginx.conf`, and HSTS forbids the HTTP fallback. Re-run with both `-f` flags. See [Updating](#updating). |
