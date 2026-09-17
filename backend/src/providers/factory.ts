@@ -10,6 +10,7 @@ import { PipelineSession } from '../pipeline/PipelineSession.js';
 import { findProvider } from './catalog.js';
 import { MockRealtimeProvider } from './realtime/MockRealtimeProvider.js';
 import { OpenAiRealtimeProvider } from './realtime/OpenAiRealtimeProvider.js';
+import { NovaSonicProvider } from './realtime/NovaSonicProvider.js';
 import { MockSttProvider } from './stt/MockSttProvider.js';
 import { SarvamSttProvider } from './stt/SarvamSttProvider.js';
 import { CartesiaSttProvider } from './stt/CartesiaSttProvider.js';
@@ -46,6 +47,7 @@ export function registerTts(p: TtsProvider) { ttsRegistry.set(p.id, p); }
 
 registerRealtime(new MockRealtimeProvider());
 registerRealtime(new OpenAiRealtimeProvider());
+registerRealtime(new NovaSonicProvider());
 registerStt(new MockSttProvider());
 registerStt(new SarvamSttProvider());
 registerStt(new CartesiaSttProvider());

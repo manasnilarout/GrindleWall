@@ -884,6 +884,103 @@ worth probing.
   cannot be priced here. `gpt-5.6-sol` is also on promotional pricing through at least
   2026-11-21, with no published post-promo number to step to.
 
+## AWS Nova Sonic — wired end to end, and NOT yet verified
+
+Added 2026-09-17 as the third realtime provider. **It has never completed a call**, because this
+repo has no AWS credentials. That makes it the only implemented provider here whose request shape
+rests entirely on documentation, and this section exists so nobody mistakes "83 checks pass" for
+"it works".
+
+Read this next to the section above. Those five providers spent a day in exactly this state and
+every one of them was wrong about something — the docs and the schema disagreed on OpenAI's
+session shape, Murf refused its own documented host, Gemini's socket closed mid-turn. There is no
+reason to expect Nova Sonic to be the exception.
+
+### What is actually established
+
+| Claim | Evidence | Strength |
+|---|---|---|
+| The SDK path reaches Bedrock, signs with SigV4 and connects over HTTP/2 | ran it, 3x, 2026-09-17 | **measured** |
+| A bad key rejects `start()` rather than half-opening a session | same run: `UnrecognizedClientException`, HTTP 403 | **measured** |
+| `amazon.nova-2-sonic-v1:0` is the model id | model card + user guide + aws-samples — and **contradicted** by the API reference and the SDK's own JSDoc, which both still say only `amazon.nova-sonic-v1:0` is supported | doc-derived, **and disputed** |
+| 16 voices, 7 languages, the ids and their locales | Nova 2 language-support page | doc-derived |
+| Input 16 kHz / output 24 kHz PCM16 | enum allows 8/16/24 kHz; every AWS sample uses 16 kHz in, 24 kHz out | doc-derived |
+| Two barge-in signals: `contentEnd.stopReason: "INTERRUPTED"` and the literal text `{ "interrupted" : true }` | both appear in AWS's own sample handlers | doc-derived |
+| `usageEvent` splits `speechTokens` from `textTokens` | output-events page | doc-derived |
+| Per-region pricing, us-east-1 $3.00/$12.00 speech, $0.33/$2.75 text per 1M | the JSON feed behind the Bedrock pricing page, read 2026-09-17 | doc-derived, never reconciled against a bill |
+
+The measured row is worth exactly what it says and no more. Authentication is checked **before**
+the request body is, so a 403 proves the transport and proves nothing whatsoever about whether
+Bedrock accepts a single one of the events above.
+
+```bash
+# reproduces the measured rows (needs `npm run dev` running with the same vars)
+cd backend
+AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY npm run dev
+REALTIME=aws-nova-sonic REALTIME_MODEL='amazon.nova-2-sonic-v1:0' node scripts/smoke.mjs realtime
+# -> FAIL: Failed to start session: The security token included in the request is invalid.
+```
+
+### The five open questions, and the probe that answers them
+
+`npm run nova:probe` needs a real key and asks AWS each question directly, printing the vendor's
+own error text rather than a paraphrase. **Run it before trusting any number this provider
+produces.** It costs cents.
+
+1. **Does `amazon.nova-2-sonic-v1:0` work at all?** The API reference and the SDK JSDoc say no.
+   The model card, user guide and aws-samples say yes. One of them is stale and only AWS can say
+   which.
+2. **Is `amazon.nova-sonic-v1:0` really EOL?** Its model card gives 2026-09-14 — three days before
+   this was written — which is why the catalog offers only Nova 2. If v1 still answers, that
+   comment is wrong.
+3. **Does 24 kHz input work?** The enum lists it; every sample uses 16 kHz. If it is accepted,
+   `NOVA_INPUT_RATE` becomes `CANONICAL_SAMPLE_RATE` and the inbound resample disappears.
+4. **Are voice ids case-sensitive?** A third-party blog says `"Tiffany"` is rejected; AWS is
+   silent. Asked three times, because it is a negative claim — this repo has already had to retract
+   one of those about Murf's `"Namrita"`.
+5. **Does `totalInputTokens` equal `speechTokens + textTokens`?** AWS documents both and never
+   says how they relate. The provider sums the halves itself so the containment rule `priceLeg`
+   subtracts on is true by construction; the probe prints both so that choice is checkable.
+
+### Three things about this vendor that are structurally different
+
+**It is not a WebSocket.** `InvokeModelWithBidirectionalStream` is an HTTP/2 event stream whose
+request body is an `AsyncIterable` the SDK pulls from for the life of the conversation. If that
+iterator ever returns `done`, the session dies — so the provider parks on a promise when its queue
+runs dry rather than returning. This is also why its self-test needed a transport seam: no local
+fake can imitate SigV4 over HTTP/2, so `NOVA_SONIC_WS_BASE` swaps in a WebSocket carrying the same
+JSON. That seam is honest about its cost — it exercises the event sequence and nothing about the
+wire.
+
+**t0 comes from the local VAD, not from Nova.** Nova publishes no speech-end event. Its earliest
+server-side turn marker is `completionStart`, which only arrives after its own endpointing pause —
+a documented **1.5s (HIGH) / 1.75s (MEDIUM) / ~2.0s (LOW)**. Taking t0 from there would fold that
+policy into every latency number and make Nova look ~2s slower than every pipeline rig for reasons
+that have nothing to do with the model, and changing `endpointingSensitivity` would then move t0 so
+the two settings could not be compared with each other either. Nova therefore sits in the same
+bucket as Cartesia: same definition of t0, local detector. Set `NOVA_SONIC_ENDPOINTING` to
+`HIGH`/`MEDIUM`/`LOW` to move the vendor's pause; it will not move t0.
+
+**Rates are per region, which `rates.ts` could not express.** us-east-1 and ap-northeast-1 differ
+by 21% for the same tokens, and `Rate` keys on provider and model only. The region is resolved once
+from the environment, and a region not in the table gets **no rate at all** rather than the
+us-east-1 numbers — a Tokyo user given a confident figure 21% under their real bill is worse than a
+leg that reports itself unpriced. `eu-north-1` is absent for that reason: the feed gave its
+speech-input rate but not the other three, and three quarters of a rate is not a rate.
+
+### Two limits that are the vendor's, not this bench's
+
+- **8-minute streams.** The API reference: *"The response is returned in a stream that remains open
+  for 8 minutes."* Continuing past it means reconnecting and replaying the conversation as text,
+  which **this provider does not implement** — it warns at 7 minutes and reports the close honestly.
+  A bench turn is seconds long, so this bites only a long free-form conversation.
+- **No language parameter.** Nova has no field for one anywhere. The spoken language follows the
+  voice id, so the catalog's 10 locales are a navigation aid for picking a voice and `config.language`
+  is deliberately dropped rather than forwarded. A self-test check asserts no language reaches the
+  wire under any spelling, because "add the language, every other provider takes one" is the
+  obvious-looking change.
+
 ### How to re-verify these
 
 Every command below has been run against the live vendor on 2026-09-05. Re-run them after any
@@ -908,6 +1005,10 @@ STT=mock-stt LLM=openai-llm LLM_MODEL='gpt-5.6-luna@none' TTS=mock-tts \
 # the realtime leg with real SPEECH in, which smoke.mjs cannot do (it sends text,
 # so it never bills a single audio input token)
 npm run realtime:probe
+
+# the same, against Nova Sonic — NEVER RUN; see the Nova Sonic section above
+REALTIME=aws-nova-sonic REALTIME_MODEL='amazon.nova-2-sonic-v1:0' npm run realtime:probe
+npm run nova:probe         # the five open questions, asked of AWS directly
 ```
 
 `npm run realtime:probe` is the only check that exercises the audio-in half of a speech-to-speech turn,

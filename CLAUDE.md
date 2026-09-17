@@ -43,6 +43,8 @@ Verification scripts, all in `backend/`:
 | `npm run elevenlabs:selftest` | no | ElevenLabs message handling against a local fake |
 | `npm run elevenlabs:buffer` | yes | re-measures rendered audio duration per `chunk_length_schedule` / `auto_mode` — the probe behind those two constants |
 | `npm run openai:realtime:selftest` | no | OpenAI Realtime event handling against a local fake |
+| `npm run nova:selftest` | no | Nova Sonic event handling against a local fake — note its transport is a WS stand-in, not Bedrock's HTTP/2 |
+| `npm run nova:probe` | yes | the five open Nova Sonic questions, asked of AWS directly. **Never run** — no AWS key here |
 | `npm run openai:llm:selftest` | no | OpenAI Responses SSE + usage parsing against a local fake |
 | `npm run models` | yes (either) | asks Google/OpenAI which models exist and checks every catalog id against the answer — free listing endpoints, bills nothing |
 | `npm run roundtrip` | yes | any TTS → STT pair: synthesise, stream back at real time, print transcript + latency |
@@ -136,8 +138,12 @@ Key files:
   constant, so a provider stays correct if the boundary is ever reconfigured.
 - **t0 for every latency number is the moment the user stopped speaking** — the
   `user_speech_end` mark, set by `beginTurn()`. Vendor server-side VAD supplies it where
-  available (Sarvam `vad.speech_end`), the local `SpeechEndDetector` where not (Cartesia).
-  Same definition, different detector; keep it that way rather than moving t0.
+  available (Sarvam `vad.speech_end`, OpenAI `speech_stopped`), the local `SpeechEndDetector`
+  where not (Cartesia, **Nova Sonic**). Same definition, different detector; keep it that way
+  rather than moving t0. Nova is the case that shows why: it publishes no speech-end event, and
+  its earliest turn marker (`completionStart`) only fires after its own 1.5-2.0s endpointing
+  pause, so taking t0 from the vendor would charge Nova ~2s of its own turn-taking policy on
+  every measurement and would move t0 whenever `endpointingSensitivity` changed.
 - **Providers read keys from `ctx.credentials` / `opts.credentials`, never `process.env`**,
   so sessions stay swappable and scripts can inject. Process-level configuration is the
   exception and reads it directly: `config.ts` (port, CORS, logging), `factory.ts` and
@@ -207,6 +213,33 @@ Key files:
   What that does NOT upgrade: every self-test in this repo still runs against a local fake that
   agrees with our hypotheses by construction, so a green suite is still not vendor evidence. The
   live checks are `roundtrip`, `smoke`, `realtime:probe` and `models`, and only those.
+
+### AWS Nova Sonic is wired but UNVERIFIED
+
+Added 2026-09-17 as the third realtime provider and it has **never completed a call** — there
+are no AWS credentials in this repo. It is the only `implemented: true` provider whose request
+shape is entirely doc-derived, and README's "AWS Nova Sonic" section is the record of exactly
+what is established and what is not. Do not quote a Nova Sonic capability as measured, and do
+not let `nova:selftest`'s 83 green checks stand in for one: that fake is a WebSocket standing in
+for a SigV4-signed HTTP/2 stream, so it is even further from the vendor than the other fakes are.
+`npm run nova:probe` asks AWS the five open questions; run it before trusting any number.
+
+Four things about it differ structurally from every other provider here and should not be
+"simplified" away:
+
+- **It is not a WebSocket.** The request body is an `AsyncIterable` the SDK pulls from for the
+  life of the conversation; if it ever returns `done`, the session dies. Hence `EventQueue`.
+- **One audio content block spans the whole conversation.** Turn boundaries come from Nova's
+  endpointing, never from closing the block — closing it ends the conversation.
+- **Barge-in sends nothing upstream.** Nova publishes no cancel event; the documented client
+  behaviour is to flush playback and keep streaming mic audio.
+- **Nova takes no language parameter.** The catalog's locales are a navigation aid for choosing
+  a voice; `config.language` is deliberately dropped rather than forwarded to a field that does
+  not exist.
+
+Its rate is also the first that is **per region** (us-east-1 and ap-northeast-1 differ by 21%).
+`Rate` keys on provider and model, so the region is resolved once from the environment in
+`rates.ts`, and an unlisted region gets no rate at all rather than the us-east-1 numbers.
 
 ### Adding a provider
 

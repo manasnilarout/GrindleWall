@@ -985,6 +985,45 @@ const againstRealCatalog = async () => {
     }, voices.length > 60 ? ['narrow the search'] : []);
   }
 
+  /*
+   * Nova Sonic is the first REALTIME provider whose voices narrow per language.
+   * Every other realtime entry publishes one flat voice list, so the
+   * language -> voices path through RigBuilder had only ever been exercised in
+   * pipeline mode, on the TTS slot. A realtime rig reads `rig.language` rather
+   * than `rig.ttsLanguage`, which is a different field on a different branch:
+   * getting it wrong renders an empty Voice dropdown for a provider that has
+   * sixteen of them, and `tsc` sees nothing wrong with it.
+   */
+  const nova = providers.find((p) => p.id === 'aws-nova-sonic');
+  if (nova) {
+    const model = nova.models[0].id;
+    const langs = languagesFor(providers, 'aws-nova-sonic', model);
+    const hindi = langs.find((l) => l.id === 'hi-IN')?.id ?? langs[0]?.id ?? '';
+    const voices = voicesFor(providers, 'aws-nova-sonic', model, hindi);
+    const rig: Rig = {
+      ...rigs[0], mode: 'realtime', realtimeProviderId: 'aws-nova-sonic',
+      realtimeModelId: model, language: hindi, voice: voices[0]?.id ?? '',
+    };
+    check(`RigBuilder renders Nova Sonic's per-language voices (${voices.length} under ${hindi})`, () =>
+      renderToString(h(RigBuilder, {
+        providers, rig, onChange: () => {}, onClose: () => {}, disabled: false,
+      })), ['Voice', 'kiara']);
+
+    // The polyglot pair is valid in every language and the per-locale pair only
+    // in its own. A flat provider-level list would render identically under
+    // every language, which is precisely the bug this narrowing exists to avoid.
+    check('a realtime language change actually changes the voice list', () => {
+      const french = voicesFor(providers, 'aws-nova-sonic', model, 'fr-FR').map((v) => v.id);
+      const indian = voicesFor(providers, 'aws-nova-sonic', model, 'en-IN').map((v) => v.id);
+      if (!french.includes('ambre')) throw new Error(`fr-FR has no ambre: ${french.join(',')}`);
+      if (french.includes('kiara')) throw new Error('fr-FR wrongly offers the Indian voice');
+      if (!indian.includes('kiara')) throw new Error(`en-IN has no kiara: ${indian.join(',')}`);
+      // tiffany/matthew are documented polyglot, so they must survive both.
+      if (!french.includes('tiffany') || !indian.includes('tiffany')) throw new Error('the polyglot voice went missing');
+      return `${french.length}/${indian.length}`;
+    }, ['/']);
+  }
+
   // Every rig the UI can seed must produce a config the factory would accept.
   check('every seeded rig produces a startable config', () => {
     for (const rig of rigs) {

@@ -165,6 +165,64 @@ function openaiRealtime(
   };
 }
 
+/**
+ * Nova Sonic is the first vendor here whose price depends on WHERE it runs.
+ *
+ * us-east-1 and ap-northeast-1 differ by 21% for the same model and the same
+ * tokens, and `Rate` has no region dimension — it keys on provider and model.
+ * Rather than invent one in the shared type for a single vendor, the region is
+ * resolved once at module load from the same environment the session will use.
+ * `rates.ts` is already one of the four files CLAUDE.md exempts from the
+ * "providers read ctx.credentials, never process.env" rule, alongside the FX
+ * and Cartesia credit overrides directly above — this is the same kind of
+ * process-level configuration.
+ *
+ * A region NOT in the table below is left with no rate at all, which reports
+ * the leg as unpriced and labels the session total a floor. Falling back to the
+ * us-east-1 numbers would be the tempting move and it is the wrong one: it
+ * would hand a Tokyo user a confident figure that is 21% under what AWS
+ * actually charges them, and nothing in the UI would hint at it. eu-north-1 is
+ * absent for exactly this reason — the pricing feed gave its speech-input rate
+ * but not the other three, and three quarters of a rate is not a rate.
+ *
+ * Source: the feed behind https://aws.amazon.com/bedrock/pricing/ —
+ * b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/bedrock/USD/current/bedrock.json
+ * read 2026-09-17. Marked `ambiguous` rather than `verified`: it was read out of
+ * the backing JSON rather than off the rendered page, and no Nova Sonic call has
+ * ever been made from this repo, let alone reconciled against a bill.
+ */
+const NOVA_SONIC_REGIONS: Record<string, { speech: { in: number; out: number }; text: { in: number; out: number } }> = {
+  'us-east-1': { speech: { in: 3.0, out: 12.0 }, text: { in: 0.33, out: 2.75 } },
+  'us-west-2': { speech: { in: 3.0, out: 12.0 }, text: { in: 0.319, out: 2.651 } },
+  'ap-northeast-1': { speech: { in: 3.63, out: 14.52 }, text: { in: 0.396, out: 3.311 } },
+};
+
+const NOVA_REGION = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'us-east-1';
+
+function novaSonic(region: string): Rate | undefined {
+  const r = NOVA_SONIC_REGIONS[region];
+  if (!r) return undefined;
+  return {
+    unit: 'tokens',
+    currency: 'USD',
+    input: r.text.in / M,
+    output: r.text.out / M,
+    audioInput: r.speech.in / M,
+    audioOutput: r.speech.out / M,
+    rate: `speech $${r.speech.in}/$${r.speech.out} · text $${r.text.in}/$${r.text.out} per 1M tokens (${region})`,
+    source: 'https://aws.amazon.com/bedrock/pricing/',
+    checkedOn: '2026-09-17',
+    confidence: 'ambiguous',
+    note:
+      `Priced for ${region}; Nova Sonic rates are per-region and differ by up to 21%. ` +
+      'AWS publishes no cached-token tier for this model, so none is modelled. Speech tokens ' +
+      'cost ~9x text input and ~4.4x text output, which is why the split rate is not optional — ' +
+      'a realtime turn is almost entirely speech. AWS: "The text tokens input and output pricing ' +
+      'applies to specific use cases such as speech-to-text transcription, tool calls for task ' +
+      'completion or knowledge grounding, adding conversation history to the session etc."',
+  };
+}
+
 /** OpenAI text models: input / output / cached input, per 1M tokens. */
 function openaiText(input: number, output: number, cachedInput: number): Rate {
   return {
@@ -294,6 +352,18 @@ export const RATES: Record<string, ProviderRates> = {
         { input: 10, cached: 0.3, output: 20 },
         { input: 0.6, cached: 0.06, output: 2.4 },
       ),
+    },
+  },
+
+  /*
+   * Built conditionally: an unknown region yields an empty models map, so
+   * `rateFor` misses, `priceLeg` reports "No rate on file", and the session
+   * total is labelled a floor. That is the intended outcome — see the note on
+   * `novaSonic` above for why a us-east-1 fallback would be worse than nothing.
+   */
+  'aws-nova-sonic': {
+    models: {
+      ...(novaSonic(NOVA_REGION) ? { 'amazon.nova-2-sonic-v1:0': novaSonic(NOVA_REGION)! } : {}),
     },
   },
 
