@@ -250,7 +250,7 @@ labelled a **floor, not a bill**.
 ```bash
 cd backend  && npm run turn:selftest             # 36 checks on turn attribution and the TTFA derivation
 cd backend  && npm run usage:selftest            # 133 checks on arithmetic, persistence, redaction and per-leg latency medians
-cd backend  && npm run catalog:selftest          # 111 checks — every provider/model/language path the UI can click
+cd backend  && npm run catalog:selftest          # 114 checks — every provider/model/language path the UI can click
 cd backend  && npm run gemini:selftest           # 37 checks incl. token-usage parsing
 cd backend  && npm run murf:selftest             # 40 checks against a local fake
 cd backend  && npm run recorder:selftest         # 40 checks on the conversation recorder's timeline, against real files
@@ -258,16 +258,24 @@ cd backend  && npm run gemini:speech:selftest    # 80 checks — Gemini TTS + ST
 cd backend  && npm run elevenlabs:selftest       # 57 checks against a local fake
 cd backend  && npm run openai:realtime:selftest  # 130 checks against a local fake
 cd backend  && npm run openai:llm:selftest       # 55 checks against a local fake
+cd backend  && npm run nova:selftest             # 119 checks against a local fake — but see the Nova Sonic
+                                                 # section: that fake stands in for an HTTP/2 stream, so it is
+                                                 # further from the vendor than any other fake here
+cd backend  && npm run auth:selftest             # 30 checks on the login layer
+cd backend  && npm run nova:rates                # re-measures Nova Sonic's published rates (no key, bills nothing)
 cd backend  && npm run models                    # 10 checks against the vendors' free model listings (needs a key, bills nothing)
 cd backend  && npm run smoke                     # usage + summary over the real WS protocol
 cd backend  && npm run realtime:probe            # a realtime turn with real SPEECH in (needs a key, billable)
-cd frontend && npm run render-check              # 88 checks: actually renders every panel, and pins the rules
+cd frontend && npm run render-check              # 96 checks: actually renders every panel, and pins the rules
                                                  # (voice resolution, leg overlap, TTFA attribution) that only a call can prove.
                                                  # tsc did not catch this project's last UI crash. Start the backend
-                                                 # and it additionally runs against the live 26-provider catalog.
+                                                 # and it additionally runs 8 checks against the live 26-provider catalog.
 ```
 
-719 backend checks plus 91 frontend render checks, none of which needs a key or a network. Read the caveat in
+871 backend checks plus 96 frontend render checks, none of which needs a key or a network — and 8
+further render checks when the backend happens to be up, since those read the live catalog. (The
+102 this used to claim was the two figures added together, which the same sentence then described
+as needing no network.) Read the caveat in
 [The five late providers, and what contact with the vendor changed](#the-five-late-providers-and-what-contact-with-the-vendor-changed)
 before treating `gemini:speech`, `elevenlabs`, `openai:realtime` or `openai:llm` as evidence of
 anything about a vendor — they run against fakes. `models`, `smoke`, `roundtrip` and
@@ -887,7 +895,8 @@ worth probing.
 ### How to re-verify these
 
 Every command below has been run against the live vendor on 2026-09-05. Re-run them after any
-change to a request shape:
+change to a request shape. (Nova Sonic's commands are not in this list — none of them has ever
+been run against AWS; they are in its own section below.)
 
 ```bash
 cd backend
@@ -908,6 +917,7 @@ STT=mock-stt LLM=openai-llm LLM_MODEL='gpt-5.6-luna@none' TTS=mock-tts \
 # the realtime leg with real SPEECH in, which smoke.mjs cannot do (it sends text,
 # so it never bills a single audio input token)
 npm run realtime:probe
+
 ```
 
 `npm run realtime:probe` is the only check that exercises the audio-in half of a speech-to-speech turn,
@@ -915,8 +925,152 @@ and therefore the only one that can tell whether `audioInputTokens` is reported 
 asserts the audio breakdown is non-zero, is contained by its total, and prices — a realtime leg
 billed entirely at the text rate would understate the turn ~8x while still looking like a number.
 
-Everything in this section is measured. The self-tests still are not: they run against local
-fakes, and per the claim-discipline rule a green suite may never be restated as vendor evidence.
+Everything in THIS section is measured — it covers the five providers above, not Nova Sonic,
+which has never completed a call. The self-tests are not measurements either: they run against
+local fakes, and per the claim-discipline rule a green suite may never be restated as vendor
+evidence.
+
+## AWS Nova Sonic — wired end to end, and NOT yet verified
+
+Added 2026-09-17 as the third *implemented* realtime provider, after the mock and OpenAI Realtime. **It has never completed a call**, because this
+repo has no AWS credentials. That makes it the only implemented provider here whose request shape
+rests entirely on documentation, and this section exists so nobody mistakes "119 checks pass" for
+"it works".
+
+Read this next to the section above. Those five providers spent a day in exactly this state and
+every one of them was wrong about something — the docs and the schema disagreed on OpenAI's
+session shape, Murf refused its own documented host, Gemini's socket closed mid-turn. There is no
+reason to expect Nova Sonic to be the exception.
+
+### What is actually established
+
+| Claim | Evidence | Strength |
+|---|---|---|
+| The SDK path reaches Bedrock, signs with SigV4 and connects over HTTP/2 | ran it, 3x, 2026-09-17 | **measured** |
+| A bad key rejects `start()` rather than half-opening a session | same run: `UnrecognizedClientException`, HTTP 403 | **measured** |
+| `amazon.nova-2-sonic-v1:0` is the model id | model card + user guide + aws-samples — and **contradicted** by the API reference and the SDK's own JSDoc, which both still say only `amazon.nova-sonic-v1:0` is supported | doc-derived, **and disputed** |
+| 16 voices, 7 languages, the ids and their locales | Nova 2 language-support page | doc-derived |
+| Input 16 kHz / output 24 kHz PCM16 | enum allows 8/16/24 kHz; every AWS sample uses 16 kHz in, 24 kHz out | doc-derived |
+| Two barge-in signals: `contentEnd.stopReason: "INTERRUPTED"` and the literal text `{ "interrupted" : true }` | both appear in AWS's own sample handlers | doc-derived |
+| `usageEvent` splits `speechTokens` from `textTokens` | output-events page | doc-derived |
+| Per-region pricing, all four regions | `npm run nova:rates`, 2026-09-17 — resolves the pricing page's `{priceOf!…!<code>}` placeholders against the feed those codes key into | **measured**, never reconciled against a bill |
+| Endpointing pause 1.5s / 1.75s / 2.0s (HIGH/MEDIUM/LOW), the 8-minute stream cap, v1's 2026-09-14 EOL, four-region availability | Nova 2 user guide and model cards | doc-derived |
+| **Negatives**: no language parameter; no cancel event for barge-in; no speech-end event; closing the audio block ends the conversation; no `us.` inference-profile prefix | absence from the docs — i.e. nothing observed, only nothing written | doc-derived, **unprobed**, and negatives are the ones this repo has had to retract before |
+
+The measured rows are worth exactly what they say and no more. Authentication is checked **before**
+the request body is, so a 403 proves the transport and proves nothing whatsoever about whether
+Bedrock accepts a single one of the events above.
+
+The two values below are deliberately not credential-shaped. This first used AWS's own published
+example key pair, which carries no secret — but a key-shaped string in documentation trips
+scanners and teaches the habit of pasting one in. Re-measured with these placeholders on
+2026-09-17, three runs, and the vendor's answer is unchanged: `UnrecognizedClientException`,
+HTTP 403. SigV4 signs whatever it is given, so the shape of the key never reaches the question.
+
+```bash
+# reproduces the measured rows (needs `npm run dev` running with the same vars)
+cd backend
+AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=not-a-real-access-key-id \
+AWS_SECRET_ACCESS_KEY=not-a-real-secret-access-key npm run dev
+REALTIME=aws-nova-sonic REALTIME_MODEL='amazon.nova-2-sonic-v1:0' node scripts/smoke.mjs realtime
+# -> FAIL: Failed to start session: The security token included in the request is invalid.
+```
+
+### The six open questions, and the probe that answers them
+
+`npm run nova:probe` asks AWS each question directly, printing the vendor's own error text rather
+than a paraphrase. It needs **two** keys — AWS credentials, and a TTS key to synthesise the spoken
+question with (`TTS=` / `TTS_MODEL=`, default `elevenlabs-tts`), because Nova endpoints on real
+speech and a tone will not produce a turn. **Run it before trusting any number this provider
+produces.** It costs cents.
+
+1. **Does `amazon.nova-2-sonic-v1:0` work at all?** The API reference and the SDK JSDoc say no.
+   The model card, user guide and aws-samples say yes. One of them is stale and only AWS can say
+   which.
+2. **Is `amazon.nova-sonic-v1:0` really EOL?** Its model card gives 2026-09-14 — three days before
+   this was written — which is why the catalog offers only Nova 2. If v1 still answers, that
+   comment is wrong.
+3. **Does 24 kHz input work?** The enum lists it; every sample uses 16 kHz. If it is accepted,
+   `NOVA_INPUT_RATE` becomes `CANONICAL_SAMPLE_RATE` and the inbound resample disappears.
+4. **Are voice ids case-sensitive?** A third-party blog says `"Tiffany"` is rejected; AWS is
+   silent. Asked three times, because it is a negative claim — this repo has already had to retract
+   one of those about Murf's `"Namrita"`.
+5. **Does `totalInputTokens` equal `speechTokens + textTokens`?** AWS documents both and never
+   says how they relate. The provider sums the halves itself so the containment rule `priceLeg`
+   subtracts on is true by construction; the probe prints both so that choice is checkable.
+6. **Does Bedrock refuse a language field?** The claim "Nova has no language parameter" is load-
+   bearing — it is why `config.language` is dropped — and nothing has ever tested it against the
+   service. The self-test only proves *our* emitter omits it, which is a different claim. Asked as
+   a negative, three times.
+
+The probe reports `INCONCLUSIVE` rather than a verdict when a session times out silently or fails
+with anything other than a `validationException`. That is deliberate: an earlier version collapsed
+"the service refused this" together with "nothing came back", so a timeout printed *"STILL SERVED
+despite the model card's EOL date"* — a probe that can invent the claim it exists to test.
+
+```bash
+cd backend
+npm run nova:rates     # re-measure the published rates (no key, bills nothing)
+npm run nova:probe     # the six questions, asked of AWS directly (needs both keys)
+REALTIME=aws-nova-sonic REALTIME_MODEL='amazon.nova-2-sonic-v1:0' npm run realtime:probe
+```
+
+### Three things about this vendor that are structurally different
+
+**It is not a WebSocket.** `InvokeModelWithBidirectionalStream` is an HTTP/2 event stream whose
+request body is an `AsyncIterable` the SDK pulls from for the life of the conversation. If that
+iterator ever returns `done`, the session dies — so the provider parks on a promise when its queue
+runs dry rather than returning. This is also why its self-test needed a transport seam: no local
+fake can imitate SigV4 over HTTP/2, so `NOVA_SONIC_WS_BASE` swaps in a WebSocket carrying the same
+JSON. That seam is honest about its cost — it exercises the event sequence and nothing about the
+wire.
+
+**t0 comes from the local VAD, not from Nova.** Nova publishes no speech-end event. Its earliest
+server-side turn marker is `completionStart`, which only arrives after its own endpointing pause —
+a documented **1.5s (HIGH) / 1.75s (MEDIUM) / ~2.0s (LOW)**. Taking t0 from there would fold that
+policy into every latency number and make Nova look ~2s slower than every pipeline rig for reasons
+that have nothing to do with the model, and changing `endpointingSensitivity` would then move t0 so
+the two settings could not be compared with each other either. Nova therefore sits in the same
+bucket as Cartesia: same definition of t0, local detector. Set `NOVA_SONIC_ENDPOINTING` to
+`HIGH`/`MEDIUM`/`LOW` to move the vendor's pause; it will not move t0.
+
+**Rates are per region, which `rates.ts` could not express.** us-east-1 and ap-northeast-1 differ
+by 21% for the same tokens, and `Rate` keys on provider and model only. The region is resolved once
+from the environment, and a region not in the table gets **no rate at all** rather than the
+us-east-1 numbers — a Tokyo user given a confident figure 21% under their real bill is worse than a
+leg that reports itself unpriced.
+
+The provenance of those numbers was wrong when this section was first written, and the correction
+is the useful part. They were attributed to the JSON feed behind the Bedrock pricing page — but
+that feed names nothing: no "nova", no "sonic", not even "speech", only opaque rate codes, so the
+figures could not have come from it as claimed. What is true is that the *rendered* page carries
+`{priceOf!bedrock/bedrock!<RegionlessRateCode>!*!1000}` placeholders in a table row per model and
+modality, and those codes are the feed's keys. `npm run nova:rates` resolves one against the other,
+which turns the rates from a citation into a measurement and finds all four regions — including
+`eu-north-1`, which the original pass had dropped for want of three of its four numbers:
+
+| region | speech in | speech out | text in | text out |
+|---|---|---|---|---|
+| us-east-1 | $3.00 | $12.00 | $0.33 | $2.75 |
+| us-west-2 | $3.00 | $12.00 | $0.319 | $2.651 |
+| eu-north-1 | $2.91 | $11.65 | $0.363 | $2.992 |
+| ap-northeast-1 | $3.63 | $14.52 | $0.396 | $3.311 |
+
+A caveat that is invisible when it bites: `rates.ts` reads the region from `process.env` at module
+load, while the session reads its own from `ctx.credentials`. They are the same thing in the server;
+a script that injects a different region runs in one and is billed in another.
+
+### Two limits that are the vendor's, not this bench's
+
+- **8-minute streams.** The API reference: *"The response is returned in a stream that remains open
+  for 8 minutes."* Continuing past it means reconnecting and replaying the conversation as text,
+  which **this provider does not implement** — it warns at 7 minutes and reports the close honestly.
+  A bench turn is seconds long, so this bites only a long free-form conversation.
+- **No language parameter.** Nova has no field for one anywhere. The spoken language follows the
+  voice id, so the catalog's 10 locales are a navigation aid for picking a voice and `config.language`
+  is deliberately dropped rather than forwarded. A self-test check asserts no language reaches the
+  wire under any spelling, because "add the language, every other provider takes one" is the
+  obvious-looking change.
 
 ## Adding a provider
 

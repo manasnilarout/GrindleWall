@@ -353,6 +353,41 @@ pickerProviders.push({
   ],
 });
 
+/*
+ * The Nova Sonic shape, and a third one again: languages hang off the MODEL and
+ * each language carries its own voices. It is here as a fixture, not only in
+ * the live-catalog section at the bottom, because that section returns early
+ * whenever the backend is not running — so with these cases only down there,
+ * the ordinary offline `npm run render-check` covered the realtime
+ * language -> voices path not at all, which is the one path this provider
+ * introduced. A realtime rig reads `rig.language`, not `rig.ttsLanguage`:
+ * different field, different branch, and `tsc` sees nothing wrong with either.
+ */
+const novaProviders: ProviderEntry[] = [
+  { id: 'aws-nova-sonic', name: 'AWS Nova Sonic', kind: 'realtime', implemented: true,
+    registered: true, ready: true,
+    envKeys: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'], missingEnv: [],
+    models: [{
+      id: 'amazon.nova-2-sonic-v1:0', name: 'Nova 2 Sonic',
+      languages: [
+        { id: 'en-IN', name: 'English (India)', voices: [
+          { id: 'kiara', name: 'Kiara (feminine)' },
+          { id: 'tiffany', name: 'Tiffany (polyglot)' },
+        ] },
+        { id: 'fr-FR', name: 'French', voices: [
+          { id: 'ambre', name: 'Ambre (feminine)' },
+          { id: 'tiffany', name: 'Tiffany (polyglot)' },
+        ] },
+      ],
+    }] },
+];
+const novaRig: Rig = {
+  ...blankRig('Rig N', 0),
+  mode: 'realtime',
+  realtimeProviderId: 'aws-nova-sonic', realtimeModelId: 'amazon.nova-2-sonic-v1:0',
+  language: 'en-IN', voice: 'kiara',
+};
+
 const baseRig: Rig = {
   ...blankRig('Rig A', 0),
   mode: 'pipeline',
@@ -369,6 +404,32 @@ const picker = (rig: Rig) =>
   renderToString(h(RigBuilder, { providers: pickerProviders, rig, onChange: () => {}, onClose: () => {}, disabled: false }));
 
 check('RigBuilder: a vendor with only a voice list', () => picker(baseRig), ['Voice', 'Anushka (f)']);
+
+// Realtime, offline: the voice list must come from `rig.language`. Reading the
+// wrong field resolves no language at all, and `voicesFor` then hands back the
+// provider's whole list — which still contains the right voice, so "the right
+// voice is present" passes on its own. The exclusion is what discriminates.
+check('RigBuilder renders a realtime provider\'s per-language voices', () => {
+  const html = renderToString(h(RigBuilder, {
+    providers: novaProviders, rig: novaRig, onChange: () => {}, onClose: () => {}, disabled: false,
+  }));
+  if (html.includes('Ambre')) throw new Error('en-IN also offers the French voice, so nothing narrowed');
+  return html;
+}, ['Voice', 'Kiara (feminine)']);
+// A flat provider-level list would render identically under either language,
+// which is exactly the bug the narrowing exists to prevent — so the assertion
+// is that French does NOT offer the Indian voice, not merely that it offers one.
+check('a realtime language change actually changes the voice list (fixture)', () => {
+  const html = renderToString(h(RigBuilder, {
+    providers: novaProviders, rig: { ...novaRig, language: 'fr-FR', voice: 'ambre' },
+    onChange: () => {}, onClose: () => {}, disabled: false,
+  }));
+  if (html.includes('Kiara')) throw new Error('fr-FR still offers the en-IN voice');
+  if (!html.includes('Ambre')) throw new Error('fr-FR offers no French voice');
+  // The polyglot voice is valid in both and must survive the narrowing.
+  if (!html.includes('Tiffany')) throw new Error('the polyglot voice went missing');
+  return html;
+}, ['Ambre (feminine)']);
 // The drawer is a modal: the dialog role belongs on the panel, not the scrim,
 // or assistive tech announces the backdrop as the dialog.
 check('RigBuilder marks the panel as the dialog, not the scrim', () => {
@@ -983,6 +1044,45 @@ const againstRealCatalog = async () => {
       if (rows > 60) throw new Error(`rendered ${rows} voice rows`);
       return html;
     }, voices.length > 60 ? ['narrow the search'] : []);
+  }
+
+  /*
+   * Nova Sonic is the first REALTIME provider whose voices narrow per language.
+   * Every other realtime entry publishes one flat voice list, so the
+   * language -> voices path through RigBuilder had only ever been exercised in
+   * pipeline mode, on the TTS slot. A realtime rig reads `rig.language` rather
+   * than `rig.ttsLanguage`, which is a different field on a different branch:
+   * getting it wrong renders an empty Voice dropdown for a provider that has
+   * sixteen of them, and `tsc` sees nothing wrong with it.
+   */
+  const nova = providers.find((p) => p.id === 'aws-nova-sonic');
+  if (nova) {
+    const model = nova.models[0].id;
+    const langs = languagesFor(providers, 'aws-nova-sonic', model);
+    const hindi = langs.find((l) => l.id === 'hi-IN')?.id ?? langs[0]?.id ?? '';
+    const voices = voicesFor(providers, 'aws-nova-sonic', model, hindi);
+    const rig: Rig = {
+      ...rigs[0], mode: 'realtime', realtimeProviderId: 'aws-nova-sonic',
+      realtimeModelId: model, language: hindi, voice: voices[0]?.id ?? '',
+    };
+    check(`RigBuilder renders Nova Sonic's per-language voices (${voices.length} under ${hindi})`, () =>
+      renderToString(h(RigBuilder, {
+        providers, rig, onChange: () => {}, onClose: () => {}, disabled: false,
+      })), ['Voice', 'kiara']);
+
+    // The polyglot pair is valid in every language and the per-locale pair only
+    // in its own. A flat provider-level list would render identically under
+    // every language, which is precisely the bug this narrowing exists to avoid.
+    check('a realtime language change actually changes the voice list', () => {
+      const french = voicesFor(providers, 'aws-nova-sonic', model, 'fr-FR').map((v) => v.id);
+      const indian = voicesFor(providers, 'aws-nova-sonic', model, 'en-IN').map((v) => v.id);
+      if (!french.includes('ambre')) throw new Error(`fr-FR has no ambre: ${french.join(',')}`);
+      if (french.includes('kiara')) throw new Error('fr-FR wrongly offers the Indian voice');
+      if (!indian.includes('kiara')) throw new Error(`en-IN has no kiara: ${indian.join(',')}`);
+      // tiffany/matthew are documented polyglot, so they must survive both.
+      if (!french.includes('tiffany') || !indian.includes('tiffany')) throw new Error('the polyglot voice went missing');
+      return `${french.length}/${indian.length}`;
+    }, ['/']);
   }
 
   // Every rig the UI can seed must produce a config the factory would accept.

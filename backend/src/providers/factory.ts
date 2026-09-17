@@ -7,9 +7,10 @@ import type {
   VoiceSession,
 } from './types.js';
 import { PipelineSession } from '../pipeline/PipelineSession.js';
-import { findProvider } from './catalog.js';
+import { findProvider, missingEnvFor } from './catalog.js';
 import { MockRealtimeProvider } from './realtime/MockRealtimeProvider.js';
 import { OpenAiRealtimeProvider } from './realtime/OpenAiRealtimeProvider.js';
+import { NovaSonicProvider } from './realtime/NovaSonicProvider.js';
 import { MockSttProvider } from './stt/MockSttProvider.js';
 import { SarvamSttProvider } from './stt/SarvamSttProvider.js';
 import { CartesiaSttProvider } from './stt/CartesiaSttProvider.js';
@@ -46,6 +47,7 @@ export function registerTts(p: TtsProvider) { ttsRegistry.set(p.id, p); }
 
 registerRealtime(new MockRealtimeProvider());
 registerRealtime(new OpenAiRealtimeProvider());
+registerRealtime(new NovaSonicProvider());
 registerStt(new MockSttProvider());
 registerStt(new SarvamSttProvider());
 registerStt(new CartesiaSttProvider());
@@ -112,7 +114,7 @@ function requireFrom<T>(registry: Map<string, T>, id: string | undefined, kind: 
       `${entry.name} (${id}) is in the catalog but not wired up yet — register it in providers/factory.ts`,
     );
   }
-  const missing = entry.envKeys.filter((k) => !process.env[k]);
+  const missing = missingEnvFor(entry);
   if (missing.length) {
     throw new ProviderError(`${entry.name} needs ${missing.join(', ')} in the environment`);
   }
