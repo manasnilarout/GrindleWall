@@ -258,7 +258,7 @@ cd backend  && npm run gemini:speech:selftest    # 80 checks — Gemini TTS + ST
 cd backend  && npm run elevenlabs:selftest       # 57 checks against a local fake
 cd backend  && npm run openai:realtime:selftest  # 130 checks against a local fake
 cd backend  && npm run openai:llm:selftest       # 55 checks against a local fake
-cd backend  && npm run nova:selftest             # 110 checks against a local fake — but see the Nova Sonic
+cd backend  && npm run nova:selftest             # 119 checks against a local fake — but see the Nova Sonic
                                                  # section: that fake stands in for an HTTP/2 stream, so it is
                                                  # further from the vendor than any other fake here
 cd backend  && npm run auth:selftest             # 30 checks on the login layer
@@ -266,13 +266,16 @@ cd backend  && npm run nova:rates                # re-measures Nova Sonic's publ
 cd backend  && npm run models                    # 10 checks against the vendors' free model listings (needs a key, bills nothing)
 cd backend  && npm run smoke                     # usage + summary over the real WS protocol
 cd backend  && npm run realtime:probe            # a realtime turn with real SPEECH in (needs a key, billable)
-cd frontend && npm run render-check              # 102 checks: actually renders every panel, and pins the rules
+cd frontend && npm run render-check              # 96 checks: actually renders every panel, and pins the rules
                                                  # (voice resolution, leg overlap, TTFA attribution) that only a call can prove.
                                                  # tsc did not catch this project's last UI crash. Start the backend
-                                                 # and it additionally runs against the live 26-provider catalog.
+                                                 # and it additionally runs 8 checks against the live 26-provider catalog.
 ```
 
-862 backend checks plus 102 frontend render checks, none of which needs a key or a network. Read the caveat in
+871 backend checks plus 96 frontend render checks, none of which needs a key or a network — and 8
+further render checks when the backend happens to be up, since those read the live catalog. (The
+102 this used to claim was the two figures added together, which the same sentence then described
+as needing no network.) Read the caveat in
 [The five late providers, and what contact with the vendor changed](#the-five-late-providers-and-what-contact-with-the-vendor-changed)
 before treating `gemini:speech`, `elevenlabs`, `openai:realtime` or `openai:llm` as evidence of
 anything about a vendor — they run against fakes. `models`, `smoke`, `roundtrip` and
@@ -892,8 +895,8 @@ worth probing.
 ### How to re-verify these
 
 Every command below has been run against the live vendor on 2026-09-05. Re-run them after any
-change to a request shape. (Nova Sonic's commands are NOT here — nothing of its has ever been
-run; they are in its own section below.)
+change to a request shape. (Nova Sonic's commands are not in this list — none of them has ever
+been run against AWS; they are in its own section below.)
 
 ```bash
 cd backend
@@ -931,7 +934,7 @@ evidence.
 
 Added 2026-09-17 as the third *implemented* realtime provider, after the mock and OpenAI Realtime. **It has never completed a call**, because this
 repo has no AWS credentials. That makes it the only implemented provider here whose request shape
-rests entirely on documentation, and this section exists so nobody mistakes "83 checks pass" for
+rests entirely on documentation, and this section exists so nobody mistakes "119 checks pass" for
 "it works".
 
 Read this next to the section above. Those five providers spent a day in exactly this state and
@@ -958,11 +961,17 @@ The measured rows are worth exactly what they say and no more. Authentication is
 the request body is, so a 403 proves the transport and proves nothing whatsoever about whether
 Bedrock accepts a single one of the events above.
 
+The two values below are deliberately not credential-shaped. This first used AWS's own published
+example key pair, which carries no secret — but a key-shaped string in documentation trips
+scanners and teaches the habit of pasting one in. Re-measured with these placeholders on
+2026-09-17, three runs, and the vendor's answer is unchanged: `UnrecognizedClientException`,
+HTTP 403. SigV4 signs whatever it is given, so the shape of the key never reaches the question.
+
 ```bash
 # reproduces the measured rows (needs `npm run dev` running with the same vars)
 cd backend
-AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
-AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY npm run dev
+AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=not-a-real-access-key-id \
+AWS_SECRET_ACCESS_KEY=not-a-real-secret-access-key npm run dev
 REALTIME=aws-nova-sonic REALTIME_MODEL='amazon.nova-2-sonic-v1:0' node scripts/smoke.mjs realtime
 # -> FAIL: Failed to start session: The security token included in the request is invalid.
 ```

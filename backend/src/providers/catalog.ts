@@ -45,6 +45,20 @@ export interface ProviderEntry {
   implemented: boolean;
   /** Env vars that must be present for this provider to run. */
   envKeys: string[];
+  /**
+   * Other env var names that satisfy an `envKeys` entry, where a vendor's own
+   * tooling accepts more than one spelling.
+   *
+   * AWS is the only case so far, and it needs this rather than a second
+   * `envKeys` entry because the two names are alternatives, not requirements:
+   * `AWS_DEFAULT_REGION` is the AWS SDK's own fallback for `AWS_REGION`, and
+   * the Nova provider honours it. Without this, `factory.ts` rejected a session
+   * for a missing `AWS_REGION` BEFORE the provider could read the fallback, so
+   * that fallback was unreachable through `createSession()` and anyone with
+   * only the default set was told the provider was not ready when it would
+   * have started fine.
+   */
+  envAliases?: Record<string, string[]>;
   models: ModelEntry[];
   /** Voices, where the provider exposes named voices. */
   voices?: ModelEntry[];
@@ -366,6 +380,7 @@ export const CATALOG: ProviderEntry[] = [
     kind: 'realtime',
     implemented: true,
     envKeys: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'],
+    envAliases: { AWS_REGION: ['AWS_DEFAULT_REGION'] },
     docs: 'https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-getting-started.html',
     /*
      * DOC-DERIVED, NOT MEASURED — read off the Nova 2 user guide on 2026-09-17,
@@ -407,7 +422,7 @@ export const CATALOG: ProviderEntry[] = [
         note:
           'Doc-derived, never probed. 7 languages, 16 voices, server endpointing at 1.5-2.0s. ' +
           'Streams are capped at 8 minutes by the vendor. Rates are per-region and only ' +
-          'us-east-1 / us-west-2 / ap-northeast-1 are priced here.',
+          'us-east-1 / us-west-2 / eu-north-1 / ap-northeast-1 are priced here.',
         /*
          * Voices narrow per LANGUAGE, the Cartesia shape rather than the Murf
          * one: there is a single model, and each locale publishes its own pair.
@@ -1138,11 +1153,21 @@ export function languagesFor(providerId: string, modelId?: string): ModelEntry[]
   return modelEntry(providerId, modelId)?.languages ?? findProvider(providerId)?.languages ?? [];
 }
 
+/**
+ * The env vars this provider needs that are not set, honouring `envAliases`.
+ *
+ * The single definition of "satisfied", read by both `catalogWithReadiness()`
+ * and `factory.ts`. Those two disagreeing is how a provider shows as ready in
+ * the UI and is then refused on start, or the reverse.
+ */
+export function missingEnvFor(p: ProviderEntry): string[] {
+  return p.envKeys.filter((k) => ![k, ...(p.envAliases?.[k] ?? [])].some((name) => !!process.env[name]));
+}
+
 /** Catalog + whether the required env vars are actually present in this process. */
 export function catalogWithReadiness() {
-  return CATALOG.map((p) => ({
-    ...p,
-    missingEnv: p.envKeys.filter((k) => !process.env[k]),
-    ready: p.implemented && p.envKeys.every((k) => !!process.env[k]),
-  }));
+  return CATALOG.map((p) => {
+    const missingEnv = missingEnvFor(p);
+    return { ...p, missingEnv, ready: p.implemented && missingEnv.length === 0 };
+  });
 }

@@ -310,9 +310,21 @@ class BedrockTransport implements NovaTransport {
       // explicitly only to raise the timeouts. A conversation is idle between
       // turns by definition, and the default request timeout would abort one
       // mid-thought.
+      //
+      // Both of these are INACTIVITY timeouts in Smithy, not overall deadlines,
+      // and they are derived from `MAX_STREAM_MS` rather than written as a
+      // round number so they can never fall inside it. This first said a flat 5
+      // minutes, which puts the transport's own deadline two minutes BEFORE the
+      // 7-minute warning this provider prints and three before the 8-minute cap
+      // it documents — so a conversation paused for five minutes would be cut by
+      // the SDK while the session still believed it had three minutes left.
+      // (Reasoned from the Smithy option docs, not measured: nothing here has
+      // held a real Bedrock stream open for five minutes.) Beyond the cap the
+      // transport can no longer be the thing that ends a session, which is what
+      // keeps the cap the single explanation for a session ending.
       requestHandler: new NodeHttp2Handler({
-        requestTimeout: 300_000,
-        sessionTimeout: 300_000,
+        requestTimeout: MAX_STREAM_MS + 60_000,
+        sessionTimeout: MAX_STREAM_MS + 60_000,
         disableConcurrentStreams: false,
         maxConcurrentStreams: 20,
       }),
@@ -325,14 +337,16 @@ class BedrockTransport implements NovaTransport {
         body: this.queue.stream(),
       }),
     );
+    // Thrown, not reported: `open()` resolving is what makes the session
+    // publish `session_started` and start accepting microphone frames. Handing
+    // this to `onError` from inside the async reader left a session that looked
+    // up, had nothing to read from, and buffered mic audio into a queue nobody
+    // would ever drain. The handshake either produced a stream or it failed.
+    if (!response.body) throw new Error('Bedrock accepted the request but returned no response stream');
     void this.readResponses(response.body);
   }
 
-  private async readResponses(body: AsyncIterable<any> | undefined): Promise<void> {
-    if (!body) {
-      this.events.onError(new Error('Bedrock returned no response stream'));
-      return;
-    }
+  private async readResponses(body: AsyncIterable<any>): Promise<void> {
     const decoder = new TextDecoder();
     try {
       for await (const out of body) {
@@ -483,14 +497,41 @@ interface Turn {
   speechOut: number;
   textOut: number;
   /**
-   * Nova streams transcripts as whole blocks rather than fragments, but the
-   * ASSISTANT side arrives as one SPECULATIVE preview and then one FINAL, and
-   * a turn can carry more than one of each. `SessionEvents` is a cumulative
-   * channel — the browser replaces the current utterance on every non-final —
-   * so these accumulate rather than overwrite.
+   * Nova streams transcripts as whole blocks rather than fragments, and a turn
+   * carries several of them — so `final` accumulates. What it does NOT carry
+   * is deltas: a SPECULATIVE block is a DRAFT of the text the next FINAL block
+   * will restate, not a fragment that precedes it. Appending both rendered
+   * every sentence twice ("Fast enough. Fast enough."), which is what this
+   * comment used to describe as correct.
    */
-  assistantText: string;
-  userText: string;
+  assistant: Transcript;
+  user: Transcript;
+}
+
+/**
+ * One side's transcript within a turn: the settled text, plus the outstanding
+ * preview of the utterance still being decided.
+ *
+ * `SessionEvents` is a cumulative channel — the browser replaces the current
+ * utterance on every non-final — so what goes on the wire is `final` plus
+ * `draft`, and a FINAL block clears the draft it just superseded.
+ */
+interface Transcript {
+  final: string;
+  draft: string;
+}
+
+const joined = (a: string, b: string): string => (a && b ? `${a} ${b}` : a || b);
+
+/** Folds one block of text in and returns the whole transcript to publish. */
+function absorb(t: Transcript, text: string, speculative: boolean): string {
+  if (speculative) {
+    t.draft = joined(t.draft, text);
+  } else {
+    t.final = joined(t.final, text);
+    t.draft = '';
+  }
+  return joined(t.final, t.draft);
 }
 
 class NovaSonicSession implements VoiceSession {
@@ -966,18 +1007,20 @@ class NovaSonicSession implements VoiceSession {
       // Nova's ASR of the user's own words. This is the only user transcript a
       // speech-to-speech model produces, so without it the bench shows one side
       // of the conversation.
+      let published = text;
       if (turn) {
         turn.metrics.mark('stt_first_partial');
         if (!block.speculative) turn.metrics.mark('stt_final');
-        turn.userText = turn.userText ? `${turn.userText} ${text}` : text;
+        published = absorb(turn.user, text, block.speculative);
       }
-      this.ctx.events.onUserTranscript(turn?.userText ?? text, !block?.speculative, turn?.turnId ?? 0);
+      this.ctx.events.onUserTranscript(published, !block.speculative, turn?.turnId ?? 0);
       return;
     }
 
     if (!turn || turn.ended) return; // a block from a turn the user talked past
-    turn.assistantText = turn.assistantText ? `${turn.assistantText} ${text}` : text;
-    this.ctx.events.onAssistantTranscript(turn.assistantText, !block?.speculative, turn.turnId);
+    const speculative = block?.speculative ?? false;
+    const published = absorb(turn.assistant, text, speculative);
+    this.ctx.events.onAssistantTranscript(published, !speculative, turn.turnId);
   }
 
   private onAudioOutput(msg: Record<string, any>): void {
@@ -1038,7 +1081,13 @@ class NovaSonicSession implements VoiceSession {
    * endpointing that t0 is defined to exclude.
    */
   private onInterrupted(completionId?: string): void {
-    const turn = this.turnFor(completionId) ?? this.active;
+    // No `?? this.active` here, deliberately. `turnFor` already falls back to
+    // the active turn for an UNLABELLED signal; returning undefined for a
+    // LABELLED one means it named a completion that has already been retired,
+    // and the one thing that must not happen then is ending whatever turn
+    // happens to be open instead — that is the bug the doc comment above
+    // describes, reintroduced one line below it.
+    const turn = this.turnFor(completionId);
     if (!turn || turn.ended) return;
     this.endTurn(turn, true);
   }
@@ -1144,8 +1193,8 @@ class NovaSonicSession implements VoiceSession {
       textIn: 0,
       speechOut: 0,
       textOut: 0,
-      assistantText: '',
-      userText: '',
+      assistant: { final: '', draft: '' },
+      user: { final: '', draft: '' },
     };
     this.active = turn;
     this.ctx.events.onTurnStart(turn.turnId);
@@ -1336,9 +1385,18 @@ class NovaSonicSession implements VoiceSession {
     this.seenCompletions.add(completionId);
   }
 
+  /**
+   * The block an event belongs to, or undefined.
+   *
+   * `lastBlock` is the fallback ONLY for an event that carries no key at all.
+   * Chaining it after a map miss — which is what this did — meant a stale or
+   * unknown `contentId` resolved to whichever block was opened most recently,
+   * and that is how an ASSISTANT sentence gets published as the USER's own
+   * words. An unrecognised key is missing information, not a hint.
+   */
   private blockOf(msg: Record<string, any>): Block | undefined {
     const key = msg.contentId ?? msg.contentName;
-    return (key ? this.blocks.get(key) : undefined) ?? this.lastBlock;
+    return key ? this.blocks.get(key) : this.lastBlock;
   }
 }
 

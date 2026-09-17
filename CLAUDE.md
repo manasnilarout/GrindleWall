@@ -221,9 +221,9 @@ Added 2026-09-17 as the third IMPLEMENTED realtime provider (after the mock and 
 are no AWS credentials in this repo. It is the only `implemented: true` provider whose request
 shape is entirely doc-derived, and README's "AWS Nova Sonic" section is the record of exactly
 what is established and what is not. Do not quote a Nova Sonic capability as measured, and do
-not let `nova:selftest`'s 83 green checks stand in for one: that fake is a WebSocket standing in
+not let `nova:selftest`'s 119 green checks stand in for one: that fake is a WebSocket standing in
 for a SigV4-signed HTTP/2 stream, so it is even further from the vendor than the other fakes are.
-`npm run nova:probe` asks AWS the five open questions; run it before trusting any number.
+`npm run nova:probe` asks AWS the six open questions; run it before trusting any number.
 
 Four things about it differ structurally from every other provider here and should not be
 "simplified" away:

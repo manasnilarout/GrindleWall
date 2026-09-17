@@ -370,11 +370,28 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
     additionalModelFields: '{"generationStage":"SPECULATIVE"}' } });
   push({ textOutput: { completionId: 'c1', contentId: 'a1', content: 'Fast enough.' } });
   push({ contentEnd: { completionId: 'c1', contentId: 'a1', stopReason: 'PARTIAL_TURN' } });
-  // Then the same thing as spoken, FINAL.
+  // Then the same thing as spoken, FINAL. Note that it RESTATES the preview
+  // rather than continuing it — that is the whole point of the pair, and a
+  // provider that appends both says everything twice.
   push({ contentStart: { completionId: 'c1', contentId: 'a2', type: 'TEXT', role: 'ASSISTANT',
     additionalModelFields: '{"generationStage":"FINAL"}' } });
   push({ textOutput: { completionId: 'c1', contentId: 'a2', content: 'Fast enough.' } });
   push({ contentEnd: { completionId: 'c1', contentId: 'a2', stopReason: 'END_TURN' } });
+  await settle(120);
+  const afterFirstSentence = rec.assistant.at(-1)?.text;
+
+  // A second sentence, whose preview is REVISED before it is spoken. Together
+  // with the pair above this pins both halves of the rule: settled sentences
+  // accumulate, an outstanding preview is replaced.
+  push({ contentStart: { completionId: 'c1', contentId: 'a3', type: 'TEXT', role: 'ASSISTANT',
+    additionalModelFields: '{"generationStage":"SPECULATIVE"}' } });
+  push({ textOutput: { completionId: 'c1', contentId: 'a3', content: 'Ask me another.' } });
+  push({ contentEnd: { completionId: 'c1', contentId: 'a3', stopReason: 'PARTIAL_TURN' } });
+  const afterSecondPreview = await settle(120).then(() => rec.assistant.at(-1)?.text);
+  push({ contentStart: { completionId: 'c1', contentId: 'a4', type: 'TEXT', role: 'ASSISTANT',
+    additionalModelFields: '{"generationStage":"FINAL"}' } });
+  push({ textOutput: { completionId: 'c1', contentId: 'a4', content: 'Ask me anything.' } });
+  push({ contentEnd: { completionId: 'c1', contentId: 'a4', stopReason: 'END_TURN' } });
   await settle(120);
 
   check('a USER-role block becomes a user transcript, not an assistant one',
@@ -386,8 +403,12 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
     rec.assistant[0]?.final === false, JSON.stringify(rec.assistant[0]));
   check('the FINAL assistant line is delivered as final',
     rec.assistant.at(-1)?.final === true, JSON.stringify(rec.assistant.at(-1)));
-  check('assistant text is cumulative, not a bare fragment',
-    (rec.assistant.at(-1)?.text ?? '').startsWith('Fast enough.'), rec.assistant.at(-1)?.text);
+  check('a FINAL block REPLACES the preview it restates rather than appending to it',
+    afterFirstSentence === 'Fast enough.', afterFirstSentence);
+  check('a later preview is appended to the settled text, so the line stays cumulative',
+    afterSecondPreview === 'Fast enough. Ask me another.', afterSecondPreview);
+  check('a revised FINAL drops the preview it supersedes and keeps the settled text',
+    rec.assistant.at(-1)?.text === 'Fast enough. Ask me anything.', rec.assistant.at(-1)?.text);
 
   // Marks only leave the provider in the turn's snapshot, so the turn has to
   // end before they can be inspected at all.
@@ -1124,6 +1145,23 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
     rec.assistant.some((a) => a.text === 'Thirty days.') &&
       !rec.user.some((u) => u.text.includes('Thirty days')),
     JSON.stringify({ user: rec.user, assistant: rec.assistant }));
+
+  /*
+   * And the other half of the same rule: a key the map does NOT hold must not
+   * fall through to "the last block opened" either. Here the assistant block
+   * `a1` is closed while a USER block is open, and then a straggler arrives
+   * still labelled `a1` — the shape of a retransmit, or of an event that
+   * overtook its own contentEnd. Chaining the fallback after a map miss
+   * published the model's words as the user's, which is the very failure the
+   * section above exists to prevent.
+   */
+  push({ contentEnd: { completionId: 'c1', contentId: 'a1', stopReason: 'PARTIAL_TURN' } });
+  push({ contentStart: { completionId: 'c1', contentId: 'u2', type: 'TEXT', role: 'USER',
+    additionalModelFields: '{"generationStage":"FINAL"}' } });
+  push({ textOutput: { completionId: 'c1', contentId: 'a1', content: 'Straggler from the closed block.' } });
+  await settle(120);
+  check('a straggler on a CLOSED contentId is not re-routed to whichever block is open',
+    !rec.user.some((u) => u.text.includes('Straggler')), JSON.stringify(rec.user));
   await session.close();
 }
 
@@ -1202,6 +1240,92 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
   } else {
     check('EventQueue is exported so the drain contract can be tested', false, 'not exported');
   }
+}
+
+/* ============ 26. a barge-in labelled with a RETIRED completion is ignored ============ */
+/*
+ * `onInterrupted` takes the completion id precisely so that it does not assume
+ * `this.active` — but it then fell back to `this.active` anyway whenever
+ * `turnFor` declined to name a turn. For an UNLABELLED signal that fallback is
+ * `turnFor`'s own job and happens inside it; the only way to reach the outer
+ * one is a LABELLED signal naming a completion that has already been billed and
+ * retired. Nova sends the interruption marker as ordinary text, so it can
+ * arrive behind the completion it belongs to, and killing the turn the user has
+ * just started is a far worse outcome than ignoring a stale marker.
+ */
+{
+  const { session, rec } = await open();
+
+  // Turn 1: runs, is billed, and is retired completely.
+  speakThenPause(session);
+  await settle();
+  push({ completionStart: { completionId: 'c1' } });
+  push({ contentStart: { completionId: 'c1', contentId: 'b1', type: 'AUDIO', role: 'ASSISTANT' } });
+  push({ audioOutput: { completionId: 'c1', contentId: 'b1', content: silence(40, 24000).toString('base64') } });
+  push({ contentEnd: { completionId: 'c1', contentId: 'b1', stopReason: 'END_TURN' } });
+  push({ usageEvent: USAGE_DELTA(9, 4, 14, 5) });
+  push({ completionEnd: { completionId: 'c1', stopReason: 'END_TURN' } });
+  await settle(120);
+  const afterFirstTurn = { starts: rec.turnStarts.length, ends: rec.turnEnds.length, interrupts: rec.interrupts };
+
+  // Turn 2 opens, and the stale marker for c1 arrives while it is still open.
+  speakThenPause(session);
+  await settle(30);
+  push({ textOutput: { completionId: 'c1', contentId: 'b1', content: '{ "interrupted" : true }' } });
+  push({ contentEnd: { completionId: 'c1', contentId: 'b1', stopReason: 'INTERRUPTED' } });
+  await settle(120);
+
+  check('a turn opened after the stale marker is still open',
+    rec.turnStarts.length === afterFirstTurn.starts + 1 && rec.turnEnds.length === afterFirstTurn.ends,
+    `${rec.turnStarts.length} starts / ${rec.turnEnds.length} ends`);
+  check('...and no barge-in was raised for a completion that had already been retired',
+    rec.interrupts === afterFirstTurn.interrupts, `${rec.interrupts} interrupts`);
+
+  // The proof that turn 2 is genuinely alive rather than merely uncounted: its
+  // own answer still reaches the browser.
+  push({ completionStart: { completionId: 'c2' } });
+  push({ contentStart: { completionId: 'c2', contentId: 'b2', type: 'TEXT', role: 'ASSISTANT',
+    additionalModelFields: '{"generationStage":"FINAL"}' } });
+  push({ textOutput: { completionId: 'c2', contentId: 'b2', content: 'Still here.' } });
+  await settle(120);
+  check('...and the turn the stale marker would have killed still delivers its answer',
+    rec.assistant.some((a) => a.text === 'Still here.'), JSON.stringify(rec.assistant));
+  await session.close();
+}
+
+/* ============ 27. AWS_DEFAULT_REGION satisfies readiness, as the provider claims ============ */
+/*
+ * The provider resolves its region as `AWS_REGION || AWS_DEFAULT_REGION ||
+ * us-east-1`, but `factory.ts` checks the catalog's `envKeys` FIRST and used to
+ * reject the session for a missing `AWS_REGION` before the provider was ever
+ * constructed — so the second term was unreachable through `createSession()`
+ * while `.env.example` advertised it. Readiness and the provider now read the
+ * same alias table; these checks are what keeps them reading it.
+ */
+{
+  const { missingEnvFor, findProvider } = await import('../src/providers/catalog.js');
+  const entry = findProvider('aws-nova-sonic')!;
+  const saved = { r: process.env.AWS_REGION, d: process.env.AWS_DEFAULT_REGION,
+    k: process.env.AWS_ACCESS_KEY_ID, s: process.env.AWS_SECRET_ACCESS_KEY };
+  const set = (name: string, value?: string) => {
+    if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  };
+
+  set('AWS_ACCESS_KEY_ID', 'k'); set('AWS_SECRET_ACCESS_KEY', 's');
+  set('AWS_REGION', undefined); set('AWS_DEFAULT_REGION', 'eu-north-1');
+  check('AWS_DEFAULT_REGION alone satisfies readiness, so the fallback is reachable',
+    missingEnvFor(entry).length === 0, missingEnvFor(entry).join(', '));
+
+  set('AWS_DEFAULT_REGION', undefined);
+  check('neither region name set still reports AWS_REGION missing, under its primary name',
+    missingEnvFor(entry).join(',') === 'AWS_REGION', missingEnvFor(entry).join(', '));
+
+  set('AWS_REGION', 'us-east-1'); set('AWS_SECRET_ACCESS_KEY', undefined);
+  check('an alias on one key does not excuse a different key that has none',
+    missingEnvFor(entry).join(',') === 'AWS_SECRET_ACCESS_KEY', missingEnvFor(entry).join(', '));
+
+  set('AWS_REGION', saved.r); set('AWS_DEFAULT_REGION', saved.d);
+  set('AWS_ACCESS_KEY_ID', saved.k); set('AWS_SECRET_ACCESS_KEY', saved.s);
 }
 
 /* ------------------------------- report ------------------------------- */
