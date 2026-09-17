@@ -114,6 +114,14 @@ const MAX_STREAM_MS = 8 * 60_000;
 const STREAM_WARN_MS = 7 * 60_000;
 
 const HANDSHAKE_TIMEOUT_MS = 20_000;
+/** How long `close()` waits for the teardown events to be pulled. */
+const TEARDOWN_DRAIN_MS = 500;
+
+const delay = (ms: number) =>
+  new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
 
 /**
  * The barge-in marker AWS's own Python handler greps for, verbatim:
@@ -170,8 +178,12 @@ const DEFAULT_PROFILE: NovaModelProfile = { turnDetection: false };
 interface NovaTransport {
   /** Queue one input event. Never blocks; ordering is preserved. */
   send(event: unknown): void;
-  /** Close the input half cleanly, after the teardown events are queued. */
-  endInput(): void;
+  /**
+   * Close the input half and WAIT for what is queued to reach the wire.
+   * Awaited by `close()`, because the teardown events are queued immediately
+   * before the transport is destroyed and would otherwise never be pulled.
+   */
+  endInput(): Promise<void>;
   /** Drop everything now. */
   destroy(): void;
 }
@@ -192,10 +204,31 @@ interface TransportEvents {
  * around (theirs with an RxJS Subject; this with a bare promise, to avoid
  * taking a dependency for one await).
  */
-class EventQueue {
+export class EventQueue {
   private readonly items: unknown[] = [];
   private wake?: () => void;
   private closed = false;
+
+  /**
+   * Resolves when `stream()` has yielded everything and reached its exit.
+   *
+   * `close()` used to be fire-and-forget: it queued contentEnd/promptEnd/
+   * sessionEnd and then called `client.destroy()` in the same synchronous run.
+   * The SDK's pull is parked on a promise, and its continuation is a microtask
+   * that cannot run until the caller yields — so the HTTP/2 session was already
+   * destroyed by the time those three events were pulled, and none of them ever
+   * went out. AWS's error guide is explicit that completing the sequence "frees
+   * GPU resources and memory", so skipping it leaks capacity on the vendor side
+   * of a session we were done with.
+   */
+  private drained?: () => void;
+  readonly whenDrained: Promise<void>;
+
+  constructor() {
+    this.whenDrained = new Promise<void>((resolve) => {
+      this.drained = resolve;
+    });
+  }
 
   push(event: unknown): void {
     if (this.closed) return;
@@ -216,7 +249,10 @@ class EventQueue {
     const encoder = new TextEncoder();
     for (;;) {
       if (this.items.length === 0) {
-        if (this.closed) return; // the ONLY exit
+        if (this.closed) {
+          this.drained?.();
+          return; // the ONLY exit
+        }
         await new Promise<void>((resolve) => {
           this.wake = resolve;
         });
@@ -328,6 +364,11 @@ class BedrockTransport implements NovaTransport {
     } catch (err) {
       this.events.onError(err instanceof Error ? err : new Error(String(err)));
       this.events.onClose('stream error');
+    } finally {
+      // Nothing will ever pull from the queue again. Without this, mic frames
+      // kept accumulating in it for as long as the browser held the microphone
+      // open — ~43 KB/s of retained base64 into a queue with no consumer.
+      this.queue.close();
     }
   }
 
@@ -335,8 +376,11 @@ class BedrockTransport implements NovaTransport {
     this.queue.push(event);
   }
 
-  endInput(): void {
+  async endInput(): Promise<void> {
     this.queue.close();
+    // Bounded: if the stream is already dead nothing will ever drain it, and a
+    // hung teardown would block the socket layer's close on a dead connection.
+    await Promise.race([this.queue.whenDrained, delay(TEARDOWN_DRAIN_MS)]);
   }
 
   destroy(): void {
@@ -394,8 +438,8 @@ class FakeWsTransport implements NovaTransport {
     ws.send(JSON.stringify(event));
   }
 
-  endInput(): void {
-    /* nothing to half-close on a socket */
+  async endInput(): Promise<void> {
+    /* nothing to half-close on a socket; frames are already on the wire */
   }
 
   destroy(): void {
@@ -496,12 +540,26 @@ class NovaSonicSession implements VoiceSession {
 
   private turnCounter = 0;
   private active?: Turn;
+  /**
+   * Every completion id ever bound to a turn. `turnFor` uses it to tell "an id
+   * belonging to a turn already retired" (drop it) from "an id not seen yet"
+   * (the open turn may claim it). Bounded by the 8-minute stream cap: one entry
+   * per completion, so a few hundred short strings at the very most.
+   */
+  private readonly seenCompletions = new Set<string>();
   /** Ended-but-unbilled turns, oldest first. */
   private readonly awaitingUsage: Turn[] = [];
   private closed = false;
   private audioBlockOpen = false;
   private streamWarnTimer?: NodeJS.Timeout;
   private streamCapTimer?: NodeJS.Timeout;
+  /**
+   * Set once the vendor's documented 8-minute limit has passed, so the close
+   * that follows is reported as the expected one rather than as a fault. The
+   * README promises this stream is "reported honestly"; calling the one close
+   * we predicted "unexpected" is the opposite of that.
+   */
+  private reachedStreamCap = false;
 
   constructor(
     readonly id: string,
@@ -585,6 +643,7 @@ class NovaSonicSession implements VoiceSession {
     }, STREAM_WARN_MS);
     this.streamWarnTimer.unref?.();
     this.streamCapTimer = setTimeout(() => {
+      this.reachedStreamCap = true;
       this.ctx.events.onLog('warn', 'Nova Sonic has reached its 8-minute stream limit');
     }, MAX_STREAM_MS);
     this.streamCapTimer.unref?.();
@@ -684,8 +743,7 @@ class NovaSonicSession implements VoiceSession {
   interrupt(): void {
     const turn = this.active;
     if (!turn || turn.ended) return;
-    if (turn.audioBytes > 0) this.ctx.events.onInterrupt?.();
-    this.endTurn(turn);
+    this.endTurn(turn, true);
   }
 
   async close(): Promise<void> {
@@ -707,7 +765,12 @@ class NovaSonicSession implements VoiceSession {
     this.send({ event: { sessionEnd: {} } });
 
     const transport = this.transport;
-    transport?.endInput();
+    // AWAITED. The teardown events above are only queued; the SDK pulls them on
+    // a microtask that cannot run until this function yields, so destroying the
+    // transport in the same synchronous run meant none of the three ever
+    // reached AWS. Bounded by TEARDOWN_DRAIN_MS so a dead stream cannot hang
+    // the socket layer's close.
+    await transport?.endInput();
     // Anything still waiting on a usage event will never get one.
     this.flushBilling('session closed before the vendor reported usage');
     transport?.destroy();
@@ -890,13 +953,16 @@ class NovaSonicSession implements VoiceSession {
     // else: it arrives AS the text content, so a handler that routed first
     // would read "{ "interrupted" : true }" out as part of the conversation.
     if (INTERRUPT_MARKER.test(text)) {
-      this.onInterrupted();
+      this.onInterrupted(msg.completionId);
       return;
     }
     if (!text) return;
 
     const turn = this.turnFor(msg.completionId);
     if (block?.role === 'USER') {
+      // An already-snapshotted turn must not have marks added or its transcript
+      // rewritten — its metrics have been emitted and cannot be emitted again.
+      if (turn?.ended) return;
       // Nova's ASR of the user's own words. This is the only user transcript a
       // speech-to-speech model produces, so without it the bench shows one side
       // of the conversation.
@@ -930,14 +996,21 @@ class NovaSonicSession implements VoiceSession {
 
   private onContentEnd(msg: Record<string, any>): void {
     const key = msg.contentId ?? msg.contentName;
-    if (key) this.blocks.delete(key);
+    if (key) {
+      // Cleared with the block, not just removed from the map. A stale
+      // `lastBlock` is how an ASSISTANT answer got published to the browser as
+      // the USER's own words: the fallback below is only reached when an event
+      // carries no contentId, and it must not then name a block that has ended.
+      if (this.lastBlock === this.blocks.get(key)) this.lastBlock = undefined;
+      this.blocks.delete(key);
+    }
 
     // The AUDIO block's documented stopReason enum is PARTIAL_TURN | END_TURN
     // and only the TEXT block's carries INTERRUPTED — but it is checked on
     // every type here rather than on text alone, because which block carries it
     // is a doc detail and being wrong about it means missing a barge-in.
     if (String(msg.stopReason ?? '').toUpperCase() === 'INTERRUPTED') {
-      this.onInterrupted();
+      this.onInterrupted(msg.completionId);
       return;
     }
     if (msg.stopReason === 'END_TURN') {
@@ -951,14 +1024,23 @@ class NovaSonicSession implements VoiceSession {
    *
    * Reached from two different signals — `contentEnd.stopReason` and the text
    * marker — and both can fire for one interruption, so it is idempotent: the
-   * `ended` check makes the second one a no-op rather than a second
-   * `onInterrupt` that would truncate the recording twice.
+   * `ended` check inside `endTurn` makes the second one a no-op rather than a
+   * second `onInterrupt` that would truncate the recording twice.
+   *
+   * It takes the COMPLETION ID rather than assuming `this.active`. The turn
+   * being interrupted is usually the open one, but not always: typing a message
+   * mid-answer opens the next turn first, and the interruption that the typing
+   * caused then arrives labelled with the PREVIOUS completion. Ending
+   * `this.active` there killed the turn the user had just started — it emitted
+   * an empty turn_start/turn_end pair, stranded the user's own text on it, and
+   * pushed the real answer onto a third turn whose t0 was the completion start
+   * rather than the moment the text was sent. That is the ~2s of Nova's own
+   * endpointing that t0 is defined to exclude.
    */
-  private onInterrupted(): void {
-    const turn = this.active;
+  private onInterrupted(completionId?: string): void {
+    const turn = this.turnFor(completionId) ?? this.active;
     if (!turn || turn.ended) return;
-    if (turn.audioBytes > 0) this.ctx.events.onInterrupt?.();
-    this.endTurn(turn);
+    this.endTurn(turn, true);
   }
 
   /**
@@ -983,13 +1065,39 @@ class NovaSonicSession implements VoiceSession {
     turn.textOut += num(delta.output?.textTokens);
   }
 
+  /**
+   * The stream died under us.
+   *
+   * The session is marked closed here, which is what stops `pushAudio` feeding
+   * a queue nothing will ever drain again: the transport layer above does not
+   * tear a session down on `onError`, it only forwards the message to the
+   * browser, so an unclosed session went on accepting microphone frames for as
+   * long as the tab held the mic.
+   */
   private onStreamClosed(reason?: string): void {
     if (this.closed) return;
-    this.ctx.events.onError(new Error(`Nova Sonic stream closed unexpectedly${reason ? ` (${reason})` : ''}`));
+    this.closed = true;
+    clearTimeout(this.streamWarnTimer);
+    clearTimeout(this.streamCapTimer);
+    if (this.reachedStreamCap) {
+      // Predicted, documented, and not a bug: AWS caps the stream at 8 minutes.
+      // Surfaced as an error anyway because the conversation really has ended
+      // and the caller must know, but named for what it is.
+      this.ctx.events.onError(
+        new Error(
+          'Nova Sonic closed the stream at its documented 8-minute limit; ' +
+            'continuing would need a reconnect that replays the conversation, which this provider does not implement',
+        ),
+      );
+    } else {
+      this.ctx.events.onError(new Error(`Nova Sonic stream closed unexpectedly${reason ? ` (${reason})` : ''}`));
+    }
     if (this.active && !this.active.ended) this.endTurn(this.active);
     // No usage event is coming for anything still in flight. Bill it from what
     // we have rather than losing the turn.
     this.flushBilling('stream closed before the vendor reported usage');
+    this.transport?.destroy();
+    this.transport = undefined;
   }
 
   /* ------------------------------ turns ------------------------------ */
@@ -1013,9 +1121,14 @@ class NovaSonicSession implements VoiceSession {
       pending.metrics.mark('user_speech_end');
       return pending;
     }
-    // A turn already open and running means the previous one never saw its
-    // completion finish; close it out so its metrics are reported, not lost.
-    if (pending && !pending.ended) this.endTurn(pending);
+    // A turn already open and RUNNING means the user started talking while the
+    // assistant still was. That is a barge-in by any other name — the audio
+    // already handed to the sink will not be heard — so it is flagged as one
+    // rather than ended quietly. Under server VAD this is the ORDINARY voice
+    // barge-in path: the local detector reaches here well before Nova's own
+    // INTERRUPTED marker arrives, and if only the marker raised onInterrupt the
+    // recorder would never be told.
+    if (pending && !pending.ended) this.endTurn(pending, true);
 
     this.turnCounter += 1;
     const metrics = new TurnMetrics(this.turnCounter);
@@ -1050,6 +1163,25 @@ class NovaSonicSession implements VoiceSession {
    * publishing a latency number measured from the wrong instant.
    */
   private bindCompletion(completionId?: string): void {
+    /*
+     * A SECOND completion opening while one is still live used to overwrite the
+     * id in place, which quietly threw the first one's bill away: its own
+     * `usageEvent` and `completionEnd` then matched no turn at all and were
+     * dropped, so tokens the vendor had already charged for never reached the
+     * invoice. Retiring the first turn instead keeps it in `awaitingUsage`
+     * under its own id, where those late events still find it.
+     */
+    const active = this.active;
+    if (active && !active.ended && active.completionId !== undefined && completionId &&
+        active.completionId !== completionId) {
+      this.ctx.events.onLog(
+        'warn',
+        `Nova Sonic opened completion ${completionId} while ${active.completionId} was still live; ` +
+          'closing the earlier turn so its usage is still attributed',
+      );
+      this.endTurn(active);
+    }
+
     if (!this.active || this.active.ended) {
       this.ctx.events.onLog(
         'warn',
@@ -1057,13 +1189,25 @@ class NovaSonicSession implements VoiceSession {
       );
       this.beginTurn();
     }
-    if (this.active && completionId) this.active.completionId = completionId;
+    if (this.active && completionId) this.bindTo(this.active, completionId);
   }
 
-  /** Emits the turn's metrics exactly once. Billing is separate and may lag. */
-  private endTurn(turn: Turn): void {
+  /**
+   * Emits the turn's metrics exactly once. Billing is separate and may lag.
+   *
+   * `interrupted` means audio ALREADY EMITTED will never be heard, which is a
+   * different thing from a turn simply finishing. It is raised here rather than
+   * at each call site so it cannot fire twice for one interruption — the
+   * `ended` guard above covers both signals Nova sends, and the local barge-in
+   * path that reaches this through `beginTurn()`. Missing that third path left
+   * seconds of never-heard speech in the stereo recording and displaced every
+   * later assistant turn in the file by that much, which is exactly what
+   * `SessionEvents.onInterrupt` exists to prevent.
+   */
+  private endTurn(turn: Turn, interrupted = false): void {
     if (turn.ended) return;
     turn.ended = true;
+    if (interrupted && turn.audioBytes > 0) this.ctx.events.onInterrupt?.();
     if (turn.audioBytes > 0) turn.metrics.mark('last_audio_out');
     const snap = turn.metrics.snapshot();
     if (this.active === turn) this.active = undefined;
@@ -1143,20 +1287,53 @@ class NovaSonicSession implements VoiceSession {
   /**
    * The turn a labelled event belongs to.
    *
-   * Same rule as the OpenAI leg: a labelled event whose completion we no longer
-   * hold belongs to one already billed and retired, and falling back to the
-   * active turn there would bill the live turn with the retired one's counts
-   * and end it before its own audio arrived. The one exception is a turn whose
-   * `completionStart` has not landed, which has nothing to match on yet.
+   * The subtlety here cost three separate bugs, all with the same root. The
+   * obvious rule — "a completion we no longer hold may still be claimed by a
+   * turn that has not bound one yet" — is what the OpenAI leg does, and it is
+   * safe THERE because `speech_stopped` and `response.created` are milliseconds
+   * apart. On Nova the same window is the endpointing pause: a turn opened by
+   * the local detector does not bind a `completionId` until `completionStart`,
+   * which is a documented 1.5-2.0s later. For those two seconds every straggler
+   * from the PREVIOUS completion matched the new turn, and:
+   *
+   *   · a late `audioOutput` was played to the user and marked
+   *     `first_audio_out` on the new turn, so the bench's headline
+   *     time-to-first-audio read ~40ms for a turn whose real audio arrived half
+   *     a second later — measured against the previous turn's speech;
+   *   · a late `usageEvent` billed the previous completion's tokens a SECOND
+   *     time, onto the new turn;
+   *   · and that in turn set `sawUsage` on a turn Nova never answered, which
+   *     defeated the "a turn that never ran is not billed" guard and invoiced a
+   *     phantom turn as `source: 'vendor'`.
+   *
+   * So a completion id is remembered once it has ever been bound, and an event
+   * carrying a remembered id that no turn still holds is DROPPED. An id never
+   * seen before is different: `audioOutput` may legitimately precede
+   * `completionStart`, and an unbound active turn is the only honest owner for
+   * it, so it claims it and binds.
    */
   private turnFor(completionId?: string): Turn | undefined {
     if (completionId) {
       if (this.active?.completionId === completionId) return this.active;
       const match = this.awaitingUsage.find((t) => t.completionId === completionId);
       if (match) return match;
-      return this.active?.completionId === undefined ? this.active : undefined;
+      // Seen before, held by nobody: it belongs to a turn already retired.
+      if (this.seenCompletions.has(completionId)) return undefined;
+      // Never seen, and the active turn has nothing bound — it can claim it.
+      if (this.active && !this.active.ended && this.active.completionId === undefined) {
+        this.bindTo(this.active, completionId);
+        return this.active;
+      }
+      return undefined;
     }
+    // Unlabelled. The active turn if there is one, else the oldest unbilled.
     return this.active ?? this.awaitingUsage[0];
+  }
+
+  /** Binds a completion id to a turn and remembers it for `turnFor`. */
+  private bindTo(turn: Turn, completionId: string): void {
+    turn.completionId = completionId;
+    this.seenCompletions.add(completionId);
   }
 
   private blockOf(msg: Record<string, any>): Block | undefined {

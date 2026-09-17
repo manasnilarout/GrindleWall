@@ -21,6 +21,7 @@
     "murf:selftest": "tsx scripts/murf-selftest.ts",
     "murf:voices": "tsx scripts/murf-voices.ts",
     "nova:probe": "tsx scripts/nova-sonic-probe.ts",
+    "nova:rates": "tsx scripts/nova-rates.ts",
     "nova:selftest": "tsx scripts/nova-sonic-selftest.ts",
     "openai:llm:selftest": "tsx scripts/openai-llm-selftest.ts",
     "openai:realtime:selftest": "tsx scripts/openai-realtime-selftest.ts",
@@ -36,6 +37,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1134.0",
+    "@smithy/node-http-handler": "^4.12.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

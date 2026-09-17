@@ -250,7 +250,7 @@ labelled a **floor, not a bill**.
 ```bash
 cd backend  && npm run turn:selftest             # 36 checks on turn attribution and the TTFA derivation
 cd backend  && npm run usage:selftest            # 133 checks on arithmetic, persistence, redaction and per-leg latency medians
-cd backend  && npm run catalog:selftest          # 111 checks — every provider/model/language path the UI can click
+cd backend  && npm run catalog:selftest          # 114 checks — every provider/model/language path the UI can click
 cd backend  && npm run gemini:selftest           # 37 checks incl. token-usage parsing
 cd backend  && npm run murf:selftest             # 40 checks against a local fake
 cd backend  && npm run recorder:selftest         # 40 checks on the conversation recorder's timeline, against real files
@@ -258,16 +258,21 @@ cd backend  && npm run gemini:speech:selftest    # 80 checks — Gemini TTS + ST
 cd backend  && npm run elevenlabs:selftest       # 57 checks against a local fake
 cd backend  && npm run openai:realtime:selftest  # 130 checks against a local fake
 cd backend  && npm run openai:llm:selftest       # 55 checks against a local fake
+cd backend  && npm run nova:selftest             # 110 checks against a local fake — but see the Nova Sonic
+                                                 # section: that fake stands in for an HTTP/2 stream, so it is
+                                                 # further from the vendor than any other fake here
+cd backend  && npm run auth:selftest             # 30 checks on the login layer
+cd backend  && npm run nova:rates                # re-measures Nova Sonic's published rates (no key, bills nothing)
 cd backend  && npm run models                    # 10 checks against the vendors' free model listings (needs a key, bills nothing)
 cd backend  && npm run smoke                     # usage + summary over the real WS protocol
 cd backend  && npm run realtime:probe            # a realtime turn with real SPEECH in (needs a key, billable)
-cd frontend && npm run render-check              # 88 checks: actually renders every panel, and pins the rules
+cd frontend && npm run render-check              # 102 checks: actually renders every panel, and pins the rules
                                                  # (voice resolution, leg overlap, TTFA attribution) that only a call can prove.
                                                  # tsc did not catch this project's last UI crash. Start the backend
                                                  # and it additionally runs against the live 26-provider catalog.
 ```
 
-719 backend checks plus 91 frontend render checks, none of which needs a key or a network. Read the caveat in
+862 backend checks plus 102 frontend render checks, none of which needs a key or a network. Read the caveat in
 [The five late providers, and what contact with the vendor changed](#the-five-late-providers-and-what-contact-with-the-vendor-changed)
 before treating `gemini:speech`, `elevenlabs`, `openai:realtime` or `openai:llm` as evidence of
 anything about a vendor — they run against fakes. `models`, `smoke`, `roundtrip` and
@@ -884,9 +889,47 @@ worth probing.
   cannot be priced here. `gpt-5.6-sol` is also on promotional pricing through at least
   2026-11-21, with no published post-promo number to step to.
 
+### How to re-verify these
+
+Every command below has been run against the live vendor on 2026-09-05. Re-run them after any
+change to a request shape. (Nova Sonic's commands are NOT here — nothing of its has ever been
+run; they are in its own section below.)
+
+```bash
+cd backend
+npm run gemini:speech      # Gemini TTS -> Gemini Transcribe round trip
+npm run elevenlabs         # ElevenLabs TTS -> Cartesia Ink round trip
+
+# any pairing works; mix vendors to isolate a bad leg
+TTS=gemini-tts TTS_MODEL=gemini-3.1-flash-tts-preview VOICE=Kore TTS_LANG=en-US \
+STT=sarvam-stt STT_MODEL='saaras:v3-realtime@fast' STT_LANG=en-IN \
+  npx tsx scripts/roundtrip.ts "Our refund window is thirty days from the date of purchase."
+
+# the OpenAI LLM leg, through the full protocol (needs npm run dev)
+STT=mock-stt LLM=openai-llm LLM_MODEL='gpt-5.6-luna@none' TTS=mock-tts \
+  node scripts/smoke.mjs pipeline
+```
+
+```bash
+# the realtime leg with real SPEECH in, which smoke.mjs cannot do (it sends text,
+# so it never bills a single audio input token)
+npm run realtime:probe
+
+```
+
+`npm run realtime:probe` is the only check that exercises the audio-in half of a speech-to-speech turn,
+and therefore the only one that can tell whether `audioInputTokens` is reported at all. It
+asserts the audio breakdown is non-zero, is contained by its total, and prices — a realtime leg
+billed entirely at the text rate would understate the turn ~8x while still looking like a number.
+
+Everything in THIS section is measured — it covers the five providers above, not Nova Sonic,
+which has never completed a call. The self-tests are not measurements either: they run against
+local fakes, and per the claim-discipline rule a green suite may never be restated as vendor
+evidence.
+
 ## AWS Nova Sonic — wired end to end, and NOT yet verified
 
-Added 2026-09-17 as the third realtime provider. **It has never completed a call**, because this
+Added 2026-09-17 as the third *implemented* realtime provider, after the mock and OpenAI Realtime. **It has never completed a call**, because this
 repo has no AWS credentials. That makes it the only implemented provider here whose request shape
 rests entirely on documentation, and this section exists so nobody mistakes "83 checks pass" for
 "it works".
@@ -907,9 +950,11 @@ reason to expect Nova Sonic to be the exception.
 | Input 16 kHz / output 24 kHz PCM16 | enum allows 8/16/24 kHz; every AWS sample uses 16 kHz in, 24 kHz out | doc-derived |
 | Two barge-in signals: `contentEnd.stopReason: "INTERRUPTED"` and the literal text `{ "interrupted" : true }` | both appear in AWS's own sample handlers | doc-derived |
 | `usageEvent` splits `speechTokens` from `textTokens` | output-events page | doc-derived |
-| Per-region pricing, us-east-1 $3.00/$12.00 speech, $0.33/$2.75 text per 1M | the JSON feed behind the Bedrock pricing page, read 2026-09-17 | doc-derived, never reconciled against a bill |
+| Per-region pricing, all four regions | `npm run nova:rates`, 2026-09-17 — resolves the pricing page's `{priceOf!…!<code>}` placeholders against the feed those codes key into | **measured**, never reconciled against a bill |
+| Endpointing pause 1.5s / 1.75s / 2.0s (HIGH/MEDIUM/LOW), the 8-minute stream cap, v1's 2026-09-14 EOL, four-region availability | Nova 2 user guide and model cards | doc-derived |
+| **Negatives**: no language parameter; no cancel event for barge-in; no speech-end event; closing the audio block ends the conversation; no `us.` inference-profile prefix | absence from the docs — i.e. nothing observed, only nothing written | doc-derived, **unprobed**, and negatives are the ones this repo has had to retract before |
 
-The measured row is worth exactly what it says and no more. Authentication is checked **before**
+The measured rows are worth exactly what they say and no more. Authentication is checked **before**
 the request body is, so a 403 proves the transport and proves nothing whatsoever about whether
 Bedrock accepts a single one of the events above.
 
@@ -922,10 +967,12 @@ REALTIME=aws-nova-sonic REALTIME_MODEL='amazon.nova-2-sonic-v1:0' node scripts/s
 # -> FAIL: Failed to start session: The security token included in the request is invalid.
 ```
 
-### The five open questions, and the probe that answers them
+### The six open questions, and the probe that answers them
 
-`npm run nova:probe` needs a real key and asks AWS each question directly, printing the vendor's
-own error text rather than a paraphrase. **Run it before trusting any number this provider
+`npm run nova:probe` asks AWS each question directly, printing the vendor's own error text rather
+than a paraphrase. It needs **two** keys — AWS credentials, and a TTS key to synthesise the spoken
+question with (`TTS=` / `TTS_MODEL=`, default `elevenlabs-tts`), because Nova endpoints on real
+speech and a tone will not produce a turn. **Run it before trusting any number this provider
 produces.** It costs cents.
 
 1. **Does `amazon.nova-2-sonic-v1:0` work at all?** The API reference and the SDK JSDoc say no.
@@ -942,6 +989,22 @@ produces.** It costs cents.
 5. **Does `totalInputTokens` equal `speechTokens + textTokens`?** AWS documents both and never
    says how they relate. The provider sums the halves itself so the containment rule `priceLeg`
    subtracts on is true by construction; the probe prints both so that choice is checkable.
+6. **Does Bedrock refuse a language field?** The claim "Nova has no language parameter" is load-
+   bearing — it is why `config.language` is dropped — and nothing has ever tested it against the
+   service. The self-test only proves *our* emitter omits it, which is a different claim. Asked as
+   a negative, three times.
+
+The probe reports `INCONCLUSIVE` rather than a verdict when a session times out silently or fails
+with anything other than a `validationException`. That is deliberate: an earlier version collapsed
+"the service refused this" together with "nothing came back", so a timeout printed *"STILL SERVED
+despite the model card's EOL date"* — a probe that can invent the claim it exists to test.
+
+```bash
+cd backend
+npm run nova:rates     # re-measure the published rates (no key, bills nothing)
+npm run nova:probe     # the six questions, asked of AWS directly (needs both keys)
+REALTIME=aws-nova-sonic REALTIME_MODEL='amazon.nova-2-sonic-v1:0' npm run realtime:probe
+```
 
 ### Three things about this vendor that are structurally different
 
@@ -966,8 +1029,27 @@ bucket as Cartesia: same definition of t0, local detector. Set `NOVA_SONIC_ENDPO
 by 21% for the same tokens, and `Rate` keys on provider and model only. The region is resolved once
 from the environment, and a region not in the table gets **no rate at all** rather than the
 us-east-1 numbers — a Tokyo user given a confident figure 21% under their real bill is worse than a
-leg that reports itself unpriced. `eu-north-1` is absent for that reason: the feed gave its
-speech-input rate but not the other three, and three quarters of a rate is not a rate.
+leg that reports itself unpriced.
+
+The provenance of those numbers was wrong when this section was first written, and the correction
+is the useful part. They were attributed to the JSON feed behind the Bedrock pricing page — but
+that feed names nothing: no "nova", no "sonic", not even "speech", only opaque rate codes, so the
+figures could not have come from it as claimed. What is true is that the *rendered* page carries
+`{priceOf!bedrock/bedrock!<RegionlessRateCode>!*!1000}` placeholders in a table row per model and
+modality, and those codes are the feed's keys. `npm run nova:rates` resolves one against the other,
+which turns the rates from a citation into a measurement and finds all four regions — including
+`eu-north-1`, which the original pass had dropped for want of three of its four numbers:
+
+| region | speech in | speech out | text in | text out |
+|---|---|---|---|---|
+| us-east-1 | $3.00 | $12.00 | $0.33 | $2.75 |
+| us-west-2 | $3.00 | $12.00 | $0.319 | $2.651 |
+| eu-north-1 | $2.91 | $11.65 | $0.363 | $2.992 |
+| ap-northeast-1 | $3.63 | $14.52 | $0.396 | $3.311 |
+
+A caveat that is invisible when it bites: `rates.ts` reads the region from `process.env` at module
+load, while the session reads its own from `ctx.credentials`. They are the same thing in the server;
+a script that injects a different region runs in one and is billed in another.
 
 ### Two limits that are the vendor's, not this bench's
 
@@ -980,44 +1062,6 @@ speech-input rate but not the other three, and three quarters of a rate is not a
   is deliberately dropped rather than forwarded. A self-test check asserts no language reaches the
   wire under any spelling, because "add the language, every other provider takes one" is the
   obvious-looking change.
-
-### How to re-verify these
-
-Every command below has been run against the live vendor on 2026-09-05. Re-run them after any
-change to a request shape:
-
-```bash
-cd backend
-npm run gemini:speech      # Gemini TTS -> Gemini Transcribe round trip
-npm run elevenlabs         # ElevenLabs TTS -> Cartesia Ink round trip
-
-# any pairing works; mix vendors to isolate a bad leg
-TTS=gemini-tts TTS_MODEL=gemini-3.1-flash-tts-preview VOICE=Kore TTS_LANG=en-US \
-STT=sarvam-stt STT_MODEL='saaras:v3-realtime@fast' STT_LANG=en-IN \
-  npx tsx scripts/roundtrip.ts "Our refund window is thirty days from the date of purchase."
-
-# the OpenAI LLM leg, through the full protocol (needs npm run dev)
-STT=mock-stt LLM=openai-llm LLM_MODEL='gpt-5.6-luna@none' TTS=mock-tts \
-  node scripts/smoke.mjs pipeline
-```
-
-```bash
-# the realtime leg with real SPEECH in, which smoke.mjs cannot do (it sends text,
-# so it never bills a single audio input token)
-npm run realtime:probe
-
-# the same, against Nova Sonic — NEVER RUN; see the Nova Sonic section above
-REALTIME=aws-nova-sonic REALTIME_MODEL='amazon.nova-2-sonic-v1:0' npm run realtime:probe
-npm run nova:probe         # the five open questions, asked of AWS directly
-```
-
-`npm run realtime:probe` is the only check that exercises the audio-in half of a speech-to-speech turn,
-and therefore the only one that can tell whether `audioInputTokens` is reported at all. It
-asserts the audio breakdown is non-zero, is contained by its total, and prices — a realtime leg
-billed entirely at the text rate would understate the turn ~8x while still looking like a number.
-
-Everything in this section is measured. The self-tests still are not: they run against local
-fakes, and per the claim-discipline rule a green suite may never be restated as vendor evidence.
 
 ## Adding a provider
 

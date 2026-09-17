@@ -177,24 +177,40 @@ function openaiRealtime(
  * and Cartesia credit overrides directly above — this is the same kind of
  * process-level configuration.
  *
- * A region NOT in the table below is left with no rate at all, which reports
- * the leg as unpriced and labels the session total a floor. Falling back to the
- * us-east-1 numbers would be the tempting move and it is the wrong one: it
- * would hand a Tokyo user a confident figure that is 21% under what AWS
- * actually charges them, and nothing in the UI would hint at it. eu-north-1 is
- * absent for exactly this reason — the pricing feed gave its speech-input rate
- * but not the other three, and three quarters of a rate is not a rate.
+ * CAVEAT, because it is invisible when it bites: this reads `process.env` once,
+ * while the SESSION reads its region from `ctx.credentials.AWS_REGION`. In the
+ * server those are the same thing (`credentials()` hands over the environment),
+ * but a script that injects a different region — `nova:probe` does, via
+ * NOVA_PROBE_REGION — runs in one region and is priced in another, silently,
+ * against rates that differ by up to 21%.
  *
- * Source: the feed behind https://aws.amazon.com/bedrock/pricing/ —
- * b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/bedrock/USD/current/bedrock.json
- * read 2026-09-17. Marked `ambiguous` rather than `verified`: it was read out of
- * the backing JSON rather than off the rendered page, and no Nova Sonic call has
- * ever been made from this repo, let alone reconciled against a bill.
+ * A region NOT in the table gets no rate at all, which reports the leg unpriced
+ * and labels the session total a floor. Falling back to us-east-1 would be the
+ * tempting move and it is the wrong one: it would hand a Tokyo user a confident
+ * figure 21% under what AWS actually charges them, with nothing in the UI to
+ * hint at it.
+ *
+ * MEASURED 2026-09-17 by `npm run nova:rates`, which is committed precisely so
+ * this is re-checkable in one command.
+ *
+ * The provenance matters here because the first version of this block got it
+ * wrong. It cited the JSON feed behind the Bedrock pricing page as the source —
+ * but that feed names nothing at all: no "nova", no "sonic", not even "speech",
+ * only opaque rate codes. The numbers could not have been read from it as
+ * claimed. What is actually true is that the RENDERED page carries placeholders
+ * of the form `{priceOf!bedrock/bedrock!<RegionlessRateCode>!*!1000}` in a table
+ * row per model and modality, and those codes are the feed's keys; resolving one
+ * against the other is where these numbers come from. `nova-rates.ts` does
+ * exactly that, and fails loudly rather than silently if AWS moves either half.
+ *
+ * https://aws.amazon.com/bedrock/pricing/
  */
 const NOVA_SONIC_REGIONS: Record<string, { speech: { in: number; out: number }; text: { in: number; out: number } }> = {
-  'us-east-1': { speech: { in: 3.0, out: 12.0 }, text: { in: 0.33, out: 2.75 } },
-  'us-west-2': { speech: { in: 3.0, out: 12.0 }, text: { in: 0.319, out: 2.651 } },
+  // Emitted verbatim by `npm run nova:rates`. Do not hand-edit — re-run it.
   'ap-northeast-1': { speech: { in: 3.63, out: 14.52 }, text: { in: 0.396, out: 3.311 } },
+  'eu-north-1': { speech: { in: 2.91, out: 11.65 }, text: { in: 0.363, out: 2.992 } },
+  'us-east-1': { speech: { in: 3, out: 12 }, text: { in: 0.33, out: 2.75 } },
+  'us-west-2': { speech: { in: 3, out: 12 }, text: { in: 0.319, out: 2.651 } },
 };
 
 const NOVA_REGION = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'us-east-1';
@@ -212,14 +228,19 @@ function novaSonic(region: string): Rate | undefined {
     rate: `speech $${r.speech.in}/$${r.speech.out} · text $${r.text.in}/$${r.text.out} per 1M tokens (${region})`,
     source: 'https://aws.amazon.com/bedrock/pricing/',
     checkedOn: '2026-09-17',
-    confidence: 'ambiguous',
+    // Read off the vendor's own published price list, and re-readable in one
+    // command (`npm run nova:rates`). No source disagrees with another. Never
+    // reconciled against an actual AWS invoice, which no rate here has been.
+    confidence: 'verified',
     note:
       `Priced for ${region}; Nova Sonic rates are per-region and differ by up to 21%. ` +
       'AWS publishes no cached-token tier for this model, so none is modelled. Speech tokens ' +
       'cost ~9x text input and ~4.4x text output, which is why the split rate is not optional — ' +
       'a realtime turn is almost entirely speech. AWS: "The text tokens input and output pricing ' +
       'applies to specific use cases such as speech-to-text transcription, tool calls for task ' +
-      'completion or knowledge grounding, adding conversation history to the session etc."',
+      'completion or knowledge grounding, adding conversation history to the session etc." ' +
+      'UNDERCOUNT: this prices the model, not the session — the region is read from the process ' +
+      'environment, so a script injecting a different one is billed at the wrong region\'s rate.',
   };
 }
 

@@ -49,7 +49,20 @@ import { NovaSonicProvider } from '../src/providers/realtime/NovaSonicProvider.j
 import type { SessionEvents, VoiceSession } from '../src/providers/types.js';
 import type { DerivedMetrics, LegUsage, MetricMark, StartConfig } from '../src/shared/protocol.js';
 import { silence, tone } from '../src/audio/pcm.js';
-import { priceLeg } from '../src/pricing/rates.js';
+
+/*
+ * `pricing/rates.ts` resolves Nova's region from `process.env.AWS_REGION` ONCE,
+ * at module load, so it is imported dynamically below rather than statically up
+ * here — a static import would pin whatever region the shell happened to have
+ * and make the pricing checks depend on the developer's environment.
+ */
+type PriceLeg = (leg: LegUsage) => LegUsage;
+async function ratesFor(region: string): Promise<{ priceLeg: PriceLeg }> {
+  process.env.AWS_REGION = region;
+  // The query string busts Node's ESM cache so each region gets a fresh
+  // evaluation; without it every call would return the first region's table.
+  return (await import(`../src/pricing/rates.js?region=${encodeURIComponent(region)}`)) as { priceLeg: PriceLeg };
+}
 
 /* ------------------------------- the fake ------------------------------- */
 
@@ -540,10 +553,6 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
   check('audioSeconds reports the speech actually emitted',
     Math.abs((leg?.audioSeconds ?? 0) - 0.1) < 0.02, String(leg?.audioSeconds));
 
-  const priced = priceLeg(leg!);
-  check('the leg prices against the split speech/text rate, or says why not',
-    !!priced.cost || !!priced.unpricedReason,
-    priced.cost ? `USD ${priced.cost.amountUsd}` : priced.unpricedReason);
   await session.close();
 }
 
@@ -592,6 +601,7 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
     leg?.inputUnits === 0 && leg.outputUnits === 0,
     JSON.stringify({ in: leg?.inputUnits, out: leg?.outputUnits }));
 
+  const { priceLeg } = await ratesFor('us-east-1');
   const priced = priceLeg(leg!);
   check('pricing an unpriced leg does not produce a confident $0.00',
     !priced.cost && !!priced.unpricedReason, JSON.stringify(priced.cost));
@@ -702,15 +712,26 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
   push({ completionEnd: { completionId: 'c1', stopReason: 'END_TURN' } });
   await settle(120);
   const firstUsage = rec.usage.length;
+  const bytesAfterTurn1 = audioBytes(rec);
 
-  // Turn two opens; a straggler from turn one arrives.
+  // Turn two opens; a straggler from turn one arrives. On Nova this window is
+  // the ENDPOINTING PAUSE — 1.5-2.0s during which the new turn has not yet
+  // bound a completionId — so it is wide, not a millisecond race.
   speakThenPause(session);
   await settle(40);
   push({ audioOutput: { completionId: 'c1', contentId: 'b1', content: tone(400).toString('base64') } });
+  push({ usageEvent: USAGE_DELTA(500, 500, 500, 500) }); // a late usage duplicate for c1
   await settle(80);
 
+  /*
+   * These used to assert `rec.metrics.length === 1`, which is true whether or
+   * not the straggler was played — metrics only leave the provider at turn end.
+   * The check was vacuous and it hid a live bug: the straggler WAS played, it
+   * stamped `first_audio_out` on turn 2, and turn 2's headline TTFA came out at
+   * ~40ms for audio that had not arrived yet. Assert the bytes.
+   */
   check('audio from a retired completion is not played into the new turn',
-    rec.metrics.length === 1, `${rec.metrics.length} metric snapshots`);
+    audioBytes(rec) === bytesAfterTurn1, `${audioBytes(rec) - bytesAfterTurn1} straggler bytes reached the sink`);
   check('...and does not bill the new turn with the old one\'s counts',
     rec.usage.length === firstUsage, `${rec.usage.length}`);
 
@@ -722,6 +743,153 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
   await settle(120);
   check('turn two bills its OWN counts',
     rec.usage[1]?.legs[0]?.inputUnits === 5, String(rec.usage[1]?.legs[0]?.inputUnits));
+  check('...and the late usage for the retired completion is not billed twice',
+    (rec.usage[1]?.legs[0]?.inputUnits ?? 0) < 100, String(rec.usage[1]?.legs[0]?.inputUnits));
+  const t2 = rec.metrics.find((m) => m.turnId === 2);
+  check('turn two\'s TTFA is measured from ITS audio, not the previous turn\'s',
+    (t2?.derived.timeToFirstAudioMs ?? 0) > 100, `${t2?.derived.timeToFirstAudioMs}ms`);
+  await session.close();
+}
+
+/* ============ 17b. a phantom turn cannot be resurrected by a stray usage event ============ */
+/*
+ * The compound failure the straggler bug enabled: a late `usageEvent` for a
+ * RETIRED completion landed on a turn Nova never answered, set `sawUsage` on
+ * it, and so defeated the "a turn that never ran is not billed" guard — an
+ * invented turn, invoiced, marked `source: 'vendor'` with no unpriced reason.
+ */
+{
+  const { session, rec } = await open();
+  speakThenPause(session);
+  await settle();
+  push({ completionStart: { completionId: 'c1' } });
+  push({ contentStart: { completionId: 'c1', contentId: 'b1', type: 'AUDIO', role: 'ASSISTANT' } });
+  push({ audioOutput: { completionId: 'c1', contentId: 'b1', content: tone(60).toString('base64') } });
+  push({ usageEvent: USAGE_DELTA(100, 10, 200, 20) });
+  push({ completionEnd: { completionId: 'c1', stopReason: 'END_TURN' } });
+  await settle(140);
+
+  speakThenPause(session);        // a cough. Nova never opens a completion for it.
+  await settle(40);
+  push({ usageEvent: USAGE_DELTA(100, 10, 200, 20) });  // late duplicate for c1
+  await settle(100);
+  await session.close();
+  await settle(80);
+
+  check('a phantom turn is not resurrected by a retired completion\'s usage',
+    rec.usage.length === 1, JSON.stringify(rec.usage.map((u) => ({ t: u.turnId, in: u.legs[0].inputUnits }))));
+  check('...and is still reported as never billed',
+    rec.logs.some((l) => l.includes('produced no completion and was not billed')), rec.logs.join(' | '));
+}
+
+/* ============ 17c. overlapping completions: neither turn loses its bill ============ */
+/*
+ * A second `completionStart` used to overwrite the id in place, which threw the
+ * first completion's bill away entirely: its own usage and completionEnd then
+ * matched no turn and were dropped, so tokens AWS had already charged for never
+ * reached the invoice.
+ */
+{
+  const { session, rec } = await open();
+  speakThenPause(session);
+  await settle();
+  push({ completionStart: { completionId: 'c1' } });
+  push({ contentStart: { completionId: 'c1', contentId: 'b1', type: 'AUDIO', role: 'ASSISTANT' } });
+  push({ audioOutput: { completionId: 'c1', contentId: 'b1', content: tone(60).toString('base64') } });
+  await settle(60);
+  push({ completionStart: { completionId: 'c2' } });   // overlaps c1
+  await settle(60);
+  push({ usageEvent: USAGE_DELTA(100, 10, 200, 20) }); // belongs to c1
+  push({ completionEnd: { completionId: 'c1', stopReason: 'END_TURN' } });
+  push({ usageEvent: { ...USAGE_DELTA(1, 1, 1, 1), completionId: 'c2' } });
+  push({ completionEnd: { completionId: 'c2', stopReason: 'END_TURN' } });
+  await settle(160);
+
+  const billed = rec.usage.map((u) => u.legs[0].inputUnits).sort((a, b) => b - a);
+  check('an overlapped completion still bills its own tokens',
+    billed.includes(110), JSON.stringify(rec.usage.map((u) => ({ t: u.turnId, in: u.legs[0].inputUnits }))));
+  check('...and the overlap is reported rather than silently absorbed',
+    rec.logs.some((l) => l.includes('while') && l.includes('still live')), rec.logs.join(' | '));
+  await session.close();
+}
+
+/* ============ 17d. barge-in through the LOCAL detector tells the recorder ============ */
+/*
+ * The ordinary voice barge-in path under server VAD, and the one that was
+ * missing: the user talks over the assistant, the local detector opens the next
+ * turn, and the turn still speaking is closed. `endTurn` did not raise
+ * `onInterrupt`, so seconds of never-heard speech stayed in the stereo
+ * recording and displaced every later assistant turn in the file.
+ */
+{
+  const { session, rec } = await open();
+  speakThenPause(session);
+  await settle();
+  push({ completionStart: { completionId: 'c1' } });
+  push({ contentStart: { completionId: 'c1', contentId: 'b1', type: 'AUDIO', role: 'ASSISTANT' } });
+  push({ audioOutput: { completionId: 'c1', contentId: 'b1', content: tone(3000).toString('base64') } });
+  await settle(100);
+
+  speakThenPause(session);   // the user talks over it
+  await settle(60);
+  check('a local-detector barge-in raises onInterrupt so the recorder truncates',
+    rec.interrupts === 1, `${rec.interrupts}`);
+
+  push({ contentEnd: { completionId: 'c1', contentId: 'b1', stopReason: 'INTERRUPTED' } });
+  await settle(60);
+  check('...and the vendor\'s own INTERRUPTED arriving later does not truncate twice',
+    rec.interrupts === 1, `${rec.interrupts}`);
+  await session.close();
+}
+
+/* ============ 17e. a turn that emitted nothing is not a barge-in ============ */
+{
+  const { session, rec } = await open();
+  speakThenPause(session);            // turn 1, no audio ever emitted
+  await settle(40);
+  push({ completionStart: { completionId: 'c1' } });
+  await settle(40);
+  speakThenPause(session);            // turn 2 opens, closing the silent turn 1
+  await settle(60);
+  check('closing a turn that emitted no audio raises no onInterrupt',
+    rec.interrupts === 0, `${rec.interrupts}`);
+  await session.close();
+}
+
+/* ============ 17f. an interruption labelled with the PREVIOUS completion ============ */
+/*
+ * Typing mid-answer opens the next turn first, so the interruption that the
+ * typing CAUSED arrives labelled with the previous completion. Ending
+ * `this.active` there killed the turn the user had just started: it emitted an
+ * empty turn_start/turn_end pair, stranded the user's own text on it, and
+ * pushed the real answer onto a third turn whose t0 was the completion start —
+ * i.e. Nova's endpointing pause, the exact thing t0 is defined to exclude.
+ */
+{
+  const { session, rec } = await open({ turnDetection: 'manual' });
+  session.commitAudio();
+  await settle(40);
+  push({ completionStart: { completionId: 'c1' } });
+  push({ contentStart: { completionId: 'c1', contentId: 'b1', type: 'AUDIO', role: 'ASSISTANT' } });
+  push({ audioOutput: { completionId: 'c1', contentId: 'b1', content: tone(500).toString('base64') } });
+  await settle(80);
+
+  session.sendText('actually, never mind');          // opens turn 2
+  await settle(40);
+  push({ contentEnd: { completionId: 'c1', contentId: 'b1', stopReason: 'INTERRUPTED' } });
+  await settle(80);
+  push({ completionStart: { completionId: 'c2' } });
+  push({ contentStart: { completionId: 'c2', contentId: 'b2', type: 'AUDIO', role: 'ASSISTANT' } });
+  push({ audioOutput: { completionId: 'c2', contentId: 'b2', content: tone(60).toString('base64') } });
+  await settle(100);
+
+  check('an interruption labelled with the OLD completion does not kill the new turn',
+    rec.turnStarts.length === 2, `turns opened: ${rec.turnStarts.join(',')}`);
+  check('...so the typed text and the answer land on the SAME turn',
+    rec.user.at(-1)?.turnId === 2 && rec.metrics.every((m) => m.turnId !== 3),
+    `user on turn ${rec.user.at(-1)?.turnId}`);
+  check('...and no "completion with no turn open" warning is raised',
+    !rec.logs.some((l) => l.includes('no turn open')), rec.logs.join(' | '));
   await session.close();
 }
 
@@ -814,23 +982,85 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
   await session.close();
 }
 
-/* ============ 21. credentials come from ctx, never process.env ============ */
+/* ============ 21. the speech/text split actually prices, to the cent ============ */
+/*
+ * The Nova rate had NO test behind it: setting all four us-east-1 numbers to
+ * zero left the whole suite green, because the only assertion was
+ * `!!priced.cost || !!priced.unpricedReason` — and `priceLeg` always sets
+ * exactly one of those, so it was a tautology that could not fail.
+ *
+ * The expected figures below are computed BY HAND from the rates
+ * `npm run nova:rates` reads off AWS, so if the table drifts these go red
+ * rather than quietly following it:
+ *
+ *   us-east-1  1100 speech-in  x $3.00/1M  = 0.0033
+ *               100 text-in    x $0.33/1M  = 0.000033
+ *               750 speech-out x $12.00/1M = 0.009
+ *                50 text-out   x $2.75/1M  = 0.0001375
+ *                                    total = 0.0124705
+ */
 {
-  process.env.AWS_ACCESS_KEY_ID = 'process-env-key-that-must-not-be-used';
-  process.env.AWS_SECRET_ACCESS_KEY = 'process-env-secret';
-  const { session, rec } = await open();
-  // If the provider had read process.env it would have built a real Bedrock
-  // transport and tried to reach AWS instead of the fake, which would show up
-  // as a failed handshake or an error here.
-  check('a session with no AWS keys in ctx.credentials still runs on the injected endpoint',
-    rec.errors.length === 0 && sentOf('sessionStart').length === 1, rec.errors.join('; '));
-  await session.close();
-  delete process.env.AWS_ACCESS_KEY_ID;
-  delete process.env.AWS_SECRET_ACCESS_KEY;
+  const leg = (): LegUsage => ({
+    leg: 'realtime', providerId: 'aws-nova-sonic', modelId: 'amazon.nova-2-sonic-v1:0',
+    unit: 'tokens', inputUnits: 1200, outputUnits: 800,
+    audioInputTokens: 1100, audioOutputTokens: 750, source: 'vendor',
+  });
+
+  const us = await ratesFor('us-east-1');
+  const usCost = us.priceLeg(leg()).cost;
+  check('us-east-1 prices a split speech/text leg to the hand-computed cent',
+    Math.abs((usCost?.amountUsd ?? 0) - 0.0124705) < 1e-9, String(usCost?.amountUsd));
+  check('...in USD, the currency AWS actually bills in',
+    usCost?.currency === 'USD', usCost?.currency);
+  check('...and names the region in the rate string, since the price depends on it',
+    (usCost?.rate ?? '').includes('us-east-1'), usCost?.rate);
+
+  // Tokyo is 21% more for the same tokens. A region fallback would hide that.
+  const tokyo = await ratesFor('ap-northeast-1');
+  const tokyoCost = tokyo.priceLeg(leg()).cost;
+  check('ap-northeast-1 prices the SAME leg 21% higher, hand-computed',
+    Math.abs((tokyoCost?.amountUsd ?? 0) - 0.01508815) < 1e-9, String(tokyoCost?.amountUsd));
+  check('...so the region genuinely changes the bill, rather than being cosmetic',
+    (tokyoCost?.amountUsd ?? 0) > (usCost?.amountUsd ?? 0));
+
+  // The speech half dominates: billing it at the text rate would understate the
+  // turn ~9x while still looking like a number. This is what the split is FOR.
+  const textOnly = us.priceLeg({ ...leg(), audioInputTokens: 0, audioOutputTokens: 0 });
+  check('billing the same tokens as TEXT would understate the turn several-fold',
+    (textOnly.cost?.amountUsd ?? 0) * 4 < (usCost?.amountUsd ?? 0),
+    `text-only ${textOnly.cost?.amountUsd} vs split ${usCost?.amountUsd}`);
+
+  const unlisted = await ratesFor('ca-central-1');
+  const unlistedLeg = unlisted.priceLeg(leg());
+  check('a region with no published rate is UNPRICED, not silently us-east-1',
+    !unlistedLeg.cost && !!unlistedLeg.unpricedReason, JSON.stringify(unlistedLeg.cost));
+
+  const legacy = us.priceLeg({ ...leg(), modelId: 'amazon.nova-sonic-v1:0' });
+  check('the legacy v1 model id has no rate on file and is not billed at v2 prices',
+    !legacy.cost && !!legacy.unpricedReason, JSON.stringify(legacy.cost));
+
+  const contradictory = us.priceLeg({ ...leg(), audioInputTokens: 5000 });
+  check('a breakdown larger than its total is refused rather than clamped',
+    !contradictory.cost && (contradictory.unpricedReason ?? '').includes('inconsistent'),
+    contradictory.unpricedReason);
 }
 
-/* ============ 22. a missing key fails start() rather than half-opening ============ */
+/* ============ 22. credentials come from ctx, NEVER process.env ============ */
+/*
+ * This check used to be unable to fail. The env vars were deleted before the
+ * only case that could observe a leak ran, so a provider reading
+ * `process.env.AWS_ACCESS_KEY_ID ?? creds.AWS_ACCESS_KEY_ID` passed happily —
+ * in CI, where a real key is present, that is precisely the wrong answer.
+ *
+ * So the environment is POPULATED here, and `NOVA_SONIC_WS_BASE` is withheld:
+ * the provider must still refuse to start, because the only keys it is allowed
+ * to see are the ones in `ctx.credentials`, and there are none.
+ */
 {
+  const saved = { id: process.env.AWS_ACCESS_KEY_ID, secret: process.env.AWS_SECRET_ACCESS_KEY };
+  process.env.AWS_ACCESS_KEY_ID = 'process-env-key-that-must-not-be-used';
+  process.env.AWS_SECRET_ACCESS_KEY = 'process-env-secret-that-must-not-be-used';
+
   const events: SessionEvents = {
     onUserTranscript: () => {}, onAssistantTranscript: () => {}, onAudio: () => {},
     onTurnStart: () => {}, onTurnEnd: () => {}, onMetrics: () => {}, onUsage: () => {},
@@ -844,7 +1074,7 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
       systemPrompt: 'x', turnDetection: 'server_vad',
     },
     events,
-    credentials: {}, // no NOVA_SONIC_WS_BASE, no AWS keys
+    credentials: {}, // nothing at all — not even the fake transport's base
   });
   let message = '';
   try {
@@ -852,8 +1082,126 @@ const USAGE_DELTA = (speechIn: number, textIn: number, speechOut: number, textOu
   } catch (err) {
     message = (err as Error).message;
   }
-  check('start() rejects when the AWS keys are absent',
-    message.includes('AWS_ACCESS_KEY_ID'), message || 'start() resolved');
+  check('start() refuses even though AWS keys ARE in process.env',
+    message.includes('AWS_ACCESS_KEY_ID'), message || 'start() resolved — the provider read process.env');
+
+  // And the fake transport must still be reachable with no AWS keys in ctx.
+  const { session: s2, rec } = await open();
+  check('a session with no AWS keys in ctx.credentials runs on the injected endpoint',
+    rec.errors.length === 0 && sentOf('sessionStart').length === 1, rec.errors.join('; '));
+  await s2.close();
+
+  if (saved.id === undefined) delete process.env.AWS_ACCESS_KEY_ID; else process.env.AWS_ACCESS_KEY_ID = saved.id;
+  if (saved.secret === undefined) delete process.env.AWS_SECRET_ACCESS_KEY; else process.env.AWS_SECRET_ACCESS_KEY = saved.secret;
+}
+
+/* ============ 23. interleaved content blocks route by contentId, not by luck ============ */
+/*
+ * Every transcript scenario above opens a block and immediately sends its text,
+ * so the "last block opened" fallback happens to be right every time — the
+ * `contentId` map could be deleted entirely and the suite stayed green. Nova
+ * opens the USER ASR block and the ASSISTANT block before the text of either
+ * arrives, and then the fallback publishes the model's answer as the USER's own
+ * words.
+ */
+{
+  const { session, rec } = await open();
+  speakThenPause(session);
+  await settle();
+  push({ completionStart: { completionId: 'c1' } });
+  push({ contentStart: { completionId: 'c1', contentId: 'u1', type: 'TEXT', role: 'USER',
+    additionalModelFields: '{"generationStage":"FINAL"}' } });
+  push({ contentStart: { completionId: 'c1', contentId: 'a1', type: 'TEXT', role: 'ASSISTANT',
+    additionalModelFields: '{"generationStage":"FINAL"}' } });
+  // Both blocks are open. Now the text arrives, oldest block first.
+  push({ textOutput: { completionId: 'c1', contentId: 'u1', content: 'what is the refund window' } });
+  push({ textOutput: { completionId: 'c1', contentId: 'a1', content: 'Thirty days.' } });
+  await settle(120);
+
+  check('the USER block\'s text is published as the user, with blocks interleaved',
+    rec.user.some((u) => u.text === 'what is the refund window'), JSON.stringify(rec.user));
+  check('the ASSISTANT block\'s text is published as the assistant, not as the user',
+    rec.assistant.some((a) => a.text === 'Thirty days.') &&
+      !rec.user.some((u) => u.text.includes('Thirty days')),
+    JSON.stringify({ user: rec.user, assistant: rec.assistant }));
+  await session.close();
+}
+
+/* ============ 24. a dead stream stops accepting microphone audio ============ */
+/*
+ * The transport layer above does not tear a session down on `onError` — it only
+ * forwards the message to the browser. So after the stream died the session
+ * stayed open and kept feeding mic frames into a queue nothing would ever drain
+ * again, for as long as the tab held the microphone: ~43 KB/s of retained
+ * base64 with no consumer.
+ */
+{
+  const { session, rec } = await open();
+  speakThenPause(session);
+  await settle();
+  serverWs?.close(1011, 'upstream gone');
+  await settle(200);
+  check('the dropped stream is reported', rec.errors.some((e) => e.includes('closed unexpectedly')));
+
+  /*
+   * Asserted on the session's own state rather than on what the fake received.
+   * Once the fake's socket is closed nothing arrives either way, so counting
+   * frames at the far end cannot tell "the session stopped accepting audio"
+   * from "the socket was shut". The flag is what `pushAudio` actually gates on,
+   * and reading it directly is the same shape as the sessionRate check above.
+   */
+  check('a dead stream marks the session closed, so pushAudio stops feeding the queue',
+    (session as unknown as { closed: boolean }).closed === true,
+    String((session as unknown as { closed: boolean }).closed));
+
+  const before = received.length;
+  for (let i = 0; i < 40; i++) session.pushAudio(tone(60, 220, 24000));
+  await settle(80);
+  check('...and no post-mortem mic frame reaches the transport',
+    received.length === before, `${received.length - before} frames accepted post-mortem`);
+  await session.close();
+}
+
+/* ============ 25. teardown is AWAITED, so it can actually reach the vendor ============ */
+/*
+ * `close()` queued contentEnd/promptEnd/sessionEnd and then destroyed the
+ * transport in the same synchronous run. The SDK pulls from the queue on a
+ * microtask that cannot run until `close()` yields, so on the real transport the
+ * HTTP/2 session was already gone by the time those three were pulled and none
+ * of them ever went out — while this suite's WebSocket fake, which sends
+ * synchronously, showed them leaving and proved only the ORDER.
+ *
+ * The fake cannot reproduce the microtask ordering, so what is asserted here is
+ * the contract that fixes it: `endInput()` is awaitable and resolves only once
+ * the queue has actually drained.
+ */
+{
+  const { EventQueue } = await import('../src/providers/realtime/NovaSonicProvider.js') as any;
+  if (typeof EventQueue === 'function') {
+    const q = new EventQueue();
+    q.push({ event: { contentEnd: {} } });
+    q.push({ event: { promptEnd: {} } });
+    q.push({ event: { sessionEnd: {} } });
+    let pulled = 0;
+    const consume = (async () => { for await (const _ of q.stream()) pulled += 1; })();
+    q.close();
+    await q.whenDrained;
+    check('whenDrained resolves only after every queued event has been pulled',
+      pulled === 3, `${pulled} of 3 pulled`);
+    await consume;
+
+    // The other half of the leak: a closed queue must not retain what is
+    // pushed into it afterwards, or a dead stream accumulates mic frames.
+    const dead = new EventQueue();
+    dead.close();
+    for (let i = 0; i < 100; i++) dead.push({ event: { audioInput: {} } });
+    let pulledAfter = 0;
+    for await (const _ of dead.stream()) pulledAfter += 1;
+    check('a closed queue retains nothing pushed after it',
+      pulledAfter === 0, `${pulledAfter} events retained`);
+  } else {
+    check('EventQueue is exported so the drain contract can be tested', false, 'not exported');
+  }
 }
 
 /* ------------------------------- report ------------------------------- */

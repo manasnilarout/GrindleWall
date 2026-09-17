@@ -520,12 +520,17 @@ export const CATALOG: ProviderEntry[] = [
       },
     ],
     /*
-     * The same 16 ids flat, as the fallback `voicesFor()` uses when no language
-     * is selected. Stored lowercase because that is the spelling the
-     * `promptStart` voiceId enum publishes; whether Nova is case-SENSITIVE
-     * about it is an open question the probe asks deliberately, since this repo
-     * has been burned once already by assuming a vendor's id spelling (Murf's
-     * "Namrita").
+     * The same 16 ids flat. `voicesFor()` never actually reaches this for Nova —
+     * it falls back to the first LANGUAGE that has voices long before it looks
+     * at the provider, so a caller with no language selected gets the en-US
+     * pair, not this list. It is kept because the catalog invariant is that a
+     * provider exposing voices publishes them, and `catalog:selftest` asserts
+     * it; treat it as the union of the per-language lists, not as a fallback.
+     *
+     * Stored lowercase because that is the spelling the `promptStart` voiceId
+     * enum publishes; whether Nova is case-SENSITIVE about it is an open
+     * question the probe asks deliberately, since this repo has been burned
+     * once already by assuming a vendor's id spelling (Murf's "Namrita").
      */
     voices: [
       { id: 'tiffany', name: 'Tiffany (en-US, polyglot)' },

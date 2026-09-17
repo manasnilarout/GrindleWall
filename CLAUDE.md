@@ -44,7 +44,8 @@ Verification scripts, all in `backend/`:
 | `npm run elevenlabs:buffer` | yes | re-measures rendered audio duration per `chunk_length_schedule` / `auto_mode` — the probe behind those two constants |
 | `npm run openai:realtime:selftest` | no | OpenAI Realtime event handling against a local fake |
 | `npm run nova:selftest` | no | Nova Sonic event handling against a local fake — note its transport is a WS stand-in, not Bedrock's HTTP/2 |
-| `npm run nova:probe` | yes | the five open Nova Sonic questions, asked of AWS directly. **Never run** — no AWS key here |
+| `npm run nova:probe` | yes (AWS **and** a TTS key) | the six open Nova Sonic questions, asked of AWS directly. **Never run** — no AWS key here |
+| `npm run nova:rates` | no | re-measures Nova Sonic's published per-region rates from AWS's own price list |
 | `npm run openai:llm:selftest` | no | OpenAI Responses SSE + usage parsing against a local fake |
 | `npm run models` | yes (either) | asks Google/OpenAI which models exist and checks every catalog id against the answer — free listing endpoints, bills nothing |
 | `npm run roundtrip` | yes | any TTS → STT pair: synthesise, stream back at real time, print transcript + latency |
@@ -139,7 +140,7 @@ Key files:
 - **t0 for every latency number is the moment the user stopped speaking** — the
   `user_speech_end` mark, set by `beginTurn()`. Vendor server-side VAD supplies it where
   available (Sarvam `vad.speech_end`, OpenAI `speech_stopped`), the local `SpeechEndDetector`
-  where not (Cartesia, **Nova Sonic**). Same definition, different detector; keep it that way
+  where not (Cartesia, Gemini, **Nova Sonic**). Same definition, different detector; keep it that way
   rather than moving t0. Nova is the case that shows why: it publishes no speech-end event, and
   its earliest turn marker (`completionStart`) only fires after its own 1.5-2.0s endpointing
   pause, so taking t0 from the vendor would charge Nova ~2s of its own turn-taking policy on
@@ -216,7 +217,7 @@ Key files:
 
 ### AWS Nova Sonic is wired but UNVERIFIED
 
-Added 2026-09-17 as the third realtime provider and it has **never completed a call** — there
+Added 2026-09-17 as the third IMPLEMENTED realtime provider (after the mock and OpenAI) and it has **never completed a call** — there
 are no AWS credentials in this repo. It is the only `implemented: true` provider whose request
 shape is entirely doc-derived, and README's "AWS Nova Sonic" section is the record of exactly
 what is established and what is not. Do not quote a Nova Sonic capability as measured, and do
