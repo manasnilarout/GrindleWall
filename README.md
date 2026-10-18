@@ -137,6 +137,30 @@ indefinitely; `SESSION_DIR` moves them and `SESSION_MAX_RECORDS` caps them (off 
 deleting a measurement someone is mid-comparison on is worse than the disk use). Past conversations are listed in the UI's Compare view and served from
 `GET /api/sessions` and `GET /api/sessions/:id`.
 
+### Exporting a stack to MagickVoice
+
+**Create code**, under the command block on the rig rail, turns a pipeline rig into a voice-stack
+code (`mvs1.…`) that MagickVoice imports. Pick the languages the stack should cover — only ones both
+the STT and TTS models list are offered — and a voice for each. The two legs keep their own code for
+a language where their catalogs spell it differently (in this bench's catalog, Sarvam's Odia is
+`or-IN` on STT and `od-IN` on TTS); the stack row is keyed by the base code both normalise to. The first row is the default.
+
+The dialog also cites the recorded sessions that ran the same three providers and models, with their
+TTFA and cost per minute, as provenance inside the code. Those numbers are informational; MagickVoice
+does not read them.
+
+What blocks an export: realtime rigs, mock providers, a provider or `@variant` with no MagickVoice
+equivalent (the map is `frontend/src/lib/voice-stack/export.ts`), a language or voice the bench catalog
+does not list for that model. Custom voice ids and languages never measured on this combination are
+warnings, not blockers. The checks run against this bench's catalog only — MagickVoice validates the
+code again on import and says what it cannot run.
+
+The spec, codec and language normaliser are MagickVoice core's own files, copied into
+`frontend/src/lib/voice-stack/` by `cd frontend && npm run sync-voice-stack-spec` (it reads the
+`magic-voice-core` checkout beside this repo, or `MAGIC_VOICE_CORE`). Never edit the copies; re-sync
+after core changes them. Every code the dialog shows has already been decoded once with that same
+decoder.
+
 ### The conversation is recorded, both directions, in one stereo file
 
 Every conversation **in which the mic is opened** is also recorded to
@@ -261,13 +285,13 @@ cd backend  && npm run openai:llm:selftest       # 55 checks against a local fak
 cd backend  && npm run models                    # 10 checks against the vendors' free model listings (needs a key, bills nothing)
 cd backend  && npm run smoke                     # usage + summary over the real WS protocol
 cd backend  && npm run realtime:probe            # a realtime turn with real SPEECH in (needs a key, billable)
-cd frontend && npm run render-check              # 88 checks: actually renders every panel, and pins the rules
+cd frontend && npm run render-check              # 111 checks: actually renders every panel, and pins the rules
                                                  # (voice resolution, leg overlap, TTFA attribution) that only a call can prove.
                                                  # tsc did not catch this project's last UI crash. Start the backend
                                                  # and it additionally runs against the live 26-provider catalog.
 ```
 
-719 backend checks plus 91 frontend render checks, none of which needs a key or a network. Read the caveat in
+719 backend checks plus 111 frontend render checks, none of which needs a key or a network. Read the caveat in
 [The five late providers, and what contact with the vendor changed](#the-five-late-providers-and-what-contact-with-the-vendor-changed)
 before treating `gemini:speech`, `elevenlabs`, `openai:realtime` or `openai:llm` as evidence of
 anything about a vendor — they run against fakes. `models`, `smoke`, `roundtrip` and

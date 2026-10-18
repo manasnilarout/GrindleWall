@@ -227,4 +227,14 @@ export interface SessionIndexEntry {
   costUsd: number;
   costInr: number;
   unpriced: string[];
+  /**
+   * What produced the record, minus the system prompt (free text, and the one
+   * field that would make the listing grow with every conversation). Lets a
+   * caller find every run of one provider combination — the bench's "Create
+   * code" export cites them as provenance — without fetching each record.
+   * Optional: a backend older than this field serves rows without it.
+   */
+  config?: Omit<StartConfig, 'systemPrompt'>;
+  durationMs?: number;
+  latency?: SessionSummary['latency'];
 }

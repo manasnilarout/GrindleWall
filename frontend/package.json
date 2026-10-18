@@ -9,11 +9,13 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "sync-protocol": "cp ../backend/src/shared/protocol.ts src/lib/protocol.ts",
+    "sync-voice-stack-spec": "node scripts/sync-voice-stack-spec.mjs",
     "render-check": "vite build --ssr scripts/render-check.tsx --outDir dist-check --logLevel error && node dist-check/render-check.js"
   },
   "dependencies": {
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { SessionIndexEntry, SessionSummary } from '../shared/protocol.js';
+import type { SessionIndexEntry, SessionSummary, StartConfig } from '../shared/protocol.js';
 import { config } from '../config.js';
 
 /**
@@ -202,6 +202,9 @@ export class SessionStore {
         costUsd: s.costUsd,
         costInr: s.costInr ?? 0,
         unpriced: s.unpriced ?? [],
+        config: s.config ? withoutPrompt(s.config) : undefined,
+        durationMs: s.durationMs,
+        latency: s.latency,
       };
       this.index.set(file, { mtimeMs, size, entry });
       return entry;
@@ -225,3 +228,9 @@ function isSafeId(id: string): boolean {
 }
 
 export const sessionStore = new SessionStore();
+
+/** The index row carries the config minus its free-text prompt; see `SessionIndexEntry.config`. */
+function withoutPrompt(config: StartConfig): Omit<StartConfig, 'systemPrompt'> {
+  const { systemPrompt: _prompt, ...rest } = config;
+  return rest;
+}

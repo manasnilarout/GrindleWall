@@ -27,6 +27,7 @@ export function RigRail({
   onEdit,
   onRename,
   onDelete,
+  onCreateCode,
   canDelete,
 }: {
   rig: Rig;
@@ -38,6 +39,8 @@ export function RigRail({
   onEdit: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
+  /** Opens the voice-stack export. The dialog lives at the app root, like the rig editor. */
+  onCreateCode: () => void;
   canDelete: boolean;
 }) {
   const [copied, setCopied] = useState(false);
@@ -152,6 +155,19 @@ export function RigRail({
           {copied ? 'copied' : 'copy'}
         </button>
         {command}
+      </div>
+
+      {/*
+        The same rig again, as the code MagickVoice imports. Beside the command
+        block because it is the same idea pointed the other way: the command
+        reproduces a rig here, the code takes it to production.
+      */}
+      <div className="cmd-actions">
+        <button type="button" className="btn" onClick={onCreateCode}>
+          <Icon name="scroll" size={12} />
+          Create code
+        </button>
+        <span className="muted small">export as a MagickVoice voice stack</span>
       </div>
     </section>
   );

@@ -9,7 +9,7 @@ import { renderToString } from 'react-dom/server';
 import { createElement as h } from 'react';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { SessionSummary } from '../src/lib/protocol';
+import type { SessionIndexEntry, SessionSummary, StartConfig } from '../src/lib/protocol';
 import App, { Bench } from '../src/App';
 import { LoginPage } from '../src/components/LoginPage';
 import { SessionReport } from '../src/components/SessionReport';
@@ -34,6 +34,12 @@ import {
 } from '../src/lib/rigs';
 import { normalizeSummary } from '../src/lib/session';
 import { Recordings } from '../src/components/Recordings';
+import { CreateCodeDialog } from '../src/components/CreateCodeDialog';
+import {
+  buildVoiceStackSpec, checkExportable, initialRows, provenanceFrom, sharedLanguages,
+  CANONICAL_PROVIDER_IDS, type ExportCheck, type ExportLanguage, type ExportSelection,
+} from '../src/lib/voice-stack/export';
+import { decodeVoiceStack, encodeVoiceStack } from '../src/lib/voice-stack/spec';
 
 
 /** Covers the branches a mock-only session would not: rupees, thinking, unpriced. */
@@ -622,8 +628,8 @@ check('RigTabs locks the other tabs during a live session', () => {
 
 check('RigRail', () => renderToString(h(RigRail, {
   rig: baseRig, providers: pickerProviders, systemPrompt: 'Be brief.', turns: [pipelineTurn], locked: false, canDelete: true,
-  onEdit: () => {}, onRename: () => {}, onDelete: () => {},
-})), ['Rig', 'Mock (canned)', 'bulbul:v3', 'STT=mock-stt', '214 ms']);
+  onEdit: () => {}, onRename: () => {}, onDelete: () => {}, onCreateCode: () => {},
+})), ['Rig', 'Mock (canned)', 'bulbul:v3', 'STT=mock-stt', '214 ms', 'Create code']);
 
 // A leg whose key is missing has to say so on the rail, not at connect time.
 check('RigRail surfaces a missing key', () => renderToString(h(RigRail, {
@@ -633,7 +639,7 @@ check('RigRail surfaces a missing key', () => renderToString(h(RigRail, {
     envKeys: ['GROQ_API_KEY'], missingEnv: ['GROQ_API_KEY'], models: [{ id: 'llama-3.3-70b', name: 'llama' }],
   }],
   systemPrompt: 'Be brief.', turns: [], locked: false, canDelete: false,
-  onEdit: () => {}, onRename: () => {}, onDelete: () => {},
+  onEdit: () => {}, onRename: () => {}, onDelete: () => {}, onCreateCode: () => {},
 })), ['needs GROQ_API_KEY']);
 
 // The rail's command block is what makes a bench result reproducible from the
@@ -683,6 +689,179 @@ check('slotsOf: realtime is a single leg', () => {
   if (slots.length !== 1) throw new Error(`got ${slots.length} legs for a realtime rig`);
   return slots[0].label;
 }, ['S2S']);
+
+/* ---------------------- voice-stack export ("Create code") ---------------------- */
+/**
+ * The export is the one place this bench hands something to another system,
+ * and the receiving side (MagickVoice core) decodes with the very spec module
+ * synced into `lib/voice-stack/`. So the assertions here are about the CODE,
+ * not just the markup: it has to decode, and decode to what the rig ran —
+ * Sarvam's `@fast` as an option rather than a model suffix, and Odia spelled
+ * `or-IN` by the STT leg but `od-IN` by the TTS leg under one `or` row.
+ */
+const STACK_CODE = /mvs1\.[A-Za-z0-9_-]+\.[0-9a-f]{8}/;
+const stackProviders: ProviderEntry[] = [
+  { id: 'sarvam-stt', name: 'Sarvam Saaras', kind: 'stt', implemented: true, registered: true, ready: true,
+    envKeys: [], missingEnv: [],
+    models: [{ id: 'saaras:v3-realtime@fast', name: 'saaras:v3-realtime (fast)' }, { id: 'saaras:v3-realtime@turbo', name: 'bogus variant' }],
+    languages: [{ id: 'auto', name: 'Auto-detect' }, { id: 'hi-IN', name: 'Hindi' }, { id: 'or-IN', name: 'Odia' }, { id: 'ta-IN', name: 'Tamil' }] },
+  { id: 'google-llm', name: 'Google Gemini', kind: 'llm', implemented: true, registered: true, ready: true,
+    envKeys: [], missingEnv: [], models: [{ id: 'gemini-3.1-flash-lite@minimal', name: 'gemini-3.1-flash-lite (minimal)' }] },
+  { id: 'groq-llm', name: 'Groq', kind: 'llm', implemented: true, registered: true, ready: true,
+    envKeys: [], missingEnv: [], models: [{ id: 'llama-3.3-70b', name: 'llama' }] },
+  { id: 'sarvam-tts', name: 'Sarvam Bulbul', kind: 'tts', implemented: true, registered: true, ready: true,
+    envKeys: [], missingEnv: [], models: [{ id: 'bulbul:v3', name: 'bulbul:v3' }],
+    languages: [{ id: 'hi-IN', name: 'Hindi' }, { id: 'od-IN', name: 'Odia' }, { id: 'en-IN', name: 'English (India)' }],
+    voices: [{ id: 'shubh', name: 'Shubh (m)' }, { id: 'pooja', name: 'Pooja (f)' }] },
+  { id: 'mock-tts', name: 'Mock (tone)', kind: 'tts', implemented: true, registered: true, ready: true,
+    envKeys: [], missingEnv: [], models: [{ id: 'mock-voice', name: 'tone' }], voices: [{ id: 'beep', name: 'Beep' }] },
+  { id: 'openai-realtime', name: 'OpenAI Realtime', kind: 'realtime', implemented: true, registered: true, ready: true,
+    envKeys: [], missingEnv: [], models: [{ id: 'gpt-realtime', name: 'gpt-realtime' }], voices: [{ id: 'marin', name: 'Marin' }] },
+];
+const stackRig: Rig = {
+  ...blankRig('Hindi collections', 0),
+  sttProviderId: 'sarvam-stt', sttModelId: 'saaras:v3-realtime@fast', sttLanguage: 'auto',
+  llmProviderId: 'google-llm', llmModelId: 'gemini-3.1-flash-lite@minimal',
+  ttsProviderId: 'sarvam-tts', ttsModelId: 'bulbul:v3', ttsLanguage: 'hi-IN', voice: 'pooja',
+};
+const stackConfig = (over: Partial<StartConfig>): Omit<StartConfig, 'systemPrompt'> => ({
+  mode: 'pipeline', turnDetection: 'server_vad',
+  sttProviderId: stackRig.sttProviderId, sttModelId: stackRig.sttModelId, sttLanguage: 'auto',
+  llmProviderId: stackRig.llmProviderId, llmModelId: stackRig.llmModelId,
+  ttsProviderId: stackRig.ttsProviderId, ttsModelId: stackRig.ttsModelId, ttsLanguage: 'hi-IN', voice: 'pooja', ...over,
+});
+const stackSessions: SessionIndexEntry[] = [
+  { recordId: 'rec-hi-1', label: 'x', mode: 'pipeline', startedAt: 2_000, endedAt: 62_000, turnCount: 4,
+    costUsd: 0.02, costInr: 1.8, unpriced: [], durationMs: 60_000,
+    latency: { ttfaMedianMs: 900, ttfaP95Ms: 1400 }, config: stackConfig({}) },
+  { recordId: 'rec-hi-2', label: 'x', mode: 'pipeline', startedAt: 1_000, endedAt: 61_000, turnCount: 2,
+    costUsd: 0.01, costInr: 0.9, unpriced: ['x'], durationMs: 60_000,
+    latency: { ttfaMedianMs: 1100, ttfaP95Ms: 1600 }, config: stackConfig({ voice: 'shubh' }) },
+  // A different LLM variant is a different stack: it must not be cited.
+  { recordId: 'rec-other-llm', label: 'x', mode: 'pipeline', startedAt: 3_000, endedAt: 9_000, turnCount: 3,
+    costUsd: 0.5, costInr: 45, unpriced: [], durationMs: 6_000,
+    latency: { ttfaMedianMs: 5000 }, config: stackConfig({ llmModelId: 'gemini-3.1-flash-lite@high' }) },
+  // A record from a backend older than `config` on the index row: skipped, not crashed on.
+  { recordId: 'rec-legacy', label: 'x', mode: 'pipeline', startedAt: 4_000, endedAt: 9_000, turnCount: 3,
+    costUsd: 0, costInr: 0, unpriced: [] },
+  // Same legs under push-to-talk: a different turn loop than the code's
+  // `turn.detection: 'server_vad'`, so its latency must not be cited.
+  { recordId: 'rec-manual-turns', label: 'x', mode: 'pipeline', startedAt: 5_000, endedAt: 65_000, turnCount: 5,
+    costUsd: 0.9, costInr: 80, unpriced: [], durationMs: 60_000,
+    latency: { ttfaMedianMs: 4000, ttfaP95Ms: 6000 }, config: stackConfig({ turnDetection: 'manual' }) },
+];
+const hiOr: ExportLanguage[] = [
+  { code: 'hi', sttLang: 'hi-IN', ttsLang: 'hi-IN', voice: 'pooja' },
+  { code: 'or', sttLang: 'or-IN', ttsLang: 'od-IN', voice: 'shubh' },
+];
+const stackSelection = (over: Partial<ExportSelection> = {}): ExportSelection => ({
+  languages: hiOr, name: 'Hindi collections', provenance: provenanceFrom(stackRig, stackSessions), ...over,
+});
+const blocks = (checks: ExportCheck[]) => checks.filter((c) => c.level === 'block').map((c) => c.message);
+
+check('sharedLanguages pairs Odia across or-IN / od-IN and never offers auto-detect', () => {
+  const langs = sharedLanguages(stackRig, stackProviders);
+  const odia = langs.find((l) => l.code === 'or');
+  if (!odia || odia.stt[0] !== 'or-IN' || odia.tts[0] !== 'od-IN') throw new Error(`odia: ${JSON.stringify(odia)}`);
+  if (langs.some((l) => l.code === 'ta' || l.code === 'en')) throw new Error('offered a language only one leg lists');
+  if (langs.some((l) => !l.code || l.stt.includes('auto'))) throw new Error('auto-detect leaked into the rows');
+  return langs.map((l) => l.code).join(',');
+}, ['hi', 'or']);
+
+check('initialRows pins an auto-detect STT rig to the language it speaks', () => {
+  const rows = initialRows(stackRig, stackProviders);
+  const want = { code: 'hi', sttLang: 'hi-IN', ttsLang: 'hi-IN', voice: 'pooja' };
+  if (JSON.stringify(rows) !== JSON.stringify([want])) throw new Error(JSON.stringify(rows));
+  return 'pinned';
+}, ['pinned']);
+
+check('provenance cites only records of this exact combination', () => {
+  const p = provenanceFrom(stackRig, stackSessions);
+  if (JSON.stringify(p.sessions) !== JSON.stringify(['rec-hi-1', 'rec-hi-2'])) throw new Error(`sessions ${JSON.stringify(p.sessions)}`);
+  const latency = p.latency as { ttfaMedianMs: number; ttfaP95Ms: number };
+  if (latency.ttfaMedianMs !== 1000 || latency.ttfaP95Ms !== 1500) throw new Error(`latency ${JSON.stringify(p.latency)}`);
+  const cost = p.costPerMinute as { usd: number; floor: boolean };
+  if (cost.usd !== 0.015 || cost.floor !== true) throw new Error(`cost ${JSON.stringify(p.costPerMinute)}`);
+  return (p.measuredLanguages ?? []).join(',');
+}, ['hi']);
+
+check('a pipeline rig with hi + or encodes, and decodes to what the rig ran', () => {
+  const checks = checkExportable(stackRig, stackProviders, stackSelection());
+  if (blocks(checks).length) throw new Error(`blocked: ${blocks(checks).join(' | ')}`);
+  const decoded = decodeVoiceStack(encodeVoiceStack(buildVoiceStackSpec(stackRig, stackProviders, stackSelection())));
+  if (!decoded.ok) throw new Error(decoded.error.message);
+  const { stt, llm, tts, languages } = decoded.spec;
+  const got = JSON.stringify({ stt, llm, tts, languages });
+  const want = JSON.stringify({
+    stt: { provider: 'sarvam', model: 'saaras:v3-realtime', options: { streamType: 'fast' } },
+    llm: { provider: 'google', model: 'gemini-3.1-flash-lite', options: { reasoning: 'minimal' } },
+    tts: { provider: 'sarvam', model: 'bulbul:v3', options: {} },
+    languages: [
+      { code: 'hi', stt: 'hi-IN', tts: 'hi-IN', voice: 'pooja' },
+      { code: 'or', stt: 'or-IN', tts: 'od-IN', voice: 'shubh' },
+    ],
+  });
+  if (got !== want) throw new Error(`decoded ${got}`);
+  return checks.map((c) => c.message).join(' | ');
+}, ['Never measured on this combination: or', 'Ready: 2 languages, default hi']);
+
+check('CreateCodeDialog renders a code that decodes', () => {
+  const html = renderToString(h(CreateCodeDialog, {
+    rig: stackRig, providers: stackProviders, onClose: () => {}, sessions: stackSessions, languages: hiOr,
+  }));
+  const code = STACK_CODE.exec(html)?.[0];
+  if (!code) throw new Error('no mvs1. code in the markup');
+  const decoded = decodeVoiceStack(code);
+  if (!decoded.ok) throw new Error(`rendered code does not decode: ${decoded.error.message}`);
+  const codes = decoded.spec.languages.map((l) => l.code).join(',');
+  if (codes !== 'hi,or') throw new Error(`rendered code carries ${codes}`);
+  if (decoded.spec.meta.provenance?.sessions?.length !== 2) throw new Error('rendered code lost its provenance');
+  return html;
+}, ['aria-modal="true"', 'Create code', 'Copy code', 'decodes', 'od-IN', 'or-IN', 'streamType=fast', 'TTFA median', 'Decoded']);
+
+check('CreateCodeDialog waits for the sessions before producing a code', () => {
+  const html = renderToString(h(CreateCodeDialog, { rig: stackRig, providers: stackProviders, onClose: () => {} }));
+  if (STACK_CODE.test(html)) throw new Error('produced a code before provenance settled');
+  return html;
+}, ['Reading recorded sessions', 'Waiting for recorded sessions']);
+
+check('CreateCodeDialog refuses a realtime rig', () => {
+  const html = renderToString(h(CreateCodeDialog, {
+    rig: { ...stackRig, mode: 'realtime', realtimeProviderId: 'openai-realtime', realtimeModelId: 'gpt-realtime' },
+    providers: stackProviders, onClose: () => {}, sessions: stackSessions,
+  }));
+  if (STACK_CODE.test(html)) throw new Error('a realtime rig produced a code');
+  return html;
+}, ['Realtime stacks are not supported by core yet', 'Clear the blockers']);
+
+for (const [name, rig, selection, want] of [
+  ['a mock leg blocks', { ...stackRig, ttsProviderId: 'mock-tts', ttsModelId: 'mock-voice' }, stackSelection(), 'is a mock provider'],
+  ['a provider core has no id for blocks', { ...stackRig, llmProviderId: 'groq-llm', llmModelId: 'llama-3.3-70b' }, stackSelection(), 'has no MagickVoice LLM provider id'],
+  ['an untranslatable variant blocks', { ...stackRig, sttModelId: 'saaras:v3-realtime@turbo' }, stackSelection(), 'unknown Sarvam stream type'],
+  ['no language blocks', stackRig, stackSelection({ languages: [] }), 'Pick at least one language'],
+  ['auto-detect cannot be a row', stackRig, stackSelection({ languages: [{ code: 'auto', sttLang: 'auto', ttsLang: 'hi-IN', voice: 'pooja' }] }), 'auto-detect cannot be a row'],
+  ['a duplicated base code blocks', stackRig, stackSelection({ languages: [hiOr[0], { ...hiOr[0], code: 'hi-IN' }] }), 'hi is listed twice'],
+  ['a language one leg does not list blocks', stackRig, stackSelection({ languages: [{ code: 'ta', sttLang: 'ta-IN', ttsLang: 'ta-IN', voice: 'pooja' }] }), 'does not list TTS language "ta-IN"'],
+  ['an unknown voice blocks where ids are not accepted', stackRig, stackSelection({ languages: [{ ...hiOr[0], voice: 'nobody' }] }), '"nobody" is not a bulbul:v3 voice'],
+] as Array<[string, Rig, ExportSelection, string]>) {
+  check(`checkExportable: ${name}`, () => {
+    const found = blocks(checkExportable(rig, stackProviders, selection));
+    if (!found.length) throw new Error('nothing blocked');
+    return found.join(' | ');
+  }, [want]);
+}
+
+check('checkExportable: a custom voice id is a warning where the vendor takes ids', () => {
+  const providers = stackProviders.map((p) => (p.id === 'sarvam-tts' ? { ...p, acceptsVoiceId: true } : p));
+  const checks = checkExportable(stackRig, providers, stackSelection({ languages: [{ ...hiOr[0], voice: 'cloned-voice-7' }] }));
+  if (blocks(checks).length) throw new Error(`blocked: ${blocks(checks).join(' | ')}`);
+  return checks.map((c) => `${c.level}:${c.message}`).join(' | ');
+}, ['warn:hi: "cloned-voice-7" is a custom voice id']);
+
+check('checkExportable: no measured session is said out loud', () =>
+  checkExportable(stackRig, stackProviders, stackSelection({ provenance: provenanceFrom(stackRig, []) }))
+    .map((c) => `${c.level}:${c.message}`).join(' | '),
+['warn:No recorded session used this exact STT/LLM/TTS combination']);
 
 /**
  * The client-measured TTFA is the honest number in this UI — it is what a person
@@ -956,7 +1135,7 @@ const againstRealCatalog = async () => {
 
   check('RigRail renders a seeded rig', () => renderToString(h(RigRail, {
     rig: rigs[0], providers, systemPrompt: 'Be brief.', turns: [pipelineTurn], locked: false, canDelete: true,
-    onEdit: () => {}, onRename: () => {}, onDelete: () => {},
+    onEdit: () => {}, onRename: () => {}, onDelete: () => {}, onCreateCode: () => {},
   })), ['STT=', 'smoke.mjs']);
 
   // Cartesia is the stress case: the voice list under a language is the one
@@ -996,6 +1175,38 @@ const againstRealCatalog = async () => {
     }
     return 'startable';
   }, ['startable']);
+
+  // The export's id map is written against the catalog's ids. A rename there
+  // would not error — that leg would just stop being exportable — so every
+  // mapped id must still exist, under the leg it is mapped for.
+  check('every exportable provider id is still in the live catalog', () => {
+    const gone = (Object.entries(CANONICAL_PROVIDER_IDS) as Array<[string, Record<string, string>]>)
+      .flatMap(([leg, map]) => Object.keys(map).filter((id) => !providers.some((p) => p.id === id && p.kind === leg)));
+    if (gone.length) throw new Error(`mapped but not in the catalog: ${gone.join(', ')}`);
+    return 'mapped';
+  }, ['mapped']);
+
+  // The exact stack the synthetic check uses, against the real Sarvam tables:
+  // if the catalog's Odia spellings move, this is where it shows.
+  const live = withDefaults({
+    ...blankRig('Live Sarvam', 0),
+    sttProviderId: 'sarvam-stt', sttModelId: 'saaras:v3-realtime@fast', sttLanguage: 'auto',
+    llmProviderId: 'google-llm', llmModelId: 'gemini-3.1-flash-lite@minimal',
+    ttsProviderId: 'sarvam-tts', ttsModelId: 'bulbul:v3', ttsLanguage: 'hi-IN',
+  }, providers);
+  if (live.sttProviderId === 'sarvam-stt' && live.ttsProviderId === 'sarvam-tts') {
+    check('the live Sarvam stack exports hi + or and the code decodes', () => {
+      const langs = sharedLanguages(live, providers).filter((l) => l.code === 'hi' || l.code === 'or');
+      const rows = langs.map((l) => ({ code: l.code, sttLang: l.stt[0], ttsLang: l.tts[0],
+        voice: voicesFor(providers, live.ttsProviderId, live.ttsModelId, l.tts[0])[0]?.id ?? '' }));
+      const selection = { languages: rows, name: 'Live Sarvam' };
+      const blocked = checkExportable(live, providers, selection).filter((c) => c.level === 'block');
+      if (blocked.length) throw new Error(blocked.map((c) => c.message).join(' | '));
+      const decoded = decodeVoiceStack(encodeVoiceStack(buildVoiceStackSpec(live, providers, selection)));
+      if (!decoded.ok) throw new Error(decoded.error.message);
+      return decoded.spec.languages.map((l) => `${l.code}:${l.stt}/${l.tts}`).join(' ');
+    }, ['hi:', 'or:']);
+  }
 };
 
 void againstRealCatalog().then(() => {
