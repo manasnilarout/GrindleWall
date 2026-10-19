@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "auth:selftest": "tsx scripts/auth-selftest.ts",
     "cartesia": "TTS=cartesia-tts TTS_MODEL=sonic-3.6 STT=cartesia-stt STT_MODEL=ink-2 LANG_CODE=en tsx scripts/roundtrip.ts",
     "cartesia:voices": "tsx scripts/cartesia-voices.ts",
     "catalog:selftest": "tsx scripts/catalog-selftest.ts",
@@ -19,6 +20,9 @@
     "murf:probe": "tsx scripts/murf-probe.ts",
     "murf:selftest": "tsx scripts/murf-selftest.ts",
     "murf:voices": "tsx scripts/murf-voices.ts",
+    "nova:probe": "tsx scripts/nova-sonic-probe.ts",
+    "nova:rates": "tsx scripts/nova-rates.ts",
+    "nova:selftest": "tsx scripts/nova-sonic-selftest.ts",
     "openai:llm:selftest": "tsx scripts/openai-llm-selftest.ts",
     "openai:realtime:selftest": "tsx scripts/openai-realtime-selftest.ts",
     "realtime:probe": "tsx scripts/realtime-probe.ts",
@@ -27,12 +31,13 @@
     "sarvam": "TTS=sarvam-tts TTS_MODEL=bulbul:v3 STT=sarvam-stt STT_MODEL=saaras:v3-realtime@fast VOICE=shubh LANG_CODE=en-IN tsx scripts/roundtrip.ts",
     "smoke": "node scripts/smoke.mjs pipeline && node scripts/smoke.mjs realtime",
     "start": "tsx src/index.ts",
-    "auth:selftest": "tsx scripts/auth-selftest.ts",
     "turn:selftest": "tsx scripts/turn-selftest.ts",
     "typecheck": "tsc --noEmit",
     "usage:selftest": "tsx scripts/usage-selftest.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1134.0",
+    "@smithy/node-http-handler": "^4.12.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

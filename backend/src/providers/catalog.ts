@@ -45,6 +45,20 @@ export interface ProviderEntry {
   implemented: boolean;
   /** Env vars that must be present for this provider to run. */
   envKeys: string[];
+  /**
+   * Other env var names that satisfy an `envKeys` entry, where a vendor's own
+   * tooling accepts more than one spelling.
+   *
+   * AWS is the only case so far, and it needs this rather than a second
+   * `envKeys` entry because the two names are alternatives, not requirements:
+   * `AWS_DEFAULT_REGION` is the AWS SDK's own fallback for `AWS_REGION`, and
+   * the Nova provider honours it. Without this, `factory.ts` rejected a session
+   * for a missing `AWS_REGION` BEFORE the provider could read the fallback, so
+   * that fallback was unreachable through `createSession()` and anyone with
+   * only the default set was told the provider was not ready when it would
+   * have started fine.
+   */
+  envAliases?: Record<string, string[]>;
   models: ModelEntry[];
   /** Voices, where the provider exposes named voices. */
   voices?: ModelEntry[];
@@ -364,14 +378,192 @@ export const CATALOG: ProviderEntry[] = [
     id: 'aws-nova-sonic',
     name: 'AWS Nova Sonic',
     kind: 'realtime',
-    implemented: false,
+    implemented: true,
     envKeys: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'],
-    docs: 'https://docs.aws.amazon.com/nova/latest/userguide/speech.html',
-    models: [{ id: 'amazon.nova-sonic-v1:0', name: 'nova-sonic-v1' }],
+    envAliases: { AWS_REGION: ['AWS_DEFAULT_REGION'] },
+    docs: 'https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-getting-started.html',
+    /*
+     * DOC-DERIVED, NOT MEASURED — read off the Nova 2 user guide on 2026-09-17,
+     * with no AWS key in this repo to probe any of it. That is a weaker footing
+     * than every other implemented entry here, and the `note` fields say so
+     * where it matters. `npm run nova:probe` is the check that would settle it.
+     *
+     * Three corrections to what this entry used to say while it was a stub:
+     *
+     *   · the model is `amazon.nova-2-sonic-v1:0`, not `amazon.nova-sonic-v1:0`.
+     *     The v1 model card gives an EOL of 2026-09-14 — three days before this
+     *     was written — so the old id is not listed at all rather than listed
+     *     and broken. Note that the API reference AND the SDK's own JSDoc still
+     *     read "Currently, only `amazon.nova-sonic-v1:0` is supported"; the Nova
+     *     2 model card, user guide and aws-samples client all disagree with them
+     *     and pass the v2 id to the same operation. That contradiction is
+     *     exactly what the probe exists to resolve.
+     *
+     *   · `greta` is gone. She was the German voice on v1 and is replaced by
+     *     `tina` on Nova 2, so a v1 voice list carried forward would offer a
+     *     voice the model refuses.
+     *
+     *   · there is no inference-profile prefix. The model card's Programmatic
+     *     Access table reads "Geo inference ID: Not supported" and "Global
+     *     inference ID: Not supported", so the bare id is what goes on the wire
+     *     — no `us.` prefix, unlike most Bedrock models.
+     *
+     * LANGUAGES ARE A NAVIGATION AID ONLY. Nova takes no language parameter —
+     * there is no field for one in `sessionStart` or `promptStart`, and the
+     * spoken language follows the voice id and the user's own audio. The list
+     * below exists so the voice dropdown is navigable (16 voices across 10
+     * locales), and `config.language` is deliberately dropped by the provider
+     * rather than forwarded to a field that does not exist.
+     */
+    models: [
+      {
+        id: 'amazon.nova-2-sonic-v1:0',
+        name: 'Nova 2 Sonic',
+        note:
+          'Doc-derived, never probed. 7 languages, 16 voices, server endpointing at 1.5-2.0s. ' +
+          'Streams are capped at 8 minutes by the vendor. Rates are per-region and only ' +
+          'us-east-1 / us-west-2 / eu-north-1 / ap-northeast-1 are priced here.',
+        /*
+         * Voices narrow per LANGUAGE, the Cartesia shape rather than the Murf
+         * one: there is a single model, and each locale publishes its own pair.
+         *
+         * `tiffany` and `matthew` appear under every locale on purpose — the
+         * language-support page calls them polyglot across all seven languages
+         * with mid-sentence code-switching, so they are genuinely valid choices
+         * for a French or Hindi conversation, not a copy-paste. `kiara` and
+         * `arjun` likewise appear under both en-IN and hi-IN, which is what the
+         * vendor's own table does.
+         */
+        languages: [
+          {
+            id: 'en-US',
+            name: 'English (US)',
+            voices: [
+              { id: 'tiffany', name: 'Tiffany (feminine, polyglot)' },
+              { id: 'matthew', name: 'Matthew (masculine, polyglot)' },
+            ],
+          },
+          {
+            id: 'en-GB',
+            name: 'English (UK)',
+            voices: [
+              { id: 'amy', name: 'Amy (feminine)' },
+              { id: 'tiffany', name: 'Tiffany (polyglot)' },
+              { id: 'matthew', name: 'Matthew (polyglot)' },
+            ],
+          },
+          {
+            id: 'en-AU',
+            name: 'English (Australia)',
+            voices: [
+              { id: 'olivia', name: 'Olivia (feminine)' },
+              { id: 'tiffany', name: 'Tiffany (polyglot)' },
+              { id: 'matthew', name: 'Matthew (polyglot)' },
+            ],
+          },
+          {
+            id: 'en-IN',
+            name: 'English (India)',
+            voices: [
+              { id: 'kiara', name: 'Kiara (feminine)' },
+              { id: 'arjun', name: 'Arjun (masculine)' },
+              { id: 'tiffany', name: 'Tiffany (polyglot)' },
+              { id: 'matthew', name: 'Matthew (polyglot)' },
+            ],
+          },
+          {
+            id: 'hi-IN',
+            name: 'Hindi',
+            voices: [
+              { id: 'kiara', name: 'Kiara (feminine)' },
+              { id: 'arjun', name: 'Arjun (masculine)' },
+              { id: 'tiffany', name: 'Tiffany (polyglot)' },
+              { id: 'matthew', name: 'Matthew (polyglot)' },
+            ],
+          },
+          {
+            id: 'fr-FR',
+            name: 'French',
+            voices: [
+              { id: 'ambre', name: 'Ambre (feminine)' },
+              { id: 'florian', name: 'Florian (masculine)' },
+              { id: 'tiffany', name: 'Tiffany (polyglot)' },
+              { id: 'matthew', name: 'Matthew (polyglot)' },
+            ],
+          },
+          {
+            id: 'de-DE',
+            name: 'German',
+            voices: [
+              { id: 'tina', name: 'Tina (feminine)' },
+              { id: 'lennart', name: 'Lennart (masculine)' },
+              { id: 'tiffany', name: 'Tiffany (polyglot)' },
+              { id: 'matthew', name: 'Matthew (polyglot)' },
+            ],
+          },
+          {
+            id: 'it-IT',
+            name: 'Italian',
+            voices: [
+              { id: 'beatrice', name: 'Beatrice (feminine)' },
+              { id: 'lorenzo', name: 'Lorenzo (masculine)' },
+              { id: 'tiffany', name: 'Tiffany (polyglot)' },
+              { id: 'matthew', name: 'Matthew (polyglot)' },
+            ],
+          },
+          {
+            id: 'es-US',
+            name: 'Spanish (US)',
+            voices: [
+              { id: 'lupe', name: 'Lupe (feminine)' },
+              { id: 'carlos', name: 'Carlos (masculine)' },
+              { id: 'tiffany', name: 'Tiffany (polyglot)' },
+              { id: 'matthew', name: 'Matthew (polyglot)' },
+            ],
+          },
+          {
+            id: 'pt-BR',
+            name: 'Portuguese (Brazil)',
+            voices: [
+              { id: 'carolina', name: 'Carolina (feminine)' },
+              { id: 'leo', name: 'Leo (masculine)' },
+              { id: 'tiffany', name: 'Tiffany (polyglot)' },
+              { id: 'matthew', name: 'Matthew (polyglot)' },
+            ],
+          },
+        ],
+      },
+    ],
+    /*
+     * The same 16 ids flat. `voicesFor()` never actually reaches this for Nova —
+     * it falls back to the first LANGUAGE that has voices long before it looks
+     * at the provider, so a caller with no language selected gets the en-US
+     * pair, not this list. It is kept because the catalog invariant is that a
+     * provider exposing voices publishes them, and `catalog:selftest` asserts
+     * it; treat it as the union of the per-language lists, not as a fallback.
+     *
+     * Stored lowercase because that is the spelling the `promptStart` voiceId
+     * enum publishes; whether Nova is case-SENSITIVE about it is an open
+     * question the probe asks deliberately, since this repo has been burned
+     * once already by assuming a vendor's id spelling (Murf's "Namrita").
+     */
     voices: [
-      { id: 'matthew', name: 'Matthew' },
-      { id: 'tiffany', name: 'Tiffany' },
-      { id: 'amy', name: 'Amy' },
+      { id: 'tiffany', name: 'Tiffany (en-US, polyglot)' },
+      { id: 'matthew', name: 'Matthew (en-US, polyglot)' },
+      { id: 'amy', name: 'Amy (en-GB)' },
+      { id: 'olivia', name: 'Olivia (en-AU)' },
+      { id: 'kiara', name: 'Kiara (en-IN / hi-IN)' },
+      { id: 'arjun', name: 'Arjun (en-IN / hi-IN)' },
+      { id: 'ambre', name: 'Ambre (fr-FR)' },
+      { id: 'florian', name: 'Florian (fr-FR)' },
+      { id: 'tina', name: 'Tina (de-DE)' },
+      { id: 'lennart', name: 'Lennart (de-DE)' },
+      { id: 'beatrice', name: 'Beatrice (it-IT)' },
+      { id: 'lorenzo', name: 'Lorenzo (it-IT)' },
+      { id: 'lupe', name: 'Lupe (es-US)' },
+      { id: 'carlos', name: 'Carlos (es-US)' },
+      { id: 'carolina', name: 'Carolina (pt-BR)' },
+      { id: 'leo', name: 'Leo (pt-BR)' },
     ],
   },
 
@@ -961,11 +1153,21 @@ export function languagesFor(providerId: string, modelId?: string): ModelEntry[]
   return modelEntry(providerId, modelId)?.languages ?? findProvider(providerId)?.languages ?? [];
 }
 
+/**
+ * The env vars this provider needs that are not set, honouring `envAliases`.
+ *
+ * The single definition of "satisfied", read by both `catalogWithReadiness()`
+ * and `factory.ts`. Those two disagreeing is how a provider shows as ready in
+ * the UI and is then refused on start, or the reverse.
+ */
+export function missingEnvFor(p: ProviderEntry): string[] {
+  return p.envKeys.filter((k) => ![k, ...(p.envAliases?.[k] ?? [])].some((name) => !!process.env[name]));
+}
+
 /** Catalog + whether the required env vars are actually present in this process. */
 export function catalogWithReadiness() {
-  return CATALOG.map((p) => ({
-    ...p,
-    missingEnv: p.envKeys.filter((k) => !process.env[k]),
-    ready: p.implemented && p.envKeys.every((k) => !!process.env[k]),
-  }));
+  return CATALOG.map((p) => {
+    const missingEnv = missingEnvFor(p);
+    return { ...p, missingEnv, ready: p.implemented && missingEnv.length === 0 };
+  });
 }
