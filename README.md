@@ -99,24 +99,30 @@ and nowhere to send it.
 
 ### The UI
 
-The bench is branded **Grindelwald, powered by MagickVoice**: a light parchment theme with house-gold
-accents, Cinzel on the brand name, and small Harry Potter icons on every panel. The MagickVoice logo
-sits in the top bar next to the name.
+The bench is branded **Grindelwald, powered by MagickVoice**, in a "restrained Hogwarts" look:
+parchment ground, ivory cards, a midnight sidebar with gold stars, and a small wizarding icon
+leading each section. Cinzel is used only for the brand, page titles and eyebrows; everything you
+read is Instrument Sans, and ids and commands are JetBrains Mono. The rule is *magic in the
+margins, plain words in the controls* — every button says exactly what it does. Every colour is
+a token in `frontend/src/styles/tokens.css`; shared primitives (`.panel`, `.btn`, `.seg`,
+`.field`, …) are in `styles/base.css`, and each screen has its own stylesheet beside them.
 
-The frontend is organised around **rigs** — named provider combinations you switch between in one
-click, kept in `localStorage`. Each rig tab carries its own median TTFA, so the A/B is on screen
-before you click anything.
+The sidebar holds navigation and the **rigs** — named provider combinations you switch between
+in one click, kept in `localStorage`. Each rig carries its own median TTFA and a house-colour
+letter badge; the house colours are deliberately darker than the leg palette, so a rig never
+reads as a leg (render-check guards that no rig colour reuses a leg hex).
 
 | View | What it is for |
 |---|---|
-| **Bench** | Run a rig. The left rail is the chain top to bottom, each leg showing its own latency and whether its key is present, plus the same rig spelled as the `STT=… LLM=… TTS=…` command the scripts take. The centre is the conversation and a per-turn **waterfall** — one bar per turn, split STT · LLM TTFT · TTS TTFB · network — against one scale, so which leg is slow is visible rather than arithmetic. The right rail is the median, the split, and one sentence naming the largest leg. |
-| **Compare** | Records off disk, on one axis. Pick runs, pick a metric, and the bars repaint; the leg split is normalised per run so a 600 ms rig and a 2 s rig stay comparable as ratios. |
-| **Report** | The bill, with every provenance rule attached to the number it governs, and the per-turn cost projected to a monthly figure at a volume you choose. |
-| **Console** | Docked at the bottom, expandable. Filter by level and by source, search, and switch timestamps between wall clock and `t+` from the turn's t0. Metric marks are highlighted and expand to say what they mean. |
+| **Bench** | Run a rig. The signal chain is one card per leg, in flow order, each with its readiness (a missing key is shown on the card) and this session's median for that leg; the `STT=… LLM=… TTS=…` command the scripts take is behind "Show CLI command". Below it, one control bar (Connect / mic / interrupt / turn detection / End and file report), the conversation with its composer, and a per-turn **timeline** — one lane per leg, each band drawn where it ran against one shared scale, a tick at first audio and the reply hatched after it — so which leg is slow is visible rather than arithmetic. The right column is the median, the per-leg split, one sentence naming the slowest leg, the cost, and the system prompt. |
+| **Runs** | Records off disk. Filter, tick runs to compare: bars per metric in each run's series colour, per-leg splits on a shared scale, an "All numbers" matrix with the best value in each column marked, the verdicts, and the recordings. |
+| **Run detail** | The report for one conversation — opened from Runs, and where you land when a conversation ends. Headline numbers, the recording, cost by leg and per turn with every provenance rule attached to the number it governs, and the per-turn cost projected to a monthly figure at a volume you choose. |
+| **Console** | A bar docked at the bottom of the bench, showing the newest line and any warnings; open it to filter by level and source, search, and switch timestamps between wall clock and `t+` from the turn's t0. Metric marks are highlighted and expand to say what they mean. |
 
-A **realtime** run renders as a single band everywhere a pipeline run renders three. That is the
-finding, not missing data: a speech-to-speech model has no legs to take apart, so when it is slow the
-only dial is the model.
+A **realtime** run never draws an LLM or TTS band where a pipeline draws both. At most it draws an
+STT band, from `stt_final`: when the transcript of your speech arrived. That is the finding, not
+missing data: a speech-to-speech model has no legs to take apart, so when it is slow the only dial
+is the model.
 
 Log-line **sources are guessed**, not reported: the `log` frame carries a level and free text and
 nothing else. A line is matched against the vendor names in the active rig's slots, then against
@@ -134,12 +140,12 @@ then vanished from the listing rather than reporting itself.
 A record holds no API keys — provider/model ids, the system prompt, and the usage numbers. It does
 hold the prompt, deliberately, since that is what produced them. Expect ~1-3 KB per turn, kept
 indefinitely; `SESSION_DIR` moves them and `SESSION_MAX_RECORDS` caps them (off by default — silently
-deleting a measurement someone is mid-comparison on is worse than the disk use). Past conversations are listed in the UI's Compare view and served from
+deleting a measurement someone is mid-comparison on is worse than the disk use). Past conversations are listed on the UI's Runs page and served from
 `GET /api/sessions` and `GET /api/sessions/:id`.
 
 ### Exporting a stack to MagickVoice
 
-**Create code**, under the command block on the rig rail, turns a pipeline rig into a voice-stack
+**Export voice stack**, in the Bench page header, turns a pipeline rig into a voice-stack
 code (`mvs1.…`) that MagickVoice imports. Pick the languages the stack should cover — only ones both
 the STT and TTS models list are offered — and a voice for each. The two legs keep their own code for
 a language where their catalogs spell it differently (in this bench's catalog, Sarvam's Odia is
@@ -212,7 +218,7 @@ buffer, and the barge-in cut above is therefore very slightly later than the tru
 read inter-channel gaps here as perceived response time.
 
 Recordings are served from `GET /api/sessions/:id/audio` (with `Range` support, so a browser can
-seek in a long one) and play inline in the Compare view. `SESSION_AUDIO=0` turns recording off;
+seek in a long one) and play inline on the Runs page and on each run's report. `SESSION_AUDIO=0` turns recording off;
 `SESSION_AUDIO_MAX_MINUTES` caps it, default 60. The cap matters — stereo PCM16 @ 24 kHz is
 **~5.8 MB per recorded minute**, so audio, not JSON, is what fills the disk. Hitting the cap
 finalizes the recording rather than discarding it, and `SESSION_MAX_RECORDS` prunes the WAV along

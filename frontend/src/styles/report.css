@@ -1,0 +1,95 @@
+/* Run detail: the conversation report and the usage tables it shares with the bench's Turns tab. */
+
+/* ------------------------------ page header ------------------------------ */
+
+.run-label {
+  display: block; font-family: var(--font-mono); font-size: 12px; color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.run-meta { display: block; margin-top: 2px; font-size: 13px; }
+
+/* -------------------------------- report --------------------------------- */
+
+.report { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.report-dismiss { display: flex; margin-bottom: -12px; }
+
+.report-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.report-stat {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 16px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+}
+.report-stat-label { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--ink-3); }
+.report-stat-value { font-size: 26px; line-height: 1.25; font-weight: 600; letter-spacing: -0.01em; color: var(--ink); overflow-wrap: anywhere; }
+.report-stat-unit { font-size: 14px; font-weight: 500; color: var(--ink-3); letter-spacing: 0; }
+.report-stat-sub { font-size: 13px; color: var(--ink-3); }
+
+.report-recording h2 { margin-bottom: 12px; }
+.report-h2-note { font-size: 13px; font-weight: 400; color: var(--ink-3); }
+.report-recording audio { display: block; width: 100%; height: 40px; }
+.report-recording-missing { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.report-recording-missing .ghost.inline { margin-left: 0; }
+
+.report-cols { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px; }
+.report-main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+.report-side { flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+
+/* A card whose table runs edge to edge, under a heading strip. */
+.report-card { padding: 0; overflow: hidden; }
+.report-card-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  padding: 14px 18px; border-bottom: 1px solid var(--hairline);
+}
+.report-card-head h2 { margin: 0; }
+.report-card th:first-child, .report-card td:first-child { padding-left: 18px; }
+.report-card th:last-child, .report-card td:last-child { padding-right: 18px; }
+.report-card tbody tr:last-child td { border-bottom: none; }
+.report-card-foot { margin: 0; padding: 12px 18px 16px; border-top: 1px solid var(--hairline); }
+.report-card .usage-note { margin: 0; padding: 12px 18px; }
+
+.report-side .panel > h2 + .field-label { display: block; margin: -4px 0 6px; }
+.report-projection { display: flex; flex-direction: column; gap: 4px; margin-top: 14px; }
+.report-projection .hero { align-items: center; }
+
+.report-prompt {
+  margin: 0; padding: 12px; border-radius: var(--radius);
+  background: var(--sunken); border: 1px solid var(--hairline);
+  font-size: 13px; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 320px; overflow: auto;
+}
+
+/* Disclosure cards: the heading is the toggle, and a chevron says so. */
+.report-disclosure > summary {
+  display: flex; align-items: center; gap: 8px; min-height: 28px;
+  font-size: 15px; font-weight: 600; color: var(--ink);
+  list-style: none; cursor: pointer;
+}
+.report-disclosure > summary::-webkit-details-marker { display: none; }
+.report-disclosure > summary:hover { color: var(--magic); }
+.report-chev { margin-left: auto; color: var(--ink-3); transition: transform 120ms ease; }
+.report-disclosure[open] > summary { margin-bottom: 14px; }
+.report-disclosure[open] .report-chev { transform: rotate(90deg); }
+.report-trust td { white-space: normal; }
+
+/* ------------------------------ usage tables ------------------------------ */
+
+.usage-table .left { text-align: left; }
+.usage-table td { vertical-align: top; }
+.cell-sub { display: block; font-size: 11px; font-weight: 400; color: var(--ink-3); }
+.cell-aside { font-size: 11px; }
+.usage-note { margin: 0 0 10px; }
+
+.leg-key { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+.leg-swatch { flex: 0 0 10px; width: 10px; height: 10px; border-radius: 3px; background: var(--ink-3); }
+.leg-who { white-space: normal; min-width: 140px; }
+
+.rate.unrated { color: var(--warn); }
+.rate-flag {
+  display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 4px;
+  background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 700; cursor: help;
+}
+
+.row-total td { background: var(--sunken); border-top: 2px solid var(--line); font-weight: 600; }
+.row-total .pill { margin-left: 8px; }
+.row-silent td { background: var(--warn-soft); }
+.no-reply { margin-left: 8px; font-size: 11px; font-weight: 600; color: var(--warn); }
+.row-tail td, .row-tail td.strong { color: var(--ink-3); font-weight: 400; }

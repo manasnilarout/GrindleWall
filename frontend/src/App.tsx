@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchCatalog, type ProviderEntry } from './lib/catalog';
 import type { SessionSummary } from './lib/protocol';
 import {
   blankRig,
-  chainOf,
   loadRigs,
-  rigColor,
   saveRigs,
   seedRigs,
   startConfigOf,
@@ -14,41 +12,35 @@ import {
 } from './lib/rigs';
 import { summarize } from './lib/stats';
 import { useVoiceSession } from './hooks/useVoiceSession';
-import { RigTabs, type RigScore } from './components/RigTabs';
-import { RigRail } from './components/RigRail';
+import { Sidebar, type BackendStatus, type NavView, type RigScore } from './components/Sidebar';
+import { BenchView, type TurnDetection } from './components/BenchView';
+import { RunDetailView } from './components/RunDetailView';
 import { RigBuilder } from './components/RigBuilder';
 import { CreateCodeDialog } from './components/CreateCodeDialog';
-import { PromptWidget } from './components/PromptWidget';
-import { Transcript } from './components/Transcript';
-import { TurnsPanel } from './components/TurnsPanel';
-import { InsightsPanel, CostPanel } from './components/InsightsPanel';
-import { SessionReport } from './components/SessionReport';
-import { ComparePage } from './components/ComparePage';
+import { ComparePage, type RunsMemory } from './components/ComparePage';
 import { Console } from './components/Console';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { Icon, PanelIcon } from './components/Icon';
 import { LoginPage } from './components/LoginPage';
 import { useAuth } from './hooks/useAuth';
 
 const DEFAULT_PROMPT = 'You are a voice assistant. Answer in one or two short sentences. Never use lists or markdown.';
 
-type View = 'bench' | 'compare';
+/** `run` is one filed conversation: the report you land on, or a record opened from Runs. */
+type View = NavView | 'run';
 
 export default function App() {
   const auth = useAuth();
 
   if (auth.status === 'loading') {
     return (
-      <div className="app login-app">
-        <header className="topbar">
-          <span className="brand">
-            <img className="brand-logo" src="/magickvoice-logo.png" alt="MagickVoice" />
-            <span className="brand-copy">
-              <span className="brand-name">Grindelwald</span>
-              <span className="brand-byline">powered by MagickVoice</span>
-            </span>
+      <div className="splash">
+        <span className="brand">
+          <img className="brand-logo" src="/magickvoice-logo.png" alt="MagickVoice" />
+          <span className="brand-copy">
+            <span className="brand-name">Grindelwald</span>
+            <span className="brand-byline">powered by MagickVoice</span>
           </span>
-        </header>
+        </span>
       </div>
     );
   }
@@ -76,7 +68,7 @@ export function Bench({
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [catalogError, setCatalogError] = useState<string>();
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_PROMPT);
-  const [turnDetection, setTurnDetection] = useState<'server_vad' | 'manual'>('server_vad');
+  const [turnDetection, setTurnDetection] = useState<TurnDetection>('server_vad');
 
   const [rigs, setRigs] = useState<Rig[]>([]);
   const [activeRigId, setActiveRigId] = useState('');
@@ -84,26 +76,26 @@ export function Bench({
   const [exporting, setExporting] = useState(false);
   const [view, setView] = useState<View>('bench');
   const [consoleExpanded, setConsoleExpanded] = useState(false);
-  const [showReport, setShowReport] = useState(true);
-  /** A past record opened from the compare view, shown instead of the live one. */
-  const [openRecord, setOpenRecord] = useState<SessionSummary | null>(null);
+  /** The record the run page shows. Null until one is opened or a conversation ends. */
+  const [runRecord, setRunRecord] = useState<SessionSummary | null>(null);
+  /** Whether `runRecord` is the conversation that just ended here, rather than one off disk. */
+  const [runIsLive, setRunIsLive] = useState(false);
+  /** Set on connect: the next summary that arrives is this conversation's bill, and opens its report. */
+  const [awaitingReport, setAwaitingReport] = useState(false);
 
   /**
    * Per-rig headline numbers from runs made in this tab. They are a convenience
-   * on the tabs, not a record: the durable numbers are the ones the backend
-   * files after every turn, and the compare view reads those.
+   * on the sidebar, not a record: the durable numbers are the ones the backend
+   * files after every turn, and the Runs view reads those.
    */
   const [scores, setScores] = useState<Record<string, RigScore>>({});
-  /** Which rig the live session belongs to, so its numbers land on the right tab. */
+  /** Which rig the live session belongs to, so its numbers land on the right rig. */
   const [runningRigId, setRunningRigId] = useState('');
 
   const session = useVoiceSession();
-  const connected = session.state === 'ready';
-  /** Between asking for the bill and receiving it. */
-  const ending = session.state === 'ending';
   /** A live session pins its rig: swapping config under an open socket would
       attribute the numbers to a combination that never produced them. */
-  const locked = connected || ending || session.state === 'connecting';
+  const locked = session.state === 'ready' || session.state === 'ending' || session.state === 'connecting';
 
   useEffect(() => {
     fetchCatalog()
@@ -148,6 +140,7 @@ export function Bench({
     const rig = withDefaults(blankRig(`Rig ${String.fromCharCode(65 + nextIndex)}`, nextIndex), providers);
     setRigs((prev) => [...prev, rig]);
     setActiveRigId(rig.id);
+    setView('bench');
   }, [providers, rigs]);
 
   const deleteRig = useCallback(
@@ -167,19 +160,33 @@ export function Bench({
 
   const connect = useCallback(() => {
     if (!startConfig || !activeRig) return;
-    setShowReport(true);
-    setOpenRecord(null);
+    setAwaitingReport(true);
     setRunningRigId(activeRig.id);
     setView('bench');
     void session.connect(startConfig);
   }, [session, startConfig, activeRig]);
 
-  // Keep the running rig's tab score current as its turns land.
+  // The conversation's bill arrived: file it as the run page and go there —
+  // but only from the bench. A bill that lands after the end timeout, once the
+  // user has moved on to Runs, must not yank them out of what they are reading.
+  const { summary } = session;
+  useEffect(() => {
+    if (!summary || !awaitingReport) return;
+    setAwaitingReport(false);
+    if (view !== 'bench') return;
+    setRunRecord(summary);
+    setRunIsLive(true);
+    setView('run');
+  }, [summary, awaitingReport, view]);
+
+  // Keep the running rig's sidebar score current as its turns land.
   const { turns } = session;
   useEffect(() => {
     if (!runningRigId || turns.length === 0) return;
     const ttfa = summarize(
-      turns.map((t) => t.clientTtfaMs ?? t.derived.timeToFirstAudioMs).filter((v): v is number => v !== undefined),
+      // The server's figure only, as everywhere a TTFA is headlined: the
+      // browser's starts at the final transcript, a different clock.
+      turns.map((t) => t.derived.timeToFirstAudioMs).filter((v): v is number => v !== undefined),
     );
     setScores((prev) => ({
       ...prev,
@@ -187,244 +194,92 @@ export function Bench({
     }));
   }, [turns, runningRigId]);
 
-  const chain = activeRig ? chainOf(activeRig, providers) : [];
-  const report = openRecord ?? (showReport ? session.summary : null);
+  const openRun = useCallback((record: SessionSummary) => {
+    setRunRecord(record);
+    setRunIsLive(false);
+    setView('run');
+  }, []);
+
+  const selectRig = useCallback((id: string) => {
+    setActiveRigId(id);
+    setView('bench');
+  }, []);
+
+  const backend: BackendStatus = catalogError ? 'unreachable' : providers.length ? 'ready' : 'loading';
+
+  /** Survives leaving Runs for a run's page and coming back by the crumb. */
+  const runsMemory = useRef<RunsMemory>({});
 
   return (
-    <div className={`app ${consoleExpanded ? 'console-open' : ''}`}>
-      <div className="enchantment" aria-hidden="true">
-        {Array.from({ length: 16 }, (_, i) => (
-          <i key={i} className="spark" />
-        ))}
-      </div>
-      <header className="topbar">
-        <span className="brand">
-          <img
-            className="brand-logo"
-            src="/magickvoice-logo.png"
-            alt="MagickVoice"
-          />
-          <span className="brand-copy">
-            <span className="brand-name">Grindelwald</span>
-            <span className="brand-byline">powered by MagickVoice</span>
-          </span>
-        </span>
+    <div className={`shell ${consoleExpanded ? 'console-open' : ''}`}>
+      <Sidebar
+        view={view === 'run' ? 'runs' : view}
+        onNavigate={setView}
+        rigs={rigs}
+        activeRigId={activeRigId}
+        providers={providers}
+        scores={scores}
+        locked={locked}
+        onSelectRig={selectRig}
+        onAddRig={addRig}
+        backend={backend}
+        username={username}
+        onLogout={
+          onLogout &&
+          (() => {
+            void session.disconnect();
+            void onLogout();
+          })
+        }
+      />
 
-        {activeRig && (
-          <span className="chain" title={session.label || 'not connected'}>
-            {chain.map((name, i) => (
-              <span key={`${name}-${i}`}>
-                {i > 0 && <span className="arrow">›</span>}
-                <b>{name}</b>
-              </span>
-            ))}
-            <span className="arrow">·</span>
-            {(activeRig.mode === 'realtime' ? activeRig.language : activeRig.ttsLanguage) || 'default'}
-          </span>
-        )}
-
-        <span className="spacer" />
-
-        <div className="seg">
-          <button type="button" className={view === 'bench' ? 'on' : ''} onClick={() => setView('bench')}>
-            <Icon name="wand" size={12} />
-            Bench
-          </button>
-          <button type="button" className={view === 'compare' ? 'on' : ''} onClick={() => setView('compare')}>
-            <Icon name="snitch" size={12} />
-            Compare
-          </button>
-        </div>
-
-        <span className="muted small">24 kHz PCM16</span>
-        <span className={`badge ${session.state}`}>{session.state}</span>
-        {session.sessionId && <code className="mono muted small">{session.sessionId.slice(0, 12)}</code>}
-        {username && <span className="muted small">{username}</span>}
-        {onLogout && (
-          <button
-            type="button"
-            className="btn"
-            onClick={() => {
-              void session.disconnect();
-              void onLogout();
-            }}
-          >
-            Sign out
-          </button>
-        )}
-      </header>
-
-      {catalogError && <div className="banner error">Cannot reach the backend: {catalogError}</div>}
-
-      {view === 'bench' && activeRig && (
-        <>
-          <RigTabs
-            rigs={rigs}
-            activeId={activeRigId}
-            scores={scores}
-            locked={locked}
-            onSelect={setActiveRigId}
-            onAdd={addRig}
-            onCompare={() => setView('compare')}
-          />
-
-          <div className="columns bench-cols">
-            <div className="col">
-              <ErrorBoundary panel="Rig">
-                <RigRail
-                  rig={activeRig}
-                  providers={providers}
-                  systemPrompt={systemPrompt}
-                  turns={session.turns}
-                  locked={locked}
-                  canDelete={rigs.length > 1}
-                  onEdit={() => setEditing(true)}
-                  onRename={(name) => updateRig({ ...activeRig, name })}
-                  onDelete={() => deleteRig(activeRig.id)}
-                  onCreateCode={() => setExporting(true)}
-                />
-              </ErrorBoundary>
-
-              <PromptWidget
-                systemPrompt={systemPrompt}
-                onSystemPromptChange={setSystemPrompt}
-                turnDetection={turnDetection}
-                onTurnDetectionChange={setTurnDetection}
-                onSend={session.sendText}
-                canSend={connected}
-                locked={locked}
-              />
-            </div>
-
-            <div className="col">
-              <section className="runbar">
-                {/* The primary slot never swaps its action out from under a
-                    second click: while the bill is being fetched it holds a
-                    disabled placeholder rather than becoming Connect. */}
-                {connected ? (
-                  <>
-                    <button type="button" className="btn primary" onClick={() => void session.endConversation()}>
-                      <Icon name="scroll" size={13} />
-                      End conversation
-                    </button>
-                    <button type="button" className="btn" onClick={() => void session.disconnect()} title="Drop the session without a report">
-                      <Icon name="linkOff" size={13} />
-                      Disconnect
-                    </button>
-                  </>
-                ) : ending ? (
-                  <button type="button" className="btn primary" disabled>
-                    <Icon name="hourglass" size={13} />
-                    Ending…
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn primary"
-                    onClick={connect}
-                    // A second click while connecting would open a second socket
-                    // whose close handler tears down the first.
-                    disabled={providers.length === 0 || session.state === 'connecting'}
-                  >
-                    <Icon name={session.state === 'connecting' ? 'hourglass' : 'key'} size={13} />
-                    {session.state === 'connecting' ? 'Connecting…' : 'Connect'}
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  className={`btn ${session.micOn ? 'hot' : ''}`}
-                  // Stopping stays available after the socket drops, so a lost
-                  // connection cannot leave the microphone hot.
-                  disabled={!connected && !session.micOn}
-                  onClick={() => (session.micOn ? void session.stopMic() : void session.startMic())}
-                >
-                  <Icon name={session.micOn ? 'micOff' : 'mic'} size={13} />
-                  {session.micOn ? 'Stop mic' : 'Start mic'}
-                </button>
-
-                {turnDetection === 'manual' && (
-                  <button type="button" className="btn" disabled={!connected || !session.micOn} onClick={session.commitAudio}>
-                    <Icon name="hourglass" size={13} />
-                    End my turn
-                  </button>
-                )}
-                <button type="button" className="btn" disabled={!connected} onClick={session.interrupt}>
-                  <Icon name="lightning" size={13} />
-                  Interrupt
-                </button>
-
-                <span className="field-label" id="mic-level-label">
-                  mic
-                </span>
-                {/* A bare span with aria-label is ignored; a meter needs a role
-                    and a value for it to mean anything. */}
-                <span
-                  className="meter"
-                  role="progressbar"
-                  aria-labelledby="mic-level-label"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={Math.round(Math.min(100, session.micLevel * 140))}
-                >
-                  <span className="meter-fill" style={{ width: `${Math.min(100, session.micLevel * 140)}%` }} />
-                </span>
-              </section>
-
-              {report && (
-                <ErrorBoundary panel="Conversation report">
-                  <SessionReport
-                    summary={report}
-                    title={openRecord ? 'Past conversation' : 'Conversation report'}
-                    onDismiss={() => (openRecord ? setOpenRecord(null) : setShowReport(false))}
-                  />
-                </ErrorBoundary>
-              )}
-
-              <Transcript utterances={session.utterances} speaking={session.assistantSpeaking} />
-
-              <ErrorBoundary panel="Turns">
-                <TurnsPanel turns={session.turns} usage={session.usage} />
-              </ErrorBoundary>
-            </div>
-
-            <div className="col">
-              <ErrorBoundary panel="Insights">
-                <InsightsPanel turns={session.turns} />
-              </ErrorBoundary>
-              <ErrorBoundary panel="Cost">
-                <CostPanel usage={session.usage} />
-              </ErrorBoundary>
-              <section className="panel">
-                <h2>
-                  <PanelIcon name="castle" />
-                  This rig
-                  <span className="right" style={{ color: rigColor(activeRig) }}>
-                    ●
-                  </span>
-                </h2>
-                <p className="muted small">
-                  {scores[activeRig.id]?.turns
-                    ? `${scores[activeRig.id].turns} turns run in this tab. Every one is already filed on disk — open Compare to put this rig beside another.`
-                    : 'No turns yet in this tab. Connect, speak or type a turn, then end the conversation to file it.'}
-                </p>
-              </section>
-            </div>
+      <main className="main has-console">
+        {catalogError && (
+          <div className="banner error page-banner" role="alert">
+            Cannot reach the backend: {catalogError}
           </div>
-        </>
-      )}
+        )}
 
-      {view === 'compare' && (
-        <ErrorBoundary panel="Compare">
-          <ComparePage
-            onOpenReport={(s) => {
-              setOpenRecord(s);
-              setView('bench');
-            }}
+        {view === 'bench' && activeRig && (
+          <BenchView
+            rig={activeRig}
+            providers={providers}
+            session={session}
+            systemPrompt={systemPrompt}
+            onSystemPromptChange={setSystemPrompt}
+            turnDetection={turnDetection}
+            onTurnDetectionChange={setTurnDetection}
+            locked={locked}
+            canDelete={rigs.length > 1}
+            score={scores[activeRig.id]}
+            onConnect={connect}
+            onEdit={() => setEditing(true)}
+            onRename={(name) => updateRig({ ...activeRig, name })}
+            onDelete={() => deleteRig(activeRig.id)}
+            onCreateCode={() => setExporting(true)}
           />
-        </ErrorBoundary>
-      )}
+        )}
 
+        {view === 'runs' && (
+          <ErrorBoundary panel="Runs">
+            <ComparePage onOpenReport={openRun} providers={providers} memory={runsMemory.current} />
+          </ErrorBoundary>
+        )}
+
+        {view === 'run' && runRecord && (
+          <RunDetailView
+            summary={runRecord}
+            justEnded={runIsLive}
+            providers={providers}
+            onBackToRuns={() => setView('runs')}
+            onBackToBench={() => setView('bench')}
+          />
+        )}
+      </main>
+
+      {/* At the shell rather than in BenchView, and on every view: it must be
+          there before the catalog arrives, which is exactly when a connection
+          error is logged, and a session can still be live while you read Runs. */}
       <ErrorBoundary panel="Console">
         <Console logs={session.logs} expanded={consoleExpanded} onToggleExpand={() => setConsoleExpanded((v) => !v)} />
       </ErrorBoundary>
@@ -433,6 +288,9 @@ export function Bench({
         <RigBuilder
           rig={activeRig}
           providers={providers}
+          // The sheet shows the rig as a script command; without the prompt
+          // that command would measure smoke's default prompt instead.
+          systemPrompt={systemPrompt}
           disabled={locked}
           onChange={updateRig}
           onClose={() => setEditing(false)}

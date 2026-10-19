@@ -1,13 +1,8 @@
-import { useState } from 'react';
 import { Icon, PanelIcon } from './Icon';
 
 interface Props {
   systemPrompt: string;
   onSystemPromptChange: (v: string) => void;
-  turnDetection: 'server_vad' | 'manual';
-  onTurnDetectionChange: (v: 'server_vad' | 'manual') => void;
-  onSend: (text: string) => void;
-  canSend: boolean;
   locked: boolean;
 }
 
@@ -26,33 +21,50 @@ const PRESETS = [
   },
 ];
 
-export function PromptWidget({
-  systemPrompt,
-  onSystemPromptChange,
-  turnDetection,
-  onTurnDetectionChange,
-  onSend,
-  canSend,
-  locked,
-}: Props) {
-  const [text, setText] = useState('');
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!text.trim() || !canSend) return;
-    onSend(text.trim());
-    setText('');
-  };
+/**
+ * The system prompt. It is part of what produced the numbers — the session
+ * record keeps it and the CLI command carries it — so it pins with the rig
+ * while a conversation is live.
+ */
+export function PromptWidget({ systemPrompt, onSystemPromptChange, locked }: Props) {
+  // A hand-edited prompt matches no preset; the select says so rather than
+  // claiming the last preset picked.
+  const preset = PRESETS.find((p) => p.text === systemPrompt)?.name ?? '';
 
   return (
     <section className="panel">
       <h2>
-        <PanelIcon name="book" />
-        Prompt
+        <PanelIcon name="scroll" />
+        System prompt
+        {locked && (
+          <span className="right prompt-lock">
+            <Icon name="lock" size={14} />
+            Locked while live
+          </span>
+        )}
       </h2>
 
       <label className="field">
-        <span className="field-label">System prompt</span>
+        <span className="field-label">Preset</span>
+        <select
+          value={preset}
+          disabled={locked}
+          onChange={(e) => {
+            const picked = PRESETS.find((p) => p.name === e.target.value);
+            if (picked) onSystemPromptChange(picked.text);
+          }}
+        >
+          {!preset && <option value="">Custom</option>}
+          {PRESETS.map((p) => (
+            <option key={p.name} value={p.name}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="field prompt-text">
+        <span className="sr-only">System prompt text</span>
         <textarea
           rows={4}
           value={systemPrompt}
@@ -61,40 +73,6 @@ export function PromptWidget({
           placeholder="You are a voice assistant…"
         />
       </label>
-
-      <div className="preset-row">
-        {PRESETS.map((p) => (
-          <button key={p.name} type="button" disabled={locked} onClick={() => onSystemPromptChange(p.text)}>
-            <Icon name={p.name === 'Naturalness probe' ? 'owl' : p.name === 'Latency probe' ? 'lightning' : 'hat'} size={12} />
-            {p.name}
-          </button>
-        ))}
-      </div>
-
-      <label className="field">
-        <span className="field-label">Turn detection</span>
-        <select
-          value={turnDetection}
-          onChange={(e) => onTurnDetectionChange(e.target.value as 'server_vad' | 'manual')}
-          disabled={locked}
-        >
-          <option value="server_vad">Server VAD (provider decides when you stopped)</option>
-          <option value="manual">Manual (push to talk)</option>
-        </select>
-      </label>
-
-      <form className="composer" onSubmit={submit}>
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder={canSend ? 'Type a turn instead of speaking…' : 'Connect a session first'}
-          disabled={!canSend}
-        />
-        <button type="submit" disabled={!canSend || !text.trim()}>
-          <Icon name="quill" size={13} />
-          Send
-        </button>
-      </form>
     </section>
   );
 }

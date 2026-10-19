@@ -1,0 +1,86 @@
+/*
+ * Grindelwald's design tokens: parchment ground, ivory cards, a midnight
+ * sidebar, gold for ornament and magic purple for selection.
+ *
+ * Every colour the chrome uses is named here. Area stylesheets read these and
+ * never invent a hex of their own — the old theme drifted precisely because
+ * each panel picked its own shade.
+ *
+ * The latency-leg palette is NOT here. It lives in `src/lib/legs.ts`, because
+ * those colours are applied as inline styles on generated elements and cannot
+ * be read from a custom property. Two declarations would be two sources of
+ * truth for the same validated palette, so there is one. The rig (house)
+ * colours live in `RIG_COLORS` in `src/lib/rigs.ts` for the same reason.
+ */
+:root {
+  /* Ground and surfaces */
+  --ground: #f4ede0;
+  --surface: #fffcf5;
+  --sunken: #faf5ea;
+  --chip: #ede3cf;
+  --hairline: #efe6d4;
+  --line: #e5d9c3;
+  --line-strong: #cdbd9c;
+
+  /* Ink. --ink-3 is the lightest text that still passes 4.5:1 on --ground. */
+  --ink: #221a14;
+  --ink-hover: #3a2e24;
+  --ink-2: #4e4236;
+  --ink-3: #6b5c4c;
+  --ink-faint: #a8987c;
+
+  /* Midnight: the sidebar and the console bar */
+  --midnight: #1c1830;
+  --midnight-2: #2e2848;
+  --midnight-text: #cfc6b0;
+  --code-text: #e8e1cf;
+  --midnight-muted: #9c93ae;
+  --on-dark: #fffcf5;
+
+  /* Gold is ornament. --gold only on midnight; --gold-ink for icons and eyebrows
+     on light — dark enough for 4.5:1 text on every light surface, --chip included. */
+  --gold: #e8c766;
+  --gold-ink: #7d5f0e;
+  --gold-rule: #d4b45a;
+
+  /* Magic purple: selection, links, focus */
+  --magic: #6b3fa0;
+  --magic-hover: #55307f;
+  --magic-soft: #f1e9f7;
+  --magic-row: #f6eff8;
+  --magic-ink: #3c2160;
+
+  /* Status */
+  --ok: #18794e;
+  --ok-dot: #3fb97a;
+  --ok-soft: #e7f5ee;
+  --ok-line: #b7dfc9;
+  --warn: #8a5300;
+  --warn-dot: #c27c0e;
+  --warn-soft: #fdf3e1;
+  --warn-line: #e8c98a;
+  --err: #b42318;
+  --err-hover: #9a1e14;
+  --err-soft: #fde3e1;
+  --err-line: #f2b8b2;
+
+  /* Type. Cinzel names things, Instrument Sans explains them, mono quotes the machine. */
+  --font-display: Cinzel, "Palatino Linotype", Palatino, serif;
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Shape and rhythm */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-card: 12px;
+  --tap: 44px;
+  --shadow-pop: 0 1px 2px rgba(34, 26, 20, 0.1);
+  --shadow-sheet: -12px 0 32px rgba(34, 26, 20, 0.18);
+
+  /* Shell */
+  --sidebar-w: 248px;
+  --console-bar-h: 60px;
+  --console-h-open: min(420px, 55vh);
+
+  color-scheme: light;
+}

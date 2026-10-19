@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DerivedMetrics, MetricMark, ServerMessage, SessionSummary, StartConfig, TurnUsage } from '../lib/protocol';
+import type { DerivedMetrics, MetricMark, ServerMessage, SessionMode, SessionSummary, StartConfig, TurnUsage } from '../lib/protocol';
 import { MicRecorder } from '../audio/recorder';
 import { AudioSink } from '../audio/player';
 import { MARK_NOTE, sourceOfMark, sourceOfMessage, type LogSource } from '../lib/logsource';
@@ -108,6 +108,8 @@ export function useVoiceSession() {
   const [assistantSpeaking, setAssistantSpeaking] = useState(false);
   const [utterances, setUtterances] = useState<Utterance[]>([]);
   const [turns, setTurns] = useState<TurnRecord[]>([]);
+  /** The mode `turns` were run in. A realtime turn's legs mean something different, so panels need it. */
+  const [mode, setMode] = useState<SessionMode>();
   const [usage, setUsage] = useState<TurnUsage[]>([]);
   /** Set once the conversation is formally ended, and kept so the report stays readable. */
   const [summary, setSummary] = useState<SessionSummary | null>(null);
@@ -180,6 +182,7 @@ export function useVoiceSession() {
       setState('connecting');
       setUtterances([]);
       setTurns([]);
+      setMode(config.mode);
       setUsage([]);
       setSummary(null);
       setLogs([]);
@@ -451,6 +454,7 @@ export function useVoiceSession() {
     assistantSpeaking,
     utterances,
     turns,
+    mode,
     usage,
     summary,
     logs,

@@ -50,7 +50,7 @@ export class ErrorBoundary extends Component<Props, { error?: Error }> {
     }
 
     return (
-      <div className="app">
+      <div className="crash">
         <div className="banner error">
           <strong>The UI crashed.</strong>
           <pre style={{ whiteSpace: 'pre-wrap', margin: '8px 0 0' }}>{error.message}</pre>

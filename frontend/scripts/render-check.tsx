@@ -8,6 +8,7 @@
 import { renderToString } from 'react-dom/server';
 import { createElement as h } from 'react';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,22 +17,26 @@ import type { SessionIndexEntry, SessionSummary, StartConfig } from '../src/lib/
 import App, { Bench } from '../src/App';
 import { LoginPage } from '../src/components/LoginPage';
 import { SessionReport } from '../src/components/SessionReport';
+import { RunDetailView } from '../src/components/RunDetailView';
 import { UsagePanel } from '../src/components/UsagePanel';
-import { ComparePage } from '../src/components/ComparePage';
+import {
+  ComparePage, CompareCard, Matrix, RunsTable, Verdicts, filterRuns, isMockRun, type RunFilter, type Series,
+} from '../src/components/ComparePage';
 import { Console } from '../src/components/Console';
 import { InsightsPanel, CostPanel } from '../src/components/InsightsPanel';
 import { RigBuilder } from '../src/components/RigBuilder';
 import { RigRail } from '../src/components/RigRail';
-import { RigTabs } from '../src/components/RigTabs';
+import { BenchView, type VoiceSessionHandle } from '../src/components/BenchView';
+import { Sidebar } from '../src/components/Sidebar';
 import { Transcript } from '../src/components/Transcript';
 import { TurnsPanel } from '../src/components/TurnsPanel';
 import { languagesFor, resolveVoice, voicesFor, type ProviderEntry } from '../src/lib/catalog';
-import { bandsOf, legMediansOf } from '../src/lib/legs';
+import { LEG_BANDS, bandsOf, legMediansOf } from '../src/lib/legs';
 import { sourceOfMessage } from '../src/lib/logsource';
 import { summarize } from '../src/lib/stats';
 import { claimTtfa, type TurnRecord, type LogLine } from '../src/hooks/useVoiceSession';
 import {
-  blankRig, envCommandOf, seedRigs, slotsOf, startConfigOf, withDefaults,
+  RIG_COLORS, blankRig, envCommandOf, seedRigs, slotsOf, startConfigOf, withDefaults,
   switchMode, switchProvider, switchSttModel, switchVoicedLanguage, switchVoicedModel,
   type Rig,
 } from '../src/lib/rigs';
@@ -128,9 +133,11 @@ console.log(`\nrendering against ${summary.recordId} (${summary.turnCount} turn,
 
 check('SessionReport', () => renderToString(h(SessionReport, { summary })), [
   'Conversation report',
-  summary.label,
-  'Per leg',
+  'Cost by leg',
   'Per turn',
+  'At scale',
+  'Record on disk',
+  'How much to trust each number',
 ]);
 
 // The INR columns were silently empty for a while because the fixture omitted
@@ -144,7 +151,113 @@ check('SessionReport shows both currencies', () => renderToString(h(SessionRepor
 check('SessionReport uses a custom title for archived records', () =>
   renderToString(h(SessionReport, { summary, title: 'Past conversation' })), ['Past conversation']);
 
-check('SessionReport with dismiss', () => renderToString(h(SessionReport, { summary, onDismiss: () => {} })), ['dismiss']);
+check('SessionReport with dismiss', () => renderToString(h(SessionReport, { summary, onDismiss: () => {} })), ['Dismiss']);
+
+/* --------------------------- the Run detail page --------------------------- */
+{
+  const noop = () => {};
+  const names: ProviderEntry[] = ['sarvam-stt', 'google-llm', 'murf-tts'].map((id) => ({
+    id, name: `Name of ${id}`, kind: 'stt' as const, implemented: true, registered: true, ready: true,
+    envKeys: [], missingEnv: [], models: [],
+  }));
+
+  // The full label moved from the report body into the page header, so it is
+  // asserted here — the JSON disclosure also contains it, which is why the
+  // SessionReport check no longer counts as evidence the label is shown.
+  check('RunDetailView (just ended) heads the page with the rig and its actions', () =>
+    renderToString(h(RunDetailView, {
+      summary: SYNTHETIC, justEnded: true, providers: names, onBackToRuns: noop, onBackToBench: noop,
+    })), [
+    `<span class="run-label">${SYNTHETIC.label}</span>`,
+    'Name of sarvam-stt → Name of google-llm → Name of murf-tts',
+    'Mischief managed',
+    'Export JSON',
+    'Back to bench',
+    '2 turns',
+  ]);
+
+  // The backend files nothing for a conversation with no turns.
+  check('RunDetailView (just ended, no turns) does not claim it was filed', () => {
+    const html = renderToString(h(RunDetailView, {
+      summary: { ...SYNTHETIC, turnCount: 0 }, justEnded: true, onBackToRuns: noop, onBackToBench: noop,
+    }));
+    if (html.includes('filed to disk')) throw new Error('a never-filed conversation claims it was filed');
+    return html;
+  }, ['No turns ran · nothing was filed']);
+
+  check('RunDetailView (archived) carries no just-ended eyebrow, and falls back to ids', () => {
+    const html = renderToString(h(RunDetailView, {
+      summary: SYNTHETIC, justEnded: false, onBackToRuns: noop, onBackToBench: noop,
+    }));
+    if (html.includes('Mischief managed')) throw new Error('an archived record claims it was just filed');
+    return html;
+  }, ['sarvam-stt → google-llm → murf-tts', 'Past conversation']);
+
+  // The record's own id names the WAV on disk; the socket id names nothing.
+  check('the report plays the recording by recordId, never sessionId', () => {
+    const html = renderToString(h(SessionReport, { summary: { ...SYNTHETIC, recordId: 'rec-1', sessionId: 'sock-1' } }));
+    if (html.includes('sock-1/audio')) throw new Error('recording URL built from the socket id');
+    return html;
+  }, ['/api/sessions/rec-1/audio', 'Download WAV', 'not what you heard']);
+
+  check('a record with no completed turn offers no recording', () => {
+    const html = renderToString(h(SessionReport, { summary: { ...SYNTHETIC, turnCount: 0 } }));
+    if (html.includes('<audio')) throw new Error('a never-filed conversation offered a player');
+    return html;
+  }, ['Cost by leg']);
+
+  check('an unpriced leg makes every total a floor, never zero', () =>
+    renderToString(h(SessionReport, { summary: SYNTHETIC })), [
+    'floor, not a bill',
+    'class="pill floor"',
+    'no rate on file',
+  ]);
+
+  // Sarvam bills in rupees: its INR cell is the quote and its USD cell the
+  // conversion, so the dimming must follow the vendor, not the column.
+  check('the converted currency is dimmed per leg, following the vendor', () => {
+    const html = renderToString(h(SessionReport, { summary: SYNTHETIC }));
+    const row = html.match(/<tr>(?:(?!<\/tr>).)*saaras:v3-realtime@fast(?:(?!<\/tr>).)*<\/tr>/)?.[0] ?? '';
+    if (!/class="muted"[^>]*>\$0\.00070/.test(row)) throw new Error('the converted USD figure is not dimmed');
+    if (!/class="strong"[^>]*>₹0\.06</.test(row)) throw new Error('the quoted INR figure is not marked exact');
+    return row;
+  }, ['saaras']);
+
+  check('the report shows the system prompt it ran with', () =>
+    renderToString(h(SessionReport, { summary: { ...SYNTHETIC, config: { ...SYNTHETIC.config, systemPrompt: 'Answer briefly.' } } })),
+    ['System prompt used', 'Answer briefly.']);
+  check('an empty system prompt says so', () => renderToString(h(SessionReport, { summary: SYNTHETIC })),
+    ['No system prompt recorded.']);
+
+  check('the projection quotes both currencies', () => renderToString(h(SessionReport, { summary: SYNTHETIC })),
+    ['/ month', '≈ ₹', 'assumes every future turn']);
+
+  // A turn that was billed but spoke nothing is the row worth finding, and the
+  // STT-only tail is audio after the last turn, not a turn of its own.
+  check('per-turn table marks a silent turn and the tail', () => {
+    const stt = SYNTHETIC.turns[0].legs[0];
+    const html = renderToString(h(UsagePanel, {
+      compact: true,
+      usage: [
+        SYNTHETIC.turns[0],
+        { ...SYNTHETIC.turns[1], turnId: 2, legs: SYNTHETIC.turns[1].legs.map((l) => l.leg === 'tts' ? { ...l, outputUnits: 0 } : l) },
+        { turnId: 3, at: Date.now(), costUsd: 0.0001, costInr: 0.01, unpriced: [], legs: [{ ...stt, inputUnits: 1.8 }] },
+      ],
+    }));
+    if ((html.match(/no reply/g) ?? []).length !== 1) throw new Error('expected exactly one turn marked as no reply');
+    return html;
+  }, ['no reply', 'after last turn', 'row-tail']);
+
+  check('a realtime record renders its one leg in the cost table', () =>
+    renderToString(h(SessionReport, { summary: {
+      ...SYNTHETIC, mode: 'realtime' as const, unpriced: [], latency: { ttfaMedianMs: 700 },
+      totals: [{ leg: 'realtime' as const, providerId: 'openai-realtime', modelId: 'gpt-realtime-2.1', unit: 'tokens' as const,
+        inputUnits: 132, outputUnits: 121, audioInputTokens: 13, audioOutputTokens: 91, source: 'vendor' as const }],
+      turns: [{ turnId: 1, at: Date.now(), costUsd: 0, costInr: 0, unpriced: [],
+        legs: [{ leg: 'realtime' as const, providerId: 'openai-realtime', modelId: 'gpt-realtime-2.1', unit: 'tokens' as const,
+          inputUnits: 132, outputUnits: 121, source: 'vendor' as const }] }],
+    } })), ['Realtime', '132 tokens', '91 audio', 'No per-leg timings recorded.']);
+}
 
 check('UsagePanel (pipeline)', () => renderToString(h(UsagePanel, { usage: summary.turns })), [
   'LLM in',
@@ -229,9 +342,18 @@ check('UsagePanel with an unpriced leg', () =>
   }
 }
 
-check('ComparePage (pre-fetch)', () => renderToString(h(ComparePage, { onOpenReport: () => {} })), [
-  'Runs on disk',
-  'Nothing recorded yet',
+check('ComparePage (pre-fetch)', () => {
+  const html = renderToString(h(ComparePage, { onOpenReport: () => {} }));
+  // Before the listing lands nobody has looked, so the page must not say the
+  // disk is empty — that used to be the only state this check could see.
+  if (html.includes('Nothing recorded yet')) throw new Error('claimed an empty disk before the listing loaded');
+  return html;
+}, [
+  '>Runs</h1>',
+  'Loading runs',
+  'Filter by provider, model or language',
+  'Hide mock runs',
+  'Tick a run or two to compare them.',
 ]);
 
 /*
@@ -250,11 +372,11 @@ check('ComparePage (pre-fetch) does not draw the Recordings panel before any run
   const html = renderToString(h(ComparePage, { onOpenReport: () => {} }));
   if (html.includes('Recordings')) throw new Error('the Recordings heading rendered with no runs loaded');
   if (html.includes('<audio')) throw new Error('an <audio> element rendered with no runs loaded');
-  if (html.includes('left: you · right: the assistant')) {
+  if (html.includes('left: mic · right: assistant')) {
     throw new Error('the channel hint rendered with no runs loaded');
   }
   return html;
-}, ['Nothing recorded yet']);
+}, ['Loading runs']);
 
 {
   /*
@@ -271,7 +393,7 @@ check('ComparePage (pre-fetch) does not draw the Recordings panel before any run
   check('Recordings panel with two runs', () => renderToString(h(Recordings, { runs: two })), [
     'Recordings',
     // The channel layout is explained nowhere else in the UI.
-    'left: you \u00b7 right: the assistant',
+    'left: mic \u00b7 right: assistant',
     '<audio',
     'controls',
     'preload="metadata"',
@@ -316,9 +438,205 @@ check('ComparePage (pre-fetch) does not draw the Recordings panel before any run
  */
 check('ComparePage actually renders the Recordings panel', () => {
   const src = readFileSync(new URL('../src/components/ComparePage.tsx', import.meta.url), 'utf8');
-  if (!/<Recordings\s+runs=\{runs\}\s*\/>/.test(src)) {
+  // Extra props (the series badges) are allowed; `runs={runs}` is what matters.
+  if (!/<Recordings\s+runs=\{runs\}[^>]*\/>/.test(src)) {
     throw new Error('ComparePage does not render <Recordings runs={runs} />');
   }
+  return 'wired';
+}, ['wired']);
+
+/*
+ * The Runs table, the comparison card and the verdicts, rendered directly for
+ * the same reason Recordings is: ComparePage only ever has data after an
+ * effect, so through it these would be checked in their empty state alone.
+ */
+{
+  const providers = [
+    { id: 'sarvam-stt', name: 'Sarvam Saaras' },
+    { id: 'google-llm', name: 'Google Gemini' },
+    { id: 'murf-tts', name: 'Murf Falcon' },
+    { id: 'openai-realtime', name: 'OpenAI Realtime' },
+  ].map((p) => ({ ...p, kind: 'stt', implemented: true, registered: true, ready: true, envKeys: [], missingEnv: [], models: [] })) as ProviderEntry[];
+
+  const entry = (recordId: string, over: Partial<SessionIndexEntry>): SessionIndexEntry => ({
+    recordId, label: SYNTHETIC.label, mode: 'pipeline', startedAt: SYNTHETIC.startedAt, endedAt: SYNTHETIC.endedAt,
+    turnCount: 4, costUsd: 0.02, costInr: 1.8, unpriced: [], latency: SYNTHETIC.latency, ...over,
+  });
+  const rows: SessionIndexEntry[] = [
+    entry('real-a', { unpriced: ['elevenlabs-tts:v3'], config: { mode: 'pipeline', turnDetection: 'server_vad', ttsLanguage: 'hi' } }),
+    entry('rt-b', { mode: 'realtime', label: 'openai-realtime:gpt-realtime-2.1-mini', turnCount: 1,
+      latency: { ...SYNTHETIC.latency, ttfaMedianMs: 1070, ttfaP95Ms: 1070 } }),
+    entry('mock-c', { label: 'mock-stt:mock-asr → mock-llm:mock-echo → mock-tts:mock-tone' }),
+    // A record older than the index's latency field: its cells must read "—", not NaN.
+    entry('old-d', { latency: undefined, turnCount: 0, costUsd: 0 }),
+  ];
+
+  check('RunsTable: names, raw chain, realtime tag, floor, series badge', () => {
+    const html = renderToString(h(RunsTable, {
+      rows, slots: { 'real-a': 0, 'rt-b': 1 }, providers, onToggle: () => {}, onOpen: () => {},
+    }));
+    if (html.includes('NaN')) throw new Error('a NaN reached the table');
+    // Open and select are separate controls: one button per run name, one checkbox per row.
+    if ((html.match(/class="run-open"/g) ?? []).length !== rows.length) throw new Error('not one open button per row');
+    if ((html.match(/type="checkbox"/g) ?? []).length !== rows.length) throw new Error('not one checkbox per row');
+    return html;
+  }, [
+    'Sarvam Saaras → Google Gemini → Murf Falcon',
+    // The raw chain stays under the readable one.
+    'sarvam-stt:saaras:v3-realtime@fast',
+    '>Realtime</span>',
+    'pill floor',
+    'no rate on file for elevenlabs-tts:v3',
+    // Series colours come from RIG_COLORS, by slot, so they never collide with leg colours.
+    `background:${RIG_COLORS[0]}`,
+    `background:${RIG_COLORS[1]}`,
+    'aria-label="Compare Sarvam Saaras → Google Gemini → Murf Falcon (series 1)"',
+    'class="on"',
+    '812',
+    '1,403',
+  ]);
+
+  check('RunsTable falls back to provider ids before the catalog loads', () =>
+    renderToString(h(RunsTable, { rows: rows.slice(0, 1), slots: {}, providers: [], onToggle: () => {}, onOpen: () => {} })),
+  ['sarvam-stt → google-llm → murf-tts']);
+
+  check('filterRuns: mock hidden, mode, query by id, name and language', () => {
+    const ids = (f: Partial<RunFilter>) =>
+      filterRuns(rows, { query: '', mode: 'all', hideMock: false, ...f }, providers).map((r) => r.recordId).join(',');
+    const got = {
+      hideMock: ids({ hideMock: true }),
+      realtime: ids({ mode: 'realtime' }),
+      byId: ids({ query: 'murf-tts' }),
+      byName: ids({ query: 'openai realtime' }),
+      byLang: ids({ query: 'hi' }),
+    };
+    if (got.hideMock.includes('mock-c') || !isMockRun(rows[2].label) || isMockRun(rows[0].label)) throw new Error(`mock filter: ${got.hideMock}`);
+    if (got.realtime !== 'rt-b') throw new Error(`mode filter: ${got.realtime}`);
+    if (got.byName !== 'rt-b') throw new Error(`name query: ${got.byName}`);
+    if (!got.byLang.includes('real-a')) throw new Error(`language query: ${got.byLang}`);
+    return JSON.stringify(got);
+  }, ['"hideMock":"real-a,rt-b,old-d"', '"byId":"real-a,old-d"']);
+
+  const pipe = normalizeSummary({ ...SYNTHETIC, recordId: 'real-a' });
+  const rt = normalizeSummary({
+    ...SYNTHETIC, recordId: 'rt-b', mode: 'realtime', label: 'openai-realtime:gpt-realtime-2.1-mini', turnCount: 1,
+    costUsd: 0.0015, unpriced: [],
+    latency: { ttfaMedianMs: 1070, ttfaP95Ms: 1070, totalTurnMedianMs: 2900, audioMedianMs: 2400 },
+  });
+  const series: Series[] = [
+    { run: pipe, tag: { n: 1, color: RIG_COLORS[0], name: 'Sarvam Saaras → Google Gemini → Murf Falcon' } },
+    { run: rt, tag: { n: 2, color: RIG_COLORS[1], name: 'OpenAI Realtime' } },
+  ];
+  const card = (metricKey: string, extra: object = {}) =>
+    renderToString(h(CompareCard, { series, selectedCount: 2, metricKey, onMetric: () => {}, onClear: () => {}, ...extra }));
+  const noNaN = (html: string) => {
+    if (html.includes('NaN')) throw new Error('a NaN reached the chart');
+    return html;
+  };
+
+  check('CompareCard: first audio, median bar + p95 tick in series colour', () => noNaN(card('ttfa')), [
+    'Comparing 2 runs',
+    'First audio', 'Per leg', 'Cost',
+    'class="cmp-tick"',
+    'p95 1,403 ms',
+    `background:${RIG_COLORS[1]}`,
+    'Bar is the median, tick is p95.',
+    // The one-turn realtime run is flagged as a rough figure.
+    'Based on 1 turn',
+  ]);
+
+  check('CompareCard: per leg draws three legs for a pipeline, one band for realtime', () => {
+    const html = noNaN(card('legs'));
+    for (const b of LEG_BANDS) if (!html.includes(`background:${b.color}`)) throw new Error(`${b.name} bar missing`);
+    return html;
+  }, ['One model — no legs to split.', 'cmp-opaque', 'do not add up to TTFA']);
+
+  check('CompareCard: cost marks the unpriced run as a floor', () => noNaN(card('cost')), [
+    'pill floor', 'per 1,000 turns', 'a floor, not a bill',
+  ]);
+
+  check('CompareCard with nothing selected', () => card('ttfa', { series: [], selectedCount: 0 }), [
+    'Tick a run or two to compare them.',
+  ]);
+
+  // React's SSR separates adjacent text nodes with `<!-- -->`; strip them to read the sentence.
+  check('Verdicts: fastest, cheapest, not measured, floor caveat', () =>
+    renderToString(h(Verdicts, { series })).replace(/<!-- -->/g, ''), [
+    'What the crystal ball says',
+    'Fastest', 'Cheapest', 'Not measured',
+    '<strong>Sarvam Saaras → Google Gemini → Murf Falcon</strong> at 812 ms',
+    'their totals are floors',
+  ]);
+
+  check('Recordings with series badges shows the readable name', () =>
+    renderToString(h(Recordings, { runs: [pipe, rt], series: Object.fromEntries(series.map((s) => [s.run.recordId, s.tag])) })), [
+    'class="series-badge sm"',
+    'OpenAI Realtime',
+    `title="${pipe.label}"`,
+    '/api/sessions/rt-b/audio',
+  ]);
+
+  /*
+   * The matrix is the one view with every number for the selected runs side by
+   * side. Fixture: the pipeline has the faster median and is the only run with
+   * legs; the realtime run has the tighter p95 and is cheapest per turn, while
+   * the pipeline carries an unpriced leg.
+   */
+  check('Matrix: every column, best-in-column marked by more than colour, floor flag', () => {
+    const html = renderToString(h(Matrix, { series, onOpen: () => {} })).replace(/<!-- -->/g, '');
+    if (html.includes('NaN')) throw new Error('a NaN reached the matrix');
+    const [pipeRow, rtRow] = html.split('<tr>').slice(2);
+    if (!pipeRow || !rtRow) throw new Error('expected one row per selected run');
+    // TTFA, STT, LLM, TTS: the pipeline wins; p95 and $ / turn: the realtime run.
+    const wins = (row: string) => (row.match(/class="win"/g) ?? []).length;
+    if (wins(pipeRow) !== 4 || wins(rtRow) !== 2) throw new Error(`win cells: pipeline ${wins(pipeRow)}, realtime ${wins(rtRow)}`);
+    if ((html.match(/\(best\)/g) ?? []).length !== 6) throw new Error('a win cell has no non-colour cue');
+    if (!pipeRow.includes('pill floor') || rtRow.includes('pill floor')) throw new Error('floor flag on the wrong run');
+    // A realtime run never measured the legs: dashes, not zeros.
+    if ((rtRow.match(/>—</g) ?? []).length < 3) throw new Error('the realtime row does not dash its unmeasured legs');
+    return html;
+  }, [
+    'All numbers',
+    '>Run</th>', '>Turns</th>', '>TTFA</th>', '>p95</th>', '>STT</th>', '>LLM</th>', '>TTS</th>', '>$ / turn</th>', '>$ / 1k</th>',
+    'class="series-badge sm"',
+    'title="Best of the selected runs"',
+    'no rate on file for elevenlabs-tts:v3',
+    'do not add up to TTFA',
+  ]);
+
+  {
+    const rtWithStt = { ...rt, latency: { ...rt.latency, sttMedianMs: 90 } };
+    const withStt: Series[] = [series[0], { ...series[1], run: rtWithStt }];
+    check('Matrix never ranks a realtime transcript against a pipeline STT leg', () => {
+      const html = renderToString(h(Matrix, { series: withStt, onOpen: () => {} })).replace(/<!-- -->/g, '');
+      const [pipeRow, rtRow] = html.split('<tr>').slice(2);
+      const cells = (row: string) => row.split('<td').slice(1);
+      // Column 4 is STT (Run, Turns, TTFA, p95, STT).
+      if (!cells(pipeRow)[4]?.includes('class="win"')) throw new Error('the pipeline lost STT to a realtime transcript');
+      if (cells(rtRow)[4]?.includes('win')) throw new Error('a realtime transcript was ranked best STT');
+      if (!cells(rtRow)[4]?.includes('>90<')) throw new Error('the realtime transcript time was hidden');
+      return html;
+    }, ['a realtime run has no LLM or TTS split', 'never ranked']);
+    check('CompareCard: a realtime run with a transcript still draws one opaque band', () => {
+      const html = renderToString(h(CompareCard, { series: withStt, selectedCount: 2, metricKey: 'legs', onMetric: () => {}, onClear: () => {} }));
+      const rtRow = html.split('class="cmp-row"')[2] ?? '';
+      if (!rtRow.includes('cmp-opaque')) throw new Error('the realtime run lost its first-audio band');
+      if (rtRow.includes('leg-bar-fill')) throw new Error('the realtime transcript was drawn as a leg');
+      return html;
+    }, ['Its transcript of your speech arrived at 90 ms']);
+  }
+
+  check('Matrix renders nothing for a single run', () => {
+    const html = renderToString(h(Matrix, { series: series.slice(0, 1), onOpen: () => {} }));
+    if (html) throw new Error('the matrix rendered with one run');
+    return 'empty';
+  }, ['empty']);
+}
+
+// Source check, like the Recordings one: the matrix only has data after an effect.
+check('ComparePage actually renders the matrix', () => {
+  const src = readFileSync(new URL('../src/components/ComparePage.tsx', import.meta.url), 'utf8');
+  if (!/<Matrix\s+series=\{series\}/.test(src)) throw new Error('ComparePage does not render <Matrix series={series} />');
   return 'wired';
 }, ['wired']);
 
@@ -495,6 +813,81 @@ check('RigBuilder: voices follow the selected model', () => {
   return html;
 }, ['en-US-imani']);
 
+/** The one `<button>` whose text names this provider. */
+const chipOf = (html: string, name: string) =>
+  html.match(/<button[^>]*>(?:(?!<\/button>).)*<\/button>/g)?.find((b) => b.includes(name)) ?? '';
+// A missing key is refused on start, not by the picker: the chip stays pickable
+// so a rig can be laid out before the key is in .env, and it names the key.
+check('RigBuilder: a provider missing its key is pickable and names the key', () => {
+  const withMissing = [...pickerProviders, {
+    id: 'keyless-tts', name: 'Keyless Voice', kind: 'tts' as const, implemented: true,
+    registered: true, ready: false, envKeys: ['KEYLESS_API_KEY'], missingEnv: ['KEYLESS_API_KEY'],
+    models: [{ id: 'k-1', name: 'k-1' }],
+  }];
+  const chip = chipOf(renderToString(h(RigBuilder, {
+    providers: withMissing, rig: baseRig, onChange: () => {}, onClose: () => {}, disabled: false,
+  })), 'Keyless Voice');
+  if (!chip) throw new Error('no chip for the provider');
+  if (/disabled=""/.test(chip)) throw new Error('a missing key made the provider unpickable');
+  if (!/class="p-chip +miss"/.test(chip)) throw new Error('the chip is not marked as missing a key');
+  return chip;
+}, ['Needs <code>KEYLESS_API_KEY</code>', 'role="radio"', 'aria-checked="false"']);
+check('RigBuilder: an unregistered provider chip says it is not wired', () => {
+  const withGap = [...pickerProviders, {
+    id: 'deepgram-tts', name: 'Deepgram Aura', kind: 'tts' as const, implemented: false,
+    registered: false, ready: false, envKeys: ['DEEPGRAM_API_KEY'], missingEnv: ['DEEPGRAM_API_KEY'],
+    models: [{ id: 'aura-2', name: 'aura-2' }],
+  }];
+  const chip = chipOf(renderToString(h(RigBuilder, {
+    providers: withGap, rig: baseRig, onChange: () => {}, onClose: () => {}, disabled: false,
+  })), 'Deepgram Aura');
+  if (!/disabled=""/.test(chip)) throw new Error('an unregistered provider is pickable');
+  return chip;
+}, ['· not wired', 'Not wired up in factory.ts']);
+// The architecture switch is a real radio group, and each leg is numbered in
+// the colour the latency charts draw it in.
+check('RigBuilder: architecture is a radio group, legs carry their LEG_BANDS colour', () => {
+  const html = picker(baseRig);
+  const radios = html.match(/<input type="radio"[^>]*>/g) ?? [];
+  const checked = radios.filter((r) => r.includes('checked=""'));
+  if (radios.length !== 2 || checked.length !== 1 || !checked[0].includes('value="pipeline"')) {
+    throw new Error(`expected pipeline as the one checked radio, got ${JSON.stringify(radios)}`);
+  }
+  for (const band of LEG_BANDS) {
+    if (!html.includes(`background:${band.color}`)) throw new Error(`no step in the ${band.key} colour`);
+  }
+  return html;
+}, ['Architecture', 'Speech to text', 'Language model', 'Text to speech', 'only measured combinations are listed', 'aria-checked="true"']);
+check('RigBuilder: a realtime rig is one section, in the TTS colour', () => {
+  const html = renderToString(h(RigBuilder, {
+    providers: novaProviders, rig: novaRig, onChange: () => {}, onClose: () => {}, disabled: false,
+  }));
+  if (html.includes('Speech to text') || html.includes('Language model')) throw new Error('a realtime rig rendered pipeline legs');
+  const tts = LEG_BANDS.find((b) => b.key === 'tts')!.color;
+  if (!html.includes(`background:${tts}`)) throw new Error('the realtime step is not in the TTS colour');
+  return html;
+}, ['Speech to speech', 'Realtime provider']);
+// The sheet carries the same command the rail does, prompt included — without
+// SYSTEM it would reproduce smoke's default prompt, a different measurement.
+check('RigBuilder: the script command carries the bench prompt', () => renderToString(h(RigBuilder, {
+  providers: pickerProviders, rig: baseRig, systemPrompt: "Don't ramble.", onChange: () => {}, onClose: () => {}, disabled: false,
+})), ['Same rig as a script command', '<pre class="codeblock">', 'TTS=sarvam-tts', `SYSTEM=&#x27;Don&#x27;\\&#x27;&#x27;t ramble.&#x27;`, 'node scripts/smoke.mjs pipeline']);
+check('RigBuilder: a command without the prompt says so', () => picker(baseRig),
+  ['node scripts/smoke.mjs pipeline', 'Printed without the bench’s system prompt']);
+// Locked while live: still visible, every control disabled, and the sheet says why.
+check('RigBuilder: a live session locks every control and says why', () => {
+  const html = renderToString(h(RigBuilder, {
+    providers: pickerProviders, rig: baseRig, onChange: () => {}, onClose: () => {}, disabled: true,
+  }));
+  const selects = html.match(/<select[^>]*>/g) ?? [];
+  if (!selects.length || selects.some((s) => !s.includes('disabled'))) throw new Error('a select is still live');
+  const radios = html.match(/<input type="radio"[^>]*>/g) ?? [];
+  if (radios.length !== 2 || radios.some((r) => !r.includes('disabled'))) throw new Error('the architecture radios are still live');
+  const chips = html.match(/<button[^>]*class="p-chip[^>]*>/g) ?? [];
+  if (!chips.length || chips.some((c) => !c.includes('disabled'))) throw new Error('a provider chip is still live');
+  return html;
+}, ['Locked while this rig is live']);
+
 /*
  * A typed voice id outlives the dropdown by design — `startConfigOf` prefers it
  * — so every transition that changes which catalogue is in force must clear it.
@@ -560,7 +953,7 @@ for (const [name, partial] of [
   ['a turn with no legs', { ...summary, turns: [{ turnId: 1, at: 0, costUsd: 0, unpriced: [] }] }],
 ] as Array<[string, unknown]>) {
   check(`survives a record with ${name}`, () =>
-    renderToString(h(SessionReport, { summary: normalizeSummary(partial) })), ['Per leg']);
+    renderToString(h(SessionReport, { summary: normalizeSummary(partial) })), ['Cost by leg']);
 }
 
 check('a normalised record never prints NaN', () =>
@@ -604,8 +997,11 @@ const realtimeTurn: TurnRecord = {
   turnId: 3,
   label: 'openai-realtime',
   clientTtfaMs: 498,
-  marks: [{ name: 'user_speech_end', atMs: 0 }, { name: 'first_audio_out', atMs: 441 }],
-  derived: { timeToFirstAudioMs: 441, ttsTtfbMs: 441, totalTurnMs: 2701, audioDurationMs: 2260 },
+  // What OpenAI Realtime and Nova Sonic actually mark: t0, the transcript of
+  // your speech (which can land after the reply starts), first audio. Never a
+  // TTS request — so no TTS band, whatever `ttsTtfbMs` might be set to.
+  marks: [{ name: 'user_speech_end', atMs: 0 }, { name: 'first_audio_out', atMs: 441 }, { name: 'stt_final', atMs: 620 }],
+  derived: { timeToFirstAudioMs: 441, sttLatencyMs: 620, totalTurnMs: 2701, audioDurationMs: 2260 },
 };
 
 check('TurnsPanel (pipeline turns)', () =>
@@ -620,23 +1016,37 @@ check('TurnsPanel (no turns yet)', () => renderToString(h(TurnsPanel, { turns: [
 check('Waterfall: a realtime turn draws one band, not three empty ones', () => {
   const html = renderToString(h(TurnsPanel, { turns: [realtimeTurn], usage: [] }));
   if (/width:\s*0(\.0+)?%/.test(html)) throw new Error('an unmeasured leg was drawn as a zero-width band');
+  // A realtime provider marks t0, first audio and at most its transcript, so at most one (STT) band, and the tick still lands.
+  if ((html.match(/class="wf-seg /g) ?? []).length > 1) throw new Error('a realtime turn grew legs it never had');
+  if (!html.includes('class="wf-mark"')) throw new Error('the first-audio tick is missing');
   return html;
-}, ['Turns']);
+  // The full legend stays: three keys with nothing inside is the finding.
+}, ['Turns', 'STT', 'LLM to first token', 'TTS to first byte', 'First audio', '441 ms']);
+// A turn whose TTS produced nothing must say so, not render as a blank row.
+check('Waterfall: a turn with no bands and no first audio reads as such', () =>
+  renderToString(h(TurnsPanel, {
+    turns: [{ ...realtimeTurn, marks: [{ name: 'user_speech_end', atMs: 0 }], derived: {} }],
+    usage: [],
+  })), ['No reply audio']);
 
 check('InsightsPanel', () => renderToString(h(InsightsPanel, { turns: [pipelineTurn, slowTurn] })),
   ['Time to first audio', 'p95', 'jitter', 'slowest leg', 'do not add up to the turn']);
 check('InsightsPanel (no turns)', () => renderToString(h(InsightsPanel, { turns: [] })), ['Complete a turn']);
-check('InsightsPanel (realtime, one band)', () => renderToString(h(InsightsPanel, { turns: [realtimeTurn] })),
-  ['Time to first audio']);
+check('InsightsPanel (realtime) never splits or ranks the transcript', () => {
+  const html = renderToString(h(InsightsPanel, { turns: [realtimeTurn], mode: 'realtime' as const }));
+  if (html.includes('slowest leg') || html.includes('Only <strong>')) throw new Error('a realtime transcript was ranked as a leg');
+  if (html.includes('leg-bar-fill')) throw new Error('a realtime turn was split into legs');
+  return html;
+}, ['Time to first audio', '441', 'nothing to split', 'Its transcript of your speech arrived at 620 ms']);
 
-check('CostPanel', () => renderToString(h(CostPanel, { usage: summary.turns })), ['/ turn', 'per month']);
+check('CostPanel', () => renderToString(h(CostPanel, { usage: summary.turns })), ['per turn', 'per month']);
 check('CostPanel (empty)', () => renderToString(h(CostPanel, { usage: [] })), ['nothing was consumed']);
 check('CostPanel names an unpriced leg as a floor', () =>
   renderToString(h(CostPanel, {
     usage: [{ turnId: 1, at: Date.now(), costUsd: 0, costInr: 0, unpriced: ['groq-llm:llama'],
       legs: [{ leg: 'llm' as const, providerId: 'groq-llm', modelId: 'llama', unit: 'tokens' as const,
         inputUnits: 10, outputUnits: 4, source: 'local' as const, unpricedReason: 'no rate' }] }],
-  })), ['floor, not a bill']);
+  })), ['floor, not a bill', '~14', 'estimated locally']);
 
 const logs: LogLine[] = [
   { at: Date.now(), level: 'info', message: 'session started', kind: 'log', source: 'session' },
@@ -645,11 +1055,15 @@ const logs: LogLine[] = [
   { at: Date.now(), level: 'info', message: 'tts_request_sent', kind: 'mark', source: 'tts', turnId: 4, atMs: 364,
     detail: 'marked before open() \u2014 the handshake is inside the window' },
 ];
+// Collapsed it is one bar: counts that need attention, the newest line, and a way in.
 check('Console (docked)', () => renderToString(h(Console, { logs, expanded: false, onToggleExpand: () => {} })),
-  ['Console', 'info', 'warn', 'error', 'tts_request_sent']);
+  ['Console', '1 warning', '1 error', 'tts_request_sent', 'aria-expanded="false"', 'Open']);
+check('Console (expanded) keeps the level filters', () =>
+  renderToString(h(Console, { logs, expanded: true, onToggleExpand: () => {} })),
+  ['info 2', 'warn 1', 'error 1', 'aria-expanded="true"', 'Close']);
 // Every line is expandable, so every line has to be reachable without a mouse.
 check('Console lines are buttons, not click-handled divs', () => {
-  const html = renderToString(h(Console, { logs, expanded: false, onToggleExpand: () => {} }));
+  const html = renderToString(h(Console, { logs, expanded: true, onToggleExpand: () => {} }));
   if (/<div[^>]*class="log-line/.test(html)) throw new Error('a log line is a div with a click handler');
   if (!/<button[^>]*class="log-line/.test(html)) throw new Error('log lines are not buttons');
   return html;
@@ -670,30 +1084,97 @@ check('Console (empty)', () => renderToString(h(Console, { logs: [], expanded: f
 check('Transcript', () => renderToString(h(Transcript, {
   utterances: [{ role: 'user' as const, text: 'hello', final: true }, { role: 'assistant' as const, text: 'hi', final: false }],
   speaking: true,
-})), ['hello', 'hi']);
-
-check('RigTabs', () => renderToString(h(RigTabs, {
-  rigs: [baseRig, { ...murfRig, id: 'r2', name: 'Rig B', colorIndex: 1 }],
-  activeId: baseRig.id,
-  scores: { [baseRig.id]: { ttfaMedianMs: 612, turns: 4 } },
-  locked: false,
-  onSelect: () => {}, onAdd: () => {}, onCompare: () => {},
-})), ['Rig A', 'Rig B', '612 ms', 'Compare runs']);
-
-check('RigTabs locks the other tabs during a live session', () => {
-  const html = renderToString(h(RigTabs, {
-    rigs: [baseRig, { ...murfRig, id: 'r2', name: 'Rig B', colorIndex: 1 }],
-    activeId: baseRig.id, scores: {}, locked: true,
-    onSelect: () => {}, onAdd: () => {}, onCompare: () => {},
-  }));
-  if (!html.includes('disabled')) throw new Error('a rig was switchable mid-session');
+})), ['hello', 'hi', 'bubble assistant partial', 'Assistant speaking']);
+check('Transcript (empty, with composer, not connected)', () => {
+  const html = renderToString(h(Transcript, { utterances: [], speaking: false, turnCount: 0, onSend: () => {}, canSend: false }));
+  if (!/<input[^>]*disabled/.test(html)) throw new Error('the composer accepts a turn with no session to send it to');
   return html;
-}, ['End the conversation to switch rig']);
+}, ['Conversation', '0 turns', 'The parchment is blank', 'Connect a session first', 'Send']);
+// A hot mic with nothing transcribed yet still has to look like it is listening.
+check('Transcript says it is listening while the mic is open', () => renderToString(h(Transcript, {
+  utterances: [{ role: 'user' as const, text: 'hello', final: true }], speaking: false, turnCount: 1,
+  micOn: true, onSend: () => {}, canSend: true,
+})), ['Listening…', '1 turn<', 'Type a turn instead of speaking']);
 
+const sidebarProps = {
+  view: 'bench' as const, onNavigate: () => {},
+  rigs: [baseRig, { ...murfRig, id: 'r2', name: 'Rig B', colorIndex: 1 }],
+  activeRigId: baseRig.id, providers: pickerProviders,
+  scores: { [baseRig.id]: { ttfaMedianMs: 612, turns: 4 } },
+  locked: false, onSelectRig: () => {}, onAddRig: () => {}, backend: 'ready' as const,
+};
+
+check('Sidebar', () => renderToString(h(Sidebar, sidebarProps)),
+  ['Rig A', 'Rig B', '612 ms', 'Bench', 'Runs', 'Grindelwald', 'powered by MagickVoice']);
+
+check('Sidebar marks the current view', () => {
+  const html = renderToString(h(Sidebar, { ...sidebarProps, view: 'runs' as const }));
+  if (!/aria-current="page"[^>]*>(?:(?!<\/button>)[\s\S])*Runs/.test(html)) throw new Error('Runs is not the current page');
+  return html;
+}, ['aria-current="page"']);
+
+check('Sidebar locks the other rigs during a live session', () => {
+  const html = renderToString(h(Sidebar, { ...sidebarProps, scores: {}, locked: true }));
+  // The rig buttons themselves, not just any disabled control: the add button alone would satisfy `disabled`.
+  const rigButtons = html.match(/<button[^>]*class="rig-item[^"]*"[^>]*>/g) ?? [];
+  if (rigButtons.length !== 2) throw new Error(`expected two rig buttons, got ${rigButtons.length}`);
+  const [active, other] = rigButtons;
+  if (!other.includes('disabled')) throw new Error('another rig was switchable mid-session');
+  if (active.includes('disabled')) throw new Error('the live rig was greyed out');
+  if (!/<button[^>]*aria-label="Add a rig"[^>]*disabled/.test(html) && !/<button[^>]*disabled[^>]*aria-label="Add a rig"/.test(html)) {
+    throw new Error('a rig could be added mid-session');
+  }
+  return html;
+}, ['End the conversation to switch rig', 'Locked while Rig A is live']);
+
+// The status dot only knows whether the catalog came back. While it is still
+// in flight, "ready" would be a claim nobody has checked yet.
+check('Sidebar says what it knows about the backend, and offers sign-out', () => {
+  const loading = renderToString(h(Sidebar, { ...sidebarProps, backend: 'loading' as const }));
+  if (loading.includes('Catalog loaded')) throw new Error('claimed the catalog loaded before it had');
+  const down = renderToString(h(Sidebar, { ...sidebarProps, backend: 'unreachable' as const }));
+  if (!down.includes('Backend unreachable')) throw new Error('an unreachable backend was not said');
+  return renderToString(h(Sidebar, { ...sidebarProps, username: 'admin@magickvoice.com', onLogout: () => {} })) + loading;
+}, ['Catalog loaded', 'Reaching backend', 'admin@magickvoice.com', 'Sign out']);
+
+// Rig colours are identity, not a leg: none may reuse a leg hex, or rig A reads as STT.
+check('Rig colours never reuse a leg colour', () => {
+  const legHexes = LEG_BANDS.map((b) => b.color.toLowerCase());
+  const clash = RIG_COLORS.filter((c) => legHexes.includes(c.toLowerCase()));
+  if (clash.length) throw new Error(`rig colour reuses a leg colour: ${clash.join(', ')}`);
+  return RIG_COLORS.join(' ');
+}, ['#8e1f2f']);
+
+// The chain carries the CLI command in a disclosure: the reproduction has to
+// be in the DOM, not only behind a clipboard call that can fail.
 check('RigRail', () => renderToString(h(RigRail, {
-  rig: baseRig, providers: pickerProviders, systemPrompt: 'Be brief.', turns: [pipelineTurn], locked: false, canDelete: true,
-  onEdit: () => {}, onRename: () => {}, onDelete: () => {}, onCreateCode: () => {},
-})), ['Rig', 'Mock (canned)', 'bulbul:v3', 'STT=mock-stt', '214 ms', 'Create code']);
+  rig: baseRig, providers: pickerProviders, systemPrompt: 'Be brief.', turns: [pipelineTurn], locked: false,
+  onEdit: () => {},
+})), ['Signal chain', '1 · Speech to text', '2 · Language model', '3 · Text to speech', 'Mock (canned)', 'bulbul:v3',
+  'STT=mock-stt', 'SYSTEM=', '>214<', 'median, to final transcript', 'voice anushka', 'Show CLI command']);
+check('RigRail (realtime) is one card', () => {
+  const html = renderToString(h(RigRail, {
+    rig: novaRig, providers: pickerProviders, systemPrompt: '', turns: [], locked: false, onEdit: () => {},
+  }));
+  if ((html.match(/class="chain-card"/g) ?? []).length !== 1) throw new Error('a realtime rig rendered more than one leg');
+  if (html.includes('1 · ')) throw new Error('a single leg was numbered as if a chain followed');
+  return html;
+}, ['Speech to speech', 'voice kiara', 'language en-IN', 'no turns yet', 'REALTIME=']);
+// Realtime providers never mark a TTS request, so the card times the whole model: t0 to first audio.
+check('RigRail (realtime) shows the model\'s first audio once turns land', () => {
+  const html = renderToString(h(RigRail, {
+    rig: novaRig, providers: pickerProviders, systemPrompt: '', turns: [realtimeTurn], locked: false, onEdit: () => {},
+  }));
+  if (html.includes('no turns yet')) throw new Error('a realtime rig with turns still says it has none');
+  return html;
+}, ['>441<', 'median, to first audio byte']);
+check('RigRail locks its cards during a live session', () => {
+  const html = renderToString(h(RigRail, {
+    rig: baseRig, providers: pickerProviders, systemPrompt: '', turns: [], locked: true, onEdit: () => {},
+  }));
+  if (/<button(?![^>]*disabled)[^>]*class="chain-card"/.test(html)) throw new Error('a leg is editable mid-session');
+  return html;
+}, ['End the conversation to edit this rig']);
 
 // A leg whose key is missing has to say so on the rail, not at connect time.
 check('RigRail surfaces a missing key', () => renderToString(h(RigRail, {
@@ -702,9 +1183,78 @@ check('RigRail surfaces a missing key', () => renderToString(h(RigRail, {
     id: 'groq-llm', name: 'Groq', kind: 'llm' as const, implemented: true, registered: true, ready: false,
     envKeys: ['GROQ_API_KEY'], missingEnv: ['GROQ_API_KEY'], models: [{ id: 'llama-3.3-70b', name: 'llama' }],
   }],
-  systemPrompt: 'Be brief.', turns: [], locked: false, canDelete: false,
-  onEdit: () => {}, onRename: () => {}, onDelete: () => {}, onCreateCode: () => {},
-})), ['needs GROQ_API_KEY']);
+  systemPrompt: 'Be brief.', turns: [], locked: false,
+  onEdit: () => {},
+})), ['needs GROQ_API_KEY', 'chain-ready miss']);
+
+/*
+ * The bench page against a stand-in session. Effects do not run server-side,
+ * so this is the only place the session bar's state words, the primary slot
+ * and the locking rules are rendered at all — `Bench (signed in)` never gets
+ * past the catalog fetch to a rig.
+ */
+const idleSession: VoiceSessionHandle = {
+  state: 'idle', label: '', sessionId: '', micOn: false, micLevel: 0, assistantSpeaking: false,
+  utterances: [], turns: [], mode: undefined, usage: [], summary: null, logs: [],
+  connect: async () => {}, disconnect: async () => {}, endConversation: async () => {},
+  startMic: async () => {}, stopMic: async () => {}, sendText: () => {}, commitAudio: () => {}, interrupt: () => {},
+};
+const benchProps = {
+  rig: baseRig, providers: pickerProviders, session: idleSession, systemPrompt: 'Be brief.',
+  onSystemPromptChange: () => {}, turnDetection: 'server_vad' as const, onTurnDetectionChange: () => {},
+  locked: false, canDelete: true, onConnect: () => {}, onEdit: () => {}, onRename: () => {},
+  onDelete: () => {}, onCreateCode: () => {},
+};
+/** The opening tag of the first button whose markup (attributes or text) contains `label`. */
+const buttonTag = (html: string, label: string): string =>
+  (html.match(/<button[^>]*>[\s\S]*?<\/button>/g) ?? []).find((b) => b.includes(label))?.match(/^<button[^>]*>/)?.[0] ?? '';
+
+check('BenchView (not connected)', () => {
+  const html = renderToString(h(BenchView, benchProps));
+  if (buttonTag(html, 'Edit rig').includes('disabled')) throw new Error('the rig is locked with no session');
+  if (!buttonTag(html, 'Start mic').includes('disabled')) throw new Error('the mic opens with nowhere to stream to');
+  return html;
+}, ['Bench', 'Rig A', 'Pipeline · STT → LLM → TTS', 'Rename rig', 'Copy CLI command', 'Export voice stack',
+  'Delete rig', 'Edit rig', 'Signal chain', 'STT=mock-stt', 'Not connected', 'Connect', 'Server VAD', 'Push to talk',
+  'Connect a session first', 'System prompt', 'Terse assistant']);
+
+check('BenchView (live) locks the rig and offers the end of the conversation', () => {
+  const html = renderToString(h(BenchView, {
+    ...benchProps, locked: true, turnDetection: 'manual' as const,
+    session: { ...idleSession, state: 'ready' as const, micOn: true, micLevel: 0.4, turns: [pipelineTurn] },
+  }));
+  for (const label of ['Edit rig', 'Delete rig', 'Rename rig']) {
+    if (!buttonTag(html, label).includes('disabled')) throw new Error(`${label} is enabled mid-session`);
+  }
+  if (html.includes('Push to talk</button>')) throw new Error('turn detection is switchable mid-session');
+  if (/>Connect</.test(html)) throw new Error('Connect is offered on a live session');
+  if (!/role="progressbar"[^>]*aria-valuenow="56"/.test(html) && !/aria-valuenow="56"[^>]*role="progressbar"/.test(html)) {
+    throw new Error('the mic meter lost its role or value');
+  }
+  // A button's children are presentational: a progressbar inside one is never announced.
+  if (/<button[^>]*>(?:(?!<\/button>)[\s\S])*role="progressbar"/.test(html)) throw new Error('the mic meter is inside a button');
+  return html;
+}, ['Live', 'Mic on', 'aria-pressed="true"', 'End my turn', 'Interrupt', 'Disconnect', 'End and file report',
+  'Turn detection: Push to talk', 'Locked while live', 'End the conversation to edit this rig', 'Listening…', '1 turn<']);
+
+// The mic stays stoppable after the socket drops: a lost connection must not
+// leave it hot with no way to close it.
+check('BenchView keeps a hot mic stoppable after the socket drops', () => {
+  const html = renderToString(h(BenchView, {
+    ...benchProps, session: { ...idleSession, state: 'error' as const, micOn: true },
+  }));
+  if (buttonTag(html, 'Mic on').includes('disabled')) throw new Error('a hot mic cannot be stopped');
+  return html;
+}, ['Error', 'Mic on']);
+
+// Never swap the primary action out under a second click.
+check('BenchView holds a disabled placeholder while the report is filed', () => {
+  const html = renderToString(h(BenchView, {
+    ...benchProps, locked: true, session: { ...idleSession, state: 'ending' as const },
+  }));
+  if (!buttonTag(html, 'Ending…').includes('disabled')) throw new Error('the ending slot is clickable');
+  return html;
+}, ['Filing report…', 'Ending…']);
 
 // The rail's command block is what makes a bench result reproducible from the
 // CLI. smoke.mjs refuses a real provider given without its *_MODEL, so the pair
@@ -990,6 +1540,14 @@ check('CreateCodeDialog renders a code that decodes', () => {
   if (decoded.spec.meta.provenance?.sessions?.length !== 3) throw new Error('rendered code lost its provenance');
   return html;
 }, ['aria-modal="true"', 'Create code', 'Copy code', 'decodes', 'od-IN', 'or-IN', 'streamType=fast', 'TTFA median', 'Decoded']);
+
+// The checklist's colour and icon are the glance; each item still says its
+// level in words, so a blocker is not conveyed by red alone.
+check('CreateCodeDialog: checklist items say their level, not only their colour', () => {
+  const html = dialog({ turnDetection: 'manual', sessions: stackSessions, languages: hiOr });
+  if (!/<li class="check block"><svg[^>]*class="icon check-mark"/.test(html)) throw new Error('the blocker has no icon');
+  return html;
+}, ['<span class="sr-only">Blocker: </span>Push-to-talk', 'aria-label="Remove hi"', 'Make default']);
 
 check('CreateCodeDialog waits for the sessions before producing a code', () => {
   const html = dialog();
@@ -1354,7 +1912,13 @@ check('Bench (signed in)', () => renderToString(h(Bench, {
 check('LoginPage', () => renderToString(h(LoginPage, {
   username: 'admin@magickvoice.com',
   sessionTtlMs: 3 * 60 * 60 * 1000,
-})), ['Sign in', 'admin@magickvoice.com', 'Password', 'session lasts']);
+})), ['Sign in', 'admin@magickvoice.com', 'Password', 'session lasts', 'Grindelwald', 'powered by MagickVoice']);
+// A refused sign-in is announced, not just painted red.
+check('LoginPage: a refused sign-in is an alert', () => {
+  const html = renderToString(h(LoginPage, { username: 'admin@magickvoice.com', error: 'Wrong password.' }));
+  if (!/<label class="field"><span class="field-label">Password/.test(html)) throw new Error('the password field is not a label');
+  return html;
+}, ['role="alert"', 'Wrong password.']);
 
 /* --------------------- against the real catalog ------------------------ */
 /**
@@ -1379,13 +1943,16 @@ const CATALOG_URL = process.env.CATALOG_URL ?? 'http://localhost:8787/api/catalo
 function loadBackendEnv(): void {
   const path = resolve(process.cwd(), '..', 'backend', '.env');
   if (!existsSync(path)) return;
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq <= 0) continue;
-    const key = trimmed.slice(0, eq);
-    const value = trimmed.slice(eq + 1);
+  // The backend's own dotenv, not a copy of its rules. A hand-rolled reader
+  // took the raw line, so a password with a `#` in it — where dotenv ends an
+  // unquoted value — signed a different secret from the one the backend
+  // compares against, and the live-catalog checks were skipped as "gated"
+  // against a backend that was up and configured.
+  const dotenv = createRequire(resolve(process.cwd(), '..', 'backend', 'package.json'))('dotenv') as {
+    parse: (src: string) => Record<string, string>;
+  };
+  // `dotenv/config` does not override what the environment already sets; neither does this.
+  for (const [key, value] of Object.entries(dotenv.parse(readFileSync(path, 'utf8')))) {
     if (process.env[key] === undefined) process.env[key] = value;
   }
 }
@@ -1452,9 +2019,9 @@ const againstRealCatalog = async () => {
   }, ['ok']);
 
   check('RigRail renders a seeded rig', () => renderToString(h(RigRail, {
-    rig: rigs[0], providers, systemPrompt: 'Be brief.', turns: [pipelineTurn], locked: false, canDelete: true,
-    onEdit: () => {}, onRename: () => {}, onDelete: () => {}, onCreateCode: () => {},
-  })), ['STT=', 'smoke.mjs']);
+    rig: rigs[0], providers, systemPrompt: 'Be brief.', turns: [pipelineTurn], locked: false,
+    onEdit: () => {},
+  })), ['STT=', 'smoke.mjs', 'Signal chain']);
 
   // Cartesia is the stress case: the voice list under a language is the one
   // thing a fixture cannot approximate honestly.

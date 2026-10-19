@@ -30,7 +30,7 @@ export function useAuth() {
         setConfig(cfg);
         if (!cfg.required) {
           // A leftover token from a previous gated run would still render the
-          // username in the topbar with no Sign out — drop it.
+          // username in the sidebar with no Sign out — drop it.
           clearSession();
           setSession(null);
           setStatus('ready');
