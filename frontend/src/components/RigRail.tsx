@@ -1,22 +1,29 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment } from 'react';
 import type { ProviderEntry } from '../lib/catalog';
 import type { TurnRecord } from '../hooks/useVoiceSession';
-import type { Rig } from '../lib/rigs';
+import type { Rig, RigSlot } from '../lib/rigs';
 import { envCommandOf, slotsOf } from '../lib/rigs';
 import { bandsOf } from '../lib/legs';
 import { medianOf } from '../lib/stats';
 import { ms } from '../lib/format';
-import { Icon, PanelIcon } from './Icon';
+import { Icon } from './Icon';
+
+const STAGE: Record<RigSlot['key'], { title: string; measures: string }> = {
+  stt: { title: 'Speech to text', measures: 'to final transcript' },
+  llm: { title: 'Language model', measures: 'to first token' },
+  tts: { title: 'Text to speech', measures: 'to first byte' },
+  realtime: { title: 'Speech to speech', measures: 'to first audio byte' },
+};
 
 /**
- * The active rig, as a chain you read top to bottom in the order the audio
+ * The active rig as a signal chain, read left to right in the order the audio
  * flows through it.
  *
  * The old picker was eight sibling dropdowns in a two-column grid — every
  * control the same size, no indication of which one was costing you time, and
  * no sign that a leg was missing its key until the session refused to start.
  * Here each leg carries its own measured latency and its own readiness, so the
- * rail answers "what is this rig, and what is wrong with it" without a click.
+ * chain answers "what is this rig, and what is wrong with it" without a click.
  */
 export function RigRail({
   rig,
@@ -25,10 +32,8 @@ export function RigRail({
   turns,
   locked,
   onEdit,
-  onRename,
-  onDelete,
-  onCreateCode,
-  canDelete,
+  commandOpen,
+  onCommandOpenChange,
 }: {
   rig: Rig;
   providers: ProviderEntry[];
@@ -37,138 +42,120 @@ export function RigRail({
   turns: TurnRecord[];
   locked: boolean;
   onEdit: () => void;
-  onRename: (name: string) => void;
-  onDelete: () => void;
-  /** Opens the voice-stack export. The dialog lives at the app root, like the rig editor. */
-  onCreateCode: () => void;
-  canDelete: boolean;
+  /** Controlled so a failed clipboard write upstream can open the command for manual copying. */
+  commandOpen?: boolean;
+  onCommandOpenChange?: (open: boolean) => void;
 }) {
-  const [copied, setCopied] = useState(false);
   const slots = slotsOf(rig, providers);
   const command = envCommandOf(rig, providers, systemPrompt);
 
   /** Median of this leg over the turns run so far, or nothing if it never reported. */
-  const legMedian = (key: string): number | undefined =>
+  const legMedian = (key: RigSlot['key']): number | undefined =>
     medianOf(
       turns
-        .map((t) => bandsOf(t.derived, t.marks).find((b) => b.key === key)?.ms)
+        .map((t) =>
+          // A realtime provider never marks a TTS request: the whole model is
+          // what stands between t0 and the first audio byte, so its one leg is
+          // the turn's time to first audio.
+          key === 'realtime'
+            ? t.derived.timeToFirstAudioMs
+            : bandsOf(t.derived, t.marks).find((b) => b.key === key)?.ms,
+        )
         .filter((v): v is number => v !== undefined),
     );
 
-  // Cleared on unmount: switching to Compare inside the window would otherwise
-  // set state on a component that is gone.
-  const resetTimer = useRef<number>();
-  useEffect(() => () => window.clearTimeout(resetTimer.current), []);
+  // The same voice rule the command uses: a typed voice id only counts for a
+  // vendor that takes ids the dropdown cannot enumerate.
+  const voiceOwner = providers.find(
+    (p) => p.id === (rig.mode === 'realtime' ? rig.realtimeProviderId : rig.ttsProviderId),
+  );
+  const voice = (voiceOwner?.acceptsVoiceId && rig.customVoiceId.trim()) || rig.voice;
 
-  const copy = () => {
-    // `navigator.clipboard` is undefined on a non-secure origin. Saying "copied"
-    // when nothing was copied is worse than saying nothing.
-    const written = navigator.clipboard?.writeText(command);
-    if (!written) return;
-    void written.then(() => {
-      setCopied(true);
-      window.clearTimeout(resetTimer.current);
-      resetTimer.current = window.setTimeout(() => setCopied(false), 1400);
-    });
+  const detailOf = (slot: RigSlot): string | undefined => {
+    if (slot.key === 'stt') return `language ${rig.sttLanguage || 'default'}`;
+    if (slot.key === 'tts') return `voice ${voice || 'default'} · language ${rig.ttsLanguage || 'default'}`;
+    if (slot.key === 'realtime') return `voice ${voice || 'default'} · language ${rig.language || 'default'}`;
+    return undefined;
   };
 
   return (
-    <section className="panel">
-      <h2>
-        <PanelIcon name="castle" />
-        Rig
-        <input
-          className="rig-name"
-          value={rig.name}
-          disabled={locked}
-          spellCheck={false}
-          aria-label="Rig name"
-          onChange={(e) => onRename(e.target.value)}
-        />
-        <span className="right">
-          <button type="button" className="ghost inline" onClick={onEdit}>
-            <Icon name="wand" size={11} />
-            edit
-          </button>
-          {canDelete && (
-            <button type="button" className="ghost inline danger" disabled={locked} onClick={onDelete}>
-              <Icon name="close" size={11} />
-              delete
-            </button>
-          )}
-        </span>
-      </h2>
-
-      <div className="leg-rail">
-        {slots.map((slot) => {
-          // A realtime rig's single leg is timed in the TTS slot: the whole
-          // model is what stands between t0 and the first audio byte.
-          const measured = legMedian(slot.key === 'realtime' ? 'tts' : slot.key);
+    <div className="chain-wrap">
+      <section className="chain" aria-label="Signal chain">
+        {slots.map((slot, i) => {
+          const stage = STAGE[slot.key];
+          const entry = providers.find((p) => p.id === slot.providerId);
+          const measured = legMedian(slot.key);
+          const detail = detailOf(slot);
           return (
-            <button key={slot.key} type="button" className="leg" onClick={onEdit}>
-              <span className="leg-key">
-                {slot.label}
-                <i className="leg-bar" style={{ background: slot.color }} />
-              </span>
-              <span className="leg-body">
-                <span className="leg-name">{slot.providerName}</span>
-                <span className="leg-model mono">{slot.modelId || '—'}</span>
-              </span>
-              <span className="leg-ms">{measured !== undefined ? `${ms(measured)} ms` : ''}</span>
-              <span
-                className={`rdy ${slot.ready ? '' : 'miss'}`}
-                title={slot.blocker ?? 'registered, and every key it needs is present'}
-              />
-            </button>
+            <Fragment key={slot.key}>
+              {i > 0 && (
+                <span className="chain-arrow" aria-hidden="true">
+                  <Icon name="arrowRight" size={18} />
+                </span>
+              )}
+              <button
+                type="button"
+                className="chain-card"
+                onClick={onEdit}
+                disabled={locked}
+                title={locked ? 'End the conversation to edit this rig' : `Edit ${stage.title.toLowerCase()}`}
+              >
+                <span className="chain-head">
+                  <span className="chain-stage">
+                    <i className="chain-swatch" style={{ background: slot.color }} />
+                    {slots.length > 1 ? `${i + 1} · ${stage.title}` : stage.title}
+                  </span>
+                  {slot.ready ? (
+                    <span className="chain-ready ok">
+                      <Icon name="check" size={14} />
+                      {entry && entry.envKeys.length === 0 ? 'No key needed' : 'Key set'}
+                    </span>
+                  ) : (
+                    <span className="chain-ready miss">
+                      <Icon name="alert" size={14} />
+                      {slot.blocker}
+                    </span>
+                  )}
+                </span>
+                <span className="chain-body">
+                  <span className="chain-provider">{slot.providerName}</span>
+                  <span className="chain-model mono">{[slot.modelId || '—', detail].filter(Boolean).join(' · ')}</span>
+                </span>
+                <span className="chain-foot">
+                  {measured !== undefined ? (
+                    <>
+                      <span className="chain-ms">{ms(measured)}</span>
+                      <span className="muted">{`ms · median, ${stage.measures}`}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="chain-ms">—</span>
+                      <span className="muted">no turns yet</span>
+                    </>
+                  )}
+                </span>
+              </button>
+            </Fragment>
           );
         })}
-      </div>
-
-      {slots.some((s) => !s.ready) && (
-        <p className="banner warn inline-banner">
-          {slots
-            .filter((s) => !s.ready)
-            .map((s) => `${s.label}: ${s.blocker}`)
-            .join(' · ')}
-        </p>
-      )}
-
-      <div className="rig-meta">
-        <span>
-          <span className="field-label">Language</span>
-          <code className="mono">{(rig.mode === 'realtime' ? rig.language : rig.ttsLanguage) || '—'}</code>
-        </span>
-        <span>
-          <span className="field-label">Voice</span>
-          <code className="mono">{rig.customVoiceId.trim() || rig.voice || '—'}</code>
-        </span>
-      </div>
+      </section>
 
       {/*
         The same rig as the environment variables this repo's own scripts take.
         The bench and the CLI measure the same thing; there is no reason
         reproducing a result from one in the other should be retyping.
       */}
-      <div className="cmd">
-        <button type="button" className="cmd-copy" onClick={copy}>
-          <Icon name="copy" size={10} />
-          {copied ? 'copied' : 'copy'}
-        </button>
-        {command}
-      </div>
-
-      {/*
-        The same rig again, as the code MagickVoice imports. Beside the command
-        block because it is the same idea pointed the other way: the command
-        reproduces a rig here, the code takes it to production.
-      */}
-      <div className="cmd-actions">
-        <button type="button" className="btn" onClick={onCreateCode}>
-          <Icon name="scroll" size={12} />
-          Create code
-        </button>
-        <span className="muted small">export as a MagickVoice voice stack</span>
-      </div>
-    </section>
+      <details
+        className="chain-cmd"
+        open={commandOpen}
+        onToggle={(e) => onCommandOpenChange?.(e.currentTarget.open)}
+      >
+        <summary>
+          <Icon name="terminal" size={14} />
+          Show CLI command
+        </summary>
+        <pre className="cmd">{command}</pre>
+      </details>
+    </div>
   );
 }

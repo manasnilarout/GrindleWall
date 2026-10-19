@@ -1,0 +1,153 @@
+/*
+ * The frame every view sits in: a midnight sidebar for navigation and rigs,
+ * and a main column whose first child is a PageHeader.
+ *
+ * It is a wrapping flex row, not a grid, so the sidebar stacks above the page
+ * on a phone without a second layout to maintain.
+ */
+
+.shell {
+  min-height: 100%;
+  display: flex; flex-wrap: wrap;
+  background: var(--ground);
+}
+
+.main {
+  flex: 999 1 560px; min-width: 0;
+  display: flex; flex-direction: column; gap: 20px;
+  padding: 24px 32px 32px;
+}
+/* The docked console overlays the bottom of the page, so the page makes room for it. */
+.main.has-console { padding-bottom: calc(var(--console-bar-h) + 40px); }
+.shell.console-open .main.has-console { padding-bottom: calc(var(--console-h-open) + 32px); }
+@media (max-width: 640px) { .main { padding: 16px 16px 24px; } }
+
+/* -------------------------------- sidebar -------------------------------- */
+
+.sidebar {
+  flex: 1 1 var(--sidebar-w); max-width: 100%;
+  display: flex; flex-direction: column; gap: 28px;
+  padding: 20px 14px;
+  background: var(--midnight); color: var(--midnight-text);
+}
+@media (min-width: 900px) {
+  .sidebar {
+    flex: 0 0 var(--sidebar-w);
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+  }
+}
+
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 6px; min-width: 0; text-decoration: none; }
+.brand-logo { width: 30px; height: 34px; object-fit: contain; flex: 0 0 30px; }
+.brand-copy { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+.brand-name {
+  font-family: var(--font-display); font-size: 17px; font-weight: 700; letter-spacing: 0.06em;
+  color: var(--gold);
+}
+.brand-byline { font-size: 12px; color: var(--midnight-muted); }
+
+.side-nav { display: flex; flex-direction: column; gap: 2px; }
+.side-link {
+  display: flex; align-items: center; gap: 12px;
+  min-height: var(--tap); padding: 0 12px; width: 100%;
+  border: none; border-radius: var(--radius); background: transparent;
+  color: var(--midnight-text); font-size: 14px; font-weight: 500; text-align: left; text-decoration: none;
+}
+.side-link:hover { background: var(--midnight-2); color: var(--on-dark); }
+.side-link[aria-current="page"] { background: var(--midnight-2); color: var(--on-dark); }
+.side-link[aria-current="page"] .icon { color: var(--gold); }
+
+.side-section { display: flex; flex-direction: column; gap: 4px; }
+.side-section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 4px 0 12px; min-height: 32px;
+}
+.side-section-title {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--midnight-muted);
+}
+.side-icon-btn {
+  width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: var(--radius-sm); background: transparent; color: var(--midnight-text);
+}
+.side-icon-btn:hover:not(:disabled) { background: var(--midnight-2); color: var(--on-dark); }
+.side-icon-btn:disabled { opacity: 0.4; }
+
+.rig-item {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 52px; padding: 8px 12px; width: 100%;
+  border: none; border-radius: var(--radius); background: transparent;
+  color: var(--midnight-text); text-align: left;
+}
+.rig-item:hover:not(:disabled) { background: var(--midnight-2); }
+.rig-item.on { background: var(--midnight-2); color: var(--on-dark); }
+.rig-item:disabled:not(.on) { opacity: 0.55; }
+.rig-badge {
+  flex: 0 0 24px; height: 24px; border-radius: var(--radius-sm);
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--on-dark); font-size: 12px; font-weight: 700;
+}
+.rig-item-body { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.rig-item-name { font-weight: 500; color: var(--on-dark); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rig-item-chain { font-size: 12px; color: var(--midnight-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rig-item-ms { margin-left: auto; font-size: 12px; color: var(--midnight-text); white-space: nowrap; }
+.side-note { margin: 4px 12px 0; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--midnight-muted); }
+
+.side-sky {
+  flex: 1; min-height: 140px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+}
+.side-motto {
+  font-family: var(--font-display); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--midnight-muted); text-align: center;
+}
+@media (max-width: 899px) { .side-sky { display: none; } }
+
+.side-foot { display: flex; flex-direction: column; gap: 12px; padding: 12px; border-top: 1px solid var(--midnight-2); }
+.side-status { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.side-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok-dot); flex: 0 0 8px; }
+.side-status .dot.off { background: var(--warn-dot); }
+.side-status .dot.wait { background: var(--midnight-muted); }
+.side-status .fmt { margin-left: auto; color: var(--midnight-muted); font-family: var(--font-mono); font-size: 11px; }
+.side-user { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.side-avatar {
+  flex: 0 0 30px; height: 30px; border-radius: 50%; background: var(--midnight-2); color: var(--on-dark);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600;
+}
+.side-username { color: var(--on-dark); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-signout {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  min-height: 36px; padding: 0 10px; border: none; border-radius: var(--radius-sm);
+  background: transparent; color: var(--midnight-text); font-size: 13px;
+}
+.side-signout:hover { background: var(--midnight-2); color: var(--on-dark); }
+
+/* ------------------------------ page header ------------------------------ */
+
+.page-header {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px;
+  padding-bottom: 16px; border-bottom: 3px double var(--gold-rule);
+}
+.page-heading { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.page-crumbs { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-3); }
+.page-crumbs button {
+  border: none; background: none; padding: 0; color: var(--magic); font-weight: 500; font-size: 13px;
+}
+.page-crumbs button:hover { color: var(--magic-hover); text-decoration: underline; }
+.page-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.page-title {
+  margin: 0; font-family: var(--font-display); font-size: 28px; line-height: 1.2; font-weight: 700;
+  letter-spacing: 0.03em; color: var(--ink); overflow-wrap: anywhere;
+}
+.page-sub { margin: 0; font-size: 14px; color: var(--ink-3); }
+.page-actions { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* --------------------------- splash and errors --------------------------- */
+
+.splash {
+  min-height: 100%; display: flex; align-items: center; justify-content: center;
+  background: var(--midnight);
+}
+.page-banner { margin: 0; }
+
+/* The root error boundary's fallback: the whole UI is gone, so it stands alone. */
+.crash { max-width: 720px; margin: 48px auto; padding: 0 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }

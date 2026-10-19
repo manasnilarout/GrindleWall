@@ -1,0 +1,109 @@
+/* Runs: the record table, the comparison, verdicts and recordings. */
+
+.runs-page { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+
+/* -------------------------------- filters -------------------------------- */
+
+.runs-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.runs-search {
+  flex: 1 1 280px; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
+  min-height: var(--tap); padding: 0 12px;
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius);
+  color: var(--ink-3);
+}
+.runs-search:focus-within { outline: 2px solid var(--magic); outline-offset: 2px; }
+.runs-search input { flex: 1; min-width: 0; min-height: 0; padding: 0; border: 0; background: transparent; }
+.runs-search input:focus-visible { outline: none; }
+.runs-check { display: inline-flex; align-items: center; gap: 8px; min-height: var(--tap); font-size: 14px; color: var(--ink-2); cursor: pointer; }
+
+/* --------------------------------- layout -------------------------------- */
+
+/* The comparison sits beside the table on a wide screen and wraps under it on a narrow one. */
+.runs-layout { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px; }
+.runs-main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+.runs-list { padding: 0; overflow: hidden; }
+.runs-compare { flex: 1 1 400px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+.runs-empty { margin: 0; padding: 18px; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.runs-empty p { margin: 0; }
+.runs-foot { margin: 0; padding: 10px 16px; border-top: 1px solid var(--hairline); }
+
+/* --------------------------------- table --------------------------------- */
+
+.runs-table { min-width: 680px; }
+.runs-table th.left, .runs-table td.left { text-align: left; }
+.runs-table tbody tr:last-child td { border-bottom: none; }
+.runs-table tr.on td { background: var(--magic-row); }
+.runs-table .sel-cell { width: 56px; padding: 4px 0 4px 10px; }
+.run-select { display: inline-flex; align-items: center; justify-content: center; width: var(--tap); height: var(--tap); cursor: pointer; }
+.run-select:has(input:focus-visible) { outline: 2px solid var(--magic); outline-offset: -2px; border-radius: var(--radius-sm); }
+.run-cell { white-space: normal; min-width: 260px; }
+.run-open {
+  padding: 0; border: none; background: none; text-align: left;
+  color: var(--ink); font-weight: 600; font-size: 13px;
+}
+.run-open:hover:not(:disabled) { color: var(--magic); text-decoration: underline; }
+.run-open:disabled { color: var(--ink-3); cursor: progress; }
+.run-cell .tag { margin-left: 8px; }
+.run-chain { font-size: 11px; color: var(--ink-3); overflow-wrap: anywhere; }
+.runs-table .pill.floor { margin-left: 6px; }
+
+.series-badge {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: var(--radius-sm);
+  color: var(--on-dark); font-size: 12px; font-weight: 700; line-height: 1;
+}
+.series-badge.sm { width: 18px; height: 18px; border-radius: 5px; font-size: 11px; }
+
+/* --------------------------------- matrix -------------------------------- */
+
+.matrix-run { display: flex; align-items: center; gap: 8px; max-width: 320px; }
+.matrix-run .run-open { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.matrix-table .pill.floor { margin-left: 6px; }
+.best { display: inline-flex; align-items: center; gap: 4px; }
+
+/* -------------------------------- compare -------------------------------- */
+
+.cmp-empty { margin: 0; }
+.cmp-pending { margin: 10px 0 0; }
+.cmp-view { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+.cmp-title { margin: 0; }
+.cmp-rows { display: flex; flex-direction: column; gap: 14px; }
+.cmp-row { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cmp-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; }
+.cmp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.cmp-val { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
+.cmp-track { position: relative; height: 12px; border-radius: 999px; background: var(--ground); }
+.cmp-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; }
+.cmp-tick { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--ink); }
+.cmp-none { font-size: 12px; color: var(--ink-3); }
+.cmp-axis { display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--ink-3); }
+.cmp-view .foot { margin: 0; }
+.cmp-row .leg-bars { margin: 0; }
+/* A realtime run's single band: the whole first-audio time, nothing inside it to split. */
+.cmp-opaque-track { display: block; height: 9px; border-radius: 3px; background: var(--sunken); overflow: hidden; }
+.cmp-opaque { display: block; height: 9px; border-radius: 3px; background: var(--ink-3); }
+
+.sample-warn { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--warn); }
+
+/* -------------------------------- verdicts -------------------------------- */
+
+.verdicts { display: flex; flex-direction: column; gap: 12px; }
+.verdict-box {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px; border-radius: var(--radius); border: 1px solid var(--line);
+  font-size: 14px; line-height: 1.5;
+}
+.verdict-box.quiet { background: var(--sunken); border-color: transparent; color: var(--ink-2); }
+.verdict-head { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
+.verdict-head.fast { color: var(--ok); }
+.verdict-head.cheap { color: var(--magic); }
+
+/* ------------------------------- recordings ------------------------------- */
+
+.recordings { display: flex; flex-direction: column; gap: 12px; }
+.recording { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.recording .series-badge { margin-top: 2px; }
+.recording-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.recording-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recording audio { width: 100%; height: 40px; }

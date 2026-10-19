@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { authFetch } from '../lib/auth';
 import { resolveVoice, voicesFor, type ProviderEntry } from '../lib/catalog';
 import type { SessionIndexEntry, StartConfig } from '../lib/protocol';
-import { typedVoiceIdOf, type Rig } from '../lib/rigs';
+import { rigColor, rigLetter, typedVoiceIdOf, type Rig } from '../lib/rigs';
 import {
   buildVoiceStackSpec,
   checkExportable,
@@ -20,7 +20,7 @@ import {
 import { decodeVoiceStack, encodeVoiceStack, type VoiceStackSpec } from '../lib/voice-stack/spec';
 import { Select } from './Select';
 import { TextField } from './TextField';
-import { Icon } from './Icon';
+import { Icon, PanelIcon } from './Icon';
 
 /** A row as edited here: the picked voice, plus a typed id that wins over it. */
 type Row = ExportLanguage & { custom: string };
@@ -152,56 +152,61 @@ export function CreateCodeDialog({
       }}
     >
       <div className="drawer" role="dialog" aria-modal="true" aria-label={`Create code for ${rig.name}`} tabIndex={-1} ref={panelRef}>
-        <div className="drawer-head">
-          <h1>
-            <Icon name="scroll" size={16} />
-            Create code
-          </h1>
-          <span className="muted small">export {rig.name} as a MagickVoice voice stack</span>
+        <header className="sheet-head">
+          <span className="sheet-badge" style={{ background: rigColor(rig) }} aria-hidden="true">
+            {rigLetter(rig)}
+          </span>
+          <span className="sheet-title">
+            <span className="eyebrow">Voice stack</span>
+            <h1>Create code</h1>
+          </span>
           <span className="spacer" />
-          <button type="button" className="btn primary" onClick={onClose}>
-            <Icon name="close" size={13} />
+          <button type="button" className="btn" onClick={onClose}>
             Close
           </button>
-        </div>
+        </header>
 
-        <div className="drawer-body">
-          <section className="slot">
-            <h3>
-              <Icon name="quill" size={13} />
+        <div className="sheet-body">
+          <p className="sheet-lede">Export {rig.name} as a MagickVoice voice stack: one code that carries the legs, the languages and what this bench measured.</p>
+
+          <section className="sheet-section">
+            <h2>
+              <PanelIcon name="quill" />
               Stack
-            </h3>
+            </h2>
             <div className="grid">
               <TextField label="Name" value={name} onChange={setName} hint="Shown to whoever imports it. Up to 80 characters." />
-              <TextField label="Description (optional)" value={description} onChange={setDescription} />
+              <TextField label="Description" note="optional" value={description} onChange={setDescription} />
             </div>
             {rig.mode === 'pipeline' && (
-              <div className="cc-legs">
+              <dl className="cc-legs">
                 {legs.map(({ label, mapped, providerId, modelId }) => (
-                  <span key={label} className="cc-leg">
-                    <span className="field-label">{label}</span>
-                    {mapped.ok ? (
-                      <code className="mono">
-                        {mapped.value.provider} · {mapped.value.model}
-                        {Object.entries(mapped.value.options).map(([k, v]) => ` · ${k}=${String(v)}`).join('')}
-                      </code>
-                    ) : (
-                      <code className="mono muted">
-                        {providerId}:{modelId}
-                      </code>
-                    )}
-                  </span>
+                  <div key={label} className="cc-leg">
+                    <dt>{label}</dt>
+                    <dd>
+                      {mapped.ok ? (
+                        <code className="mono">
+                          {mapped.value.provider} · {mapped.value.model}
+                          {Object.entries(mapped.value.options).map(([k, v]) => ` · ${k}=${String(v)}`).join('')}
+                        </code>
+                      ) : (
+                        <code className="mono muted">
+                          {providerId}:{modelId}
+                        </code>
+                      )}
+                    </dd>
+                  </div>
                 ))}
-              </div>
+              </dl>
             )}
           </section>
 
           {rig.mode === 'pipeline' && (
-            <section className="slot">
-              <h3>
-                <Icon name="owl" size={13} />
+            <section className="sheet-section">
+              <h2>
+                <PanelIcon name="owl" />
                 Languages
-              </h3>
+              </h2>
               <div className="cc-rows">
                 {rows.map((row, i) => {
                   const option = shared.find((o) => o.code === row.code);
@@ -210,54 +215,64 @@ export function CreateCodeDialog({
                     [...new Set([current, ...(list ?? [])])].filter(Boolean).map((id) => ({ id, name: id }));
                   return (
                     <div key={row.code} className="cc-row">
-                      <span className="cc-lang">
-                        <b>{option?.name ?? row.code}</b>
-                        <code className="mono">{row.code}</code>
+                      <div className="cc-row-head">
+                        <span className="cc-lang">
+                          <b>{option?.name ?? row.code}</b>
+                          <code className="mono">{row.code}</code>
+                        </span>
                         {i === 0 ? (
                           <span className="pill vendor">default</span>
                         ) : (
-                          <button type="button" className="ghost inline" onClick={() => makeDefault(i)}>
-                            make default
+                          <button type="button" className="ghost inline cc-default" onClick={() => makeDefault(i)}>
+                            Make default
                           </button>
                         )}
-                      </span>
-                      <Select
-                        label="STT code"
-                        value={row.sttLang}
-                        options={codes(option?.stt, row.sttLang)}
-                        onChange={(id) => update(i, { sttLang: id })}
-                      />
-                      <Select
-                        label="TTS code"
-                        value={row.ttsLang}
-                        options={codes(option?.tts, row.ttsLang)}
-                        // A language can narrow the voice list (Cartesia), so the voice is re-resolved with it.
-                        onChange={(id) =>
-                          update(i, { ttsLang: id, voice: resolveVoice(providers, rig.ttsProviderId, rig.ttsModelId, id, row.voice) })
-                        }
-                      />
-                      {voices.length > 0 ? (
+                        <button
+                          type="button"
+                          className="ghost icon-btn danger cc-remove"
+                          aria-label={`Remove ${row.code}`}
+                          title={`Remove ${row.code}`}
+                          onClick={() => remove(i)}
+                        >
+                          <Icon name="trash" size={16} />
+                        </button>
+                      </div>
+                      <div className="grid">
                         <Select
-                          label={row.custom.trim() ? 'Voice — overridden' : 'Voice'}
-                          value={row.voice}
-                          options={(voices.some((v) => v.id === row.voice) || !row.voice ? voices : [{ id: row.voice, name: row.voice }, ...voices]).map((v) => ({ id: v.id, name: v.name }))}
-                          onChange={(id) => update(i, { voice: id })}
-                          disabled={Boolean(row.custom.trim())}
+                          label="STT code"
+                          value={row.sttLang}
+                          options={codes(option?.stt, row.sttLang)}
+                          onChange={(id) => update(i, { sttLang: id })}
+                          mono
                         />
-                      ) : (
-                        <span className="field">
-                          <span className="field-label">Voice</span>
-                          <span className="muted small">{ttsEntry?.acceptsVoiceId ? 'type an id →' : 'none listed'}</span>
-                        </span>
-                      )}
-                      {ttsEntry?.acceptsVoiceId ? (
-                        <TextField label="Custom voice id" value={row.custom} placeholder="optional" onChange={(v) => update(i, { custom: v })} />
-                      ) : (
-                        <span />
-                      )}
-                      <button type="button" className="ghost inline danger cc-remove" aria-label={`Remove ${row.code}`} onClick={() => remove(i)}>
-                        <Icon name="close" size={11} />
-                      </button>
+                        <Select
+                          label="TTS code"
+                          value={row.ttsLang}
+                          options={codes(option?.tts, row.ttsLang)}
+                          // A language can narrow the voice list (Cartesia), so the voice is re-resolved with it.
+                          onChange={(id) =>
+                            update(i, { ttsLang: id, voice: resolveVoice(providers, rig.ttsProviderId, rig.ttsModelId, id, row.voice) })
+                          }
+                          mono
+                        />
+                        {voices.length > 0 ? (
+                          <Select
+                            label={row.custom.trim() ? 'Voice — overridden' : 'Voice'}
+                            value={row.voice}
+                            options={(voices.some((v) => v.id === row.voice) || !row.voice ? voices : [{ id: row.voice, name: row.voice }, ...voices]).map((v) => ({ id: v.id, name: v.name }))}
+                            onChange={(id) => update(i, { voice: id })}
+                            disabled={Boolean(row.custom.trim())}
+                          />
+                        ) : (
+                          <span className="field">
+                            <span className="field-label">Voice</span>
+                            <span className="cc-none">{ttsEntry?.acceptsVoiceId ? 'None listed — type an id' : 'None listed'}</span>
+                          </span>
+                        )}
+                        {ttsEntry?.acceptsVoiceId && (
+                          <TextField label="Custom voice id" value={row.custom} placeholder="optional" onChange={(v) => update(i, { custom: v })} mono />
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -272,11 +287,11 @@ export function CreateCodeDialog({
                   disabled={addable.length === 0}
                 />
                 <button type="button" className="btn" disabled={addable.length === 0} onClick={add}>
-                  <Icon name="plus" size={12} />
-                  Add
+                  <Icon name="plus" size={14} />
+                  Add language
                 </button>
               </div>
-              <p className="muted small foot">
+              <p className="foot">
                 The first row is the default. STT and TTS spell some languages differently, so each leg keeps its own code; a
                 stack row is keyed by the base code both normalise to.
               </p>
@@ -284,32 +299,32 @@ export function CreateCodeDialog({
           )}
 
           {rig.mode === 'pipeline' && (
-            <section className="slot">
-              <h3>
-                <Icon name="snitch" size={13} />
+            <section className="sheet-section">
+              <h2>
+                <PanelIcon name="snitch" />
                 Measured on this bench
-              </h3>
+              </h2>
               <ProvenanceSummary provenance={provenance} sessionsError={sessionsError} loading={!settled} />
             </section>
           )}
 
-          <section className="slot">
-            <h3>
-              <Icon name="shield" size={13} />
+          <section className="sheet-section">
+            <h2>
+              <PanelIcon name="shield" />
               Checklist
-            </h3>
+            </h2>
             <Checklist checks={checks} />
-            <p className="muted small foot">
+            <p className="foot">
               Checked against this bench&apos;s catalog only. MagickVoice validates the code again on import and reports anything
               it cannot run.
             </p>
           </section>
 
-          <section className="slot">
-            <h3>
-              <Icon name="key" size={13} />
+          <section className="sheet-section">
+            <h2>
+              <PanelIcon name="key" />
               Code
-            </h3>
+            </h2>
             <CodeOutput output={output} />
           </section>
         </div>
@@ -347,14 +362,23 @@ function produce(blocked: boolean, settled: boolean, build: () => Parameters<typ
 
 function Checklist({ checks }: { checks: ExportCheck[] }) {
   const order = { block: 0, warn: 1, ok: 2 } as const;
+  // The icon and colour are the glance; the hidden word is what a screen reader says.
+  const mark = {
+    block: { icon: 'close', said: 'Blocker' },
+    warn: { icon: 'alert', said: 'Warning' },
+    ok: { icon: 'check', said: 'Passed' },
+  } as const;
   return (
     <ul className="checklist">
       {[...checks]
         .sort((a, b) => order[a.level] - order[b.level])
         .map((c, i) => (
           <li key={`${c.level}-${i}`} className={`check ${c.level}`}>
-            <span className="check-mark">{c.level === 'block' ? '✕' : c.level === 'warn' ? '!' : '✓'}</span>
-            {c.message}
+            <Icon name={mark[c.level].icon} size={16} className="check-mark" />
+            <span>
+              <span className="sr-only">{`${mark[c.level].said}: `}</span>
+              {c.message}
+            </span>
           </li>
         ))}
     </ul>
@@ -430,8 +454,8 @@ function CodeOutput({ output }: { output: Output }) {
   const resetTimer = useRef<number>();
   useEffect(() => () => window.clearTimeout(resetTimer.current), []);
 
-  if (output.kind === 'blocked') return <p className="muted small">Clear the blockers above to produce a code.</p>;
-  if (output.kind === 'pending') return <p className="muted small">Waiting for recorded sessions before producing the code…</p>;
+  if (output.kind === 'blocked') return <p className="cc-empty">Clear the blockers above to produce a code.</p>;
+  if (output.kind === 'pending') return <p className="cc-empty">Waiting for recorded sessions before producing the code…</p>;
   if (output.kind === 'error') return <p className="banner error inline-banner">{output.message}</p>;
 
   const settle = (state: 'copied' | 'selected') => {
@@ -465,7 +489,7 @@ function CodeOutput({ output }: { output: Output }) {
     <>
       <textarea
         ref={boxRef}
-        className="cc-code mono"
+        className="codeblock cc-code"
         readOnly
         rows={4}
         value={output.code}
@@ -473,9 +497,9 @@ function CodeOutput({ output }: { output: Output }) {
         spellCheck={false}
         onFocus={(e) => e.currentTarget.select()}
       />
-      <div className="report-foot">
+      <div className="cc-copy">
         <button type="button" className="btn primary" onClick={copy}>
-          <Icon name="copy" size={12} />
+          <Icon name="copy" size={14} />
           {copyState === 'copied' ? 'Copied' : copyState === 'selected' ? 'Selected — press Ctrl/⌘+C' : 'Copy code'}
         </button>
         <span className="muted small">

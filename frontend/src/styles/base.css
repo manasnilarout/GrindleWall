@@ -1,0 +1,258 @@
+/*
+ * Shared primitives. Every area stylesheet builds on these and does not
+ * restyle them: a button is `.btn`, a card is `.panel`, a segmented control is
+ * `.seg`, a form row is `.field`. If an area needs a variant, it adds a
+ * modifier here rather than a lookalike of its own.
+ *
+ *   .panel            card; its <h2> is the section heading, a leading
+ *                     <PanelIcon> sits in gold, `.right` floats meta to the end
+ *   .btn              secondary button (44px). Modifiers: .primary, .hot
+ *                     (mic on), .danger, .sm (36px, dense rows)
+ *   .ghost            borderless button. .ghost.inline is the compact
+ *                     text-button for panel headings and table rows
+ *   .seg / .tabs      segmented control; children get .on when selected
+ *   .chip             small toggle pill
+ *   .field            <label class="field"> with .field-label, control, .field-hint
+ *   .banner           .error / .warn / .ok; .inline-banner inside a card
+ *   .badge            connection state pill, keyed by session state class
+ *   .pill, .tag       tiny labels; .pill.vendor / .pill.local / .pill.floor
+ *   .hero, .stat-*    headline number and its supporting stats
+ *   .codeblock        midnight code surface (.cmd and .jsonbox use it)
+ *   .eyebrow          Cinzel small caps over a title
+ *   .sr-only          visually hidden, still announced
+ */
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--ground);
+  font: 14px/1.5 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--magic); }
+a:hover { color: var(--magic-hover); }
+
+.mono, code, pre { font-family: var(--font-mono); }
+.muted { color: var(--ink-3); }
+.small { font-size: 12px; }
+.upper { text-transform: uppercase; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: var(--ink-2); }
+.spacer { flex: 1; }
+.right { margin-left: auto; }
+.foot { margin: 10px 0 0; font-size: 12px; line-height: 1.5; color: var(--ink-3); }
+.pad { padding: 8px 10px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.eyebrow {
+  font-family: var(--font-display); font-size: 12px; font-weight: 700;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold-ink);
+}
+
+/* --------------------------------- icons --------------------------------- */
+
+.icon { flex: 0 0 auto; display: inline-block; vertical-align: -2px; }
+.panel-icon { color: var(--gold-ink); }
+
+/* --------------------------------- cards --------------------------------- */
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 18px;
+  min-width: 0;
+}
+/* A panel nested in a panel draws a second frame inside the first. One frame. */
+.panel .panel { background: none; border: none; padding: 0; border-radius: 0; }
+.panel h2 {
+  margin: 0 0 14px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 15px; font-weight: 600; line-height: 1.3; color: var(--ink);
+}
+/* Meta text only: a button floated right in a heading keeps its own type. */
+.panel h2 .right:not(.btn):not(.ghost) { font-size: 12px; font-weight: 400; color: var(--ink-3); }
+.panel h3 {
+  margin: 18px 0 8px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2);
+}
+.grow { min-height: 300px; }
+.scroller { min-width: 0; }
+
+/* -------------------------------- controls -------------------------------- */
+
+select, input, textarea {
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0 12px;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: var(--radius);
+  font: inherit; font-size: 14px;
+}
+input[type="checkbox"], input[type="radio"] {
+  width: 18px; height: 18px; min-height: 0; padding: 0; accent-color: var(--magic);
+}
+input[type="range"] { min-height: 0; padding: 0; border: none; background: none; accent-color: var(--magic); }
+textarea { min-height: 0; padding: 10px 12px; resize: vertical; font-size: 13px; line-height: 1.5; }
+select:disabled, input:disabled, textarea:disabled {
+  background: var(--sunken); color: var(--ink-2); border-color: var(--line); cursor: not-allowed;
+}
+input::placeholder, textarea::placeholder { color: var(--ink-3); }
+:focus-visible { outline: 2px solid var(--magic); outline-offset: 2px; }
+/* Purple on midnight is under 3:1; gold is the ring wherever the ground is dark. */
+.sidebar :focus-visible, .console :focus-visible, .codeblock :focus-visible { outline-color: var(--gold); }
+
+button { font: inherit; cursor: pointer; color: inherit; }
+button:disabled { cursor: not-allowed; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: var(--tap); padding: 0 16px;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: var(--radius);
+  font-size: 14px; font-weight: 500; white-space: nowrap; text-decoration: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.btn:hover:not(:disabled) { border-color: var(--ink-3); background: var(--sunken); }
+.btn:disabled { opacity: 0.5; }
+.btn.primary { background: var(--ink); border-color: var(--ink); color: var(--on-dark); font-weight: 600; }
+.btn.primary:hover:not(:disabled) { background: var(--ink-hover); border-color: var(--ink-hover); }
+.btn.hot { background: var(--err); border-color: var(--err); color: var(--on-dark); font-weight: 600; }
+.btn.hot:hover:not(:disabled) { background: var(--err-hover); border-color: var(--err-hover); }
+.btn.danger { color: var(--err); }
+.btn.sm { min-height: 36px; padding: 0 12px; font-size: 13px; }
+
+.ghost {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: var(--tap); padding: 0 14px;
+  background: none; border: 1px solid transparent; border-radius: var(--radius);
+  color: var(--ink-2); font-size: 14px; font-weight: 500; white-space: nowrap;
+}
+.ghost:hover:not(:disabled) { background: var(--chip); color: var(--ink); }
+.ghost:disabled { opacity: 0.45; }
+.ghost.inline {
+  min-height: 32px; padding: 0 8px; margin-left: auto;
+  font-size: 13px; color: var(--ink-3); border-radius: var(--radius-sm);
+}
+.ghost.inline:hover:not(:disabled) { color: var(--magic); background: var(--magic-soft); }
+.ghost.danger:hover:not(:disabled), .ghost.inline.danger:hover:not(:disabled) { color: var(--err); background: var(--err-soft); }
+.icon-btn { width: var(--tap); padding: 0; }
+
+.seg, .tabs {
+  display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px;
+  background: var(--chip); border-radius: var(--radius);
+  align-self: flex-start; max-width: 100%;
+}
+.seg.wide, .tabs.wide { display: flex; width: 100%; }
+.seg.wide > button, .tabs.wide > button { flex: 1; }
+.seg > button, .tabs > button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 38px; padding: 0 12px;
+  background: transparent; border: none; border-radius: var(--radius-sm);
+  color: var(--ink-2); font-size: 13px; font-weight: 500; white-space: nowrap;
+}
+.seg > button:hover:not(.on):not(:disabled), .tabs > button:hover:not(.on):not(:disabled) { color: var(--ink); }
+.seg > button.on, .tabs > button.on {
+  background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: var(--shadow-pop);
+}
+.seg > button.on.warn { color: var(--warn); }
+.seg > button.on.error { color: var(--err); }
+.seg > button:disabled, .tabs > button:disabled { opacity: 0.45; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 32px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-2);
+  font-size: 12px; font-weight: 500;
+}
+.chip:hover { color: var(--ink); border-color: var(--ink-3); }
+.chip.on { color: var(--magic-ink); border-color: var(--magic); background: var(--magic-soft); }
+.chip.on.rec { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin-bottom: 14px; }
+.field-label { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.field-hint { font-size: 12px; color: var(--ink-3); line-height: 1.45; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 520px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* -------------------------------- notices -------------------------------- */
+
+.banner { padding: 12px 14px; border-radius: var(--radius); font-size: 14px; border: 1px solid transparent; }
+.banner.error { background: var(--err-soft); border-color: var(--err-line); color: var(--err); }
+.banner.warn { background: var(--warn-soft); border-color: var(--warn-line); color: var(--warn); }
+.banner.ok { background: var(--ok-soft); border-color: var(--ok-line); color: var(--ok); }
+.inline-banner { margin: 12px 0 0; font-size: 13px; line-height: 1.5; padding: 10px 12px; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--chip); color: var(--ink-2);
+}
+.badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.badge.ready, .badge.live { background: var(--err-soft); color: var(--err); }
+.badge.connecting, .badge.ending { background: var(--warn-soft); color: var(--warn); }
+.badge.error { background: var(--err-soft); color: var(--err); }
+.badge.ended { background: var(--ok-soft); color: var(--ok); }
+
+.pill, .tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 8px; border-radius: 999px;
+  background: var(--chip); color: var(--ink-2);
+  font-size: 11px; font-weight: 500; white-space: nowrap;
+}
+.pill.vendor { background: var(--ok-soft); color: var(--ok); }
+.pill.local, .pill.floor { background: var(--warn-soft); color: var(--warn); border-radius: 4px; font-weight: 600; }
+
+/* Locally counted rather than vendor-reported: a number you should not quote. */
+.est { color: var(--warn); }
+.warn-flag { color: var(--warn); cursor: help; }
+
+/* --------------------------------- metrics -------------------------------- */
+
+.hero { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 8px; }
+.hero-v { font-size: 48px; line-height: 1; font-weight: 600; letter-spacing: -0.02em; color: var(--ink); }
+.hero-v.small { font-size: 30px; letter-spacing: -0.01em; }
+.hero-u { font-size: 18px; color: var(--ink-3); }
+.hero-sub { font-size: 14px; color: var(--ink-3); }
+
+.stat-row, .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin-top: 14px; }
+.stat { display: flex; flex-direction: column; padding: 10px; border-radius: var(--radius); background: var(--sunken); min-width: 0; }
+.stat-value { font-size: 16px; font-weight: 600; }
+.stat-sub { font-size: 12px; color: var(--ink-3); }
+.stat-label { font-size: 12px; color: var(--ink-3); }
+.stat.big .stat-value { font-size: 26px; letter-spacing: -0.01em; }
+.stat.big .stat-sub { font-size: 14px; }
+
+/* --------------------------------- tables --------------------------------- */
+
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--hairline); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { background: var(--sunken); color: var(--ink-3); font-weight: 500; font-size: 12px; border-bottom-color: var(--line); }
+td.strong { color: var(--ink); font-weight: 600; }
+td.win { color: var(--ok); font-weight: 600; }
+.note-cell { white-space: normal; font-size: 12px; line-height: 1.45; min-width: 220px; color: var(--ink-3); }
+.rate { font-size: 12px; max-width: 220px; white-space: normal; color: var(--ink-2); }
+
+/* ---------------------------------- code ---------------------------------- */
+
+.codeblock, .cmd, .jsonbox {
+  margin: 0; padding: 12px 14px; border-radius: var(--radius);
+  background: var(--midnight); color: var(--code-text);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.jsonbox { max-height: 420px; overflow: auto; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+

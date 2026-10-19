@@ -49,23 +49,36 @@ export function LoginPage({
   };
 
   return (
-    <div className="app login-app">
-      <header className="topbar">
-        <span className="brand">
+    <main className="login">
+      <section className="login-sky">
+        <span className="brand login-brand">
           <img className="brand-logo" src="/magickvoice-logo.png" alt="MagickVoice" />
           <span className="brand-copy">
             <span className="brand-name">Grindelwald</span>
             <span className="brand-byline">powered by MagickVoice</span>
           </span>
         </span>
-      </header>
+        <svg className="login-stars" width="180" height="96" viewBox="0 0 180 96" fill="var(--gold)" aria-hidden="true">
+          <path d="M126 14a24 24 0 1 0 26 32a19 19 0 1 1 -26 -32z" opacity="0.9" />
+          <path d="M44 40l2 6 6 2-6 2-2 6-2-6-6-2 6-2z" opacity="0.85" />
+          <path d="M92 70l1.5 4 4 1.5-4 1.5-1.5 4-1.5-4-4-1.5 4-1.5z" opacity="0.7" />
+          <circle cx="18" cy="18" r="1.4" opacity="0.7" />
+          <circle cx="70" cy="14" r="1.1" opacity="0.6" />
+          <circle cx="96" cy="34" r="1.6" opacity="0.8" />
+          <circle cx="160" cy="76" r="1.2" opacity="0.6" />
+          <circle cx="24" cy="78" r="1.6" opacity="0.5" />
+          <circle cx="140" cy="88" r="1" opacity="0.6" />
+        </svg>
+        <p className="login-motto">I solemnly swear I am up to no good</p>
+      </section>
 
-      <div className="login-wrap">
-        <form className="panel login-card" onSubmit={(e) => void handleSubmit(e)}>
+      <section className="login-ground">
+        <form className="login-card" onSubmit={(e) => void handleSubmit(e)}>
+          <span className="eyebrow">Members only</span>
           <h1>Sign in</h1>
-          <p className="muted">
-            A single static account. The password is HMAC&apos;d in the browser before
-            it is sent; the session lasts {ttlLabel}.
+          <p className="login-lede">
+            A single static account. The password is HMAC&apos;d in the browser before it is sent; the session lasts{' '}
+            {ttlLabel}.
           </p>
 
           <label className="field">
@@ -92,13 +105,17 @@ export function LoginPage({
             />
           </label>
 
-          {message && <div className="inline-banner banner error">{message}</div>}
+          {message && (
+            <div className="banner error login-error" role="alert">
+              {message}
+            </div>
+          )}
 
           <button type="submit" className="btn primary login-submit" disabled={waiting || !password}>
             {waiting ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }

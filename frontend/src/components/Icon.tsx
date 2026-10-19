@@ -1,7 +1,8 @@
 import type { ReactNode, SVGProps } from 'react';
 
 /**
- * Small stroke icons for the Grindelwald chrome. They are decorative, not a
+ * Small stroke icons for the Grindelwald chrome: the wizarding set for
+ * sections, plain glyphs for controls. They are decorative, not a
  * second source of meaning: every control still has its label.
  */
 export type IconName =
@@ -36,7 +37,22 @@ export type IconName =
   | 'broom'
   | 'moon'
   | 'stars'
-  | 'linkOff';
+  | 'linkOff'
+  | 'headphones'
+  | 'chevronRight'
+  | 'logout'
+  | 'play'
+  | 'pause'
+  | 'stop'
+  | 'search'
+  | 'lock'
+  | 'check'
+  | 'alert'
+  | 'pencil'
+  | 'code'
+  | 'arrowRight'
+  | 'terminal'
+  | 'trash';
 
 const svgProps = (size: number, className?: string): SVGProps<SVGSVGElement> => ({
   width: size,
@@ -269,6 +285,80 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M5 5 L19 19" />
     </>
   ),
+  headphones: (
+    <>
+      <path d="M4 17 V12 A8 8 0 0 1 20 12 V17" />
+      <path d="M20 18 A2 2 0 0 1 18 20 H17 V14 H20 Z" />
+      <path d="M4 18 A2 2 0 0 0 6 20 H7 V14 H4 Z" />
+    </>
+  ),
+  chevronRight: <path d="M9.5 6 L15.5 12 L9.5 18" />,
+  logout: (
+    <>
+      <path d="M9.5 20 H6 A2 2 0 0 1 4 18 V6 A2 2 0 0 1 6 4 H9.5" />
+      <path d="M15.5 16.5 L20 12 L15.5 7.5" />
+      <path d="M20 12 H9.5" />
+    </>
+  ),
+  play: <path d="M7.5 4.5 L19 12 L7.5 19.5 Z" fill="currentColor" stroke="none" />,
+  pause: (
+    <>
+      <path d="M8.5 5 V19" />
+      <path d="M15.5 5 V19" />
+    </>
+  ),
+  stop: <rect x="6.5" y="6.5" width="11" height="11" rx="1.4" />,
+  search: (
+    <>
+      <circle cx="10.8" cy="10.8" r="6.3" />
+      <path d="M15.6 15.6 L20 20" />
+    </>
+  ),
+  lock: (
+    <>
+      <rect x="5" y="11" width="14" height="9.5" rx="2" />
+      <path d="M8.5 11 V7.8 A3.5 3.5 0 0 1 15.5 7.8 V11" />
+    </>
+  ),
+  check: <path d="M5 12.5 L9.8 17.2 L19 7" />,
+  alert: (
+    <>
+      <path d="M10.4 4.6 L2.9 17.8 A1.8 1.8 0 0 0 4.5 20.5 H19.5 A1.8 1.8 0 0 0 21.1 17.8 L13.6 4.6 A1.8 1.8 0 0 0 10.4 4.6 Z" />
+      <path d="M12 9.5 V13.5" />
+      <path d="M12 16.8 V17" />
+    </>
+  ),
+  pencil: (
+    <>
+      <path d="M15.8 4.6 A2 2 0 0 1 18.6 7.4 L8 18 L4.5 19.5 L6 16 Z" />
+      <path d="M13.8 6.6 L16.6 9.4" />
+    </>
+  ),
+  code: (
+    <>
+      <path d="M8.5 7 L3.5 12 L8.5 17" />
+      <path d="M15.5 7 L20.5 12 L15.5 17" />
+    </>
+  ),
+  arrowRight: (
+    <>
+      <path d="M4.5 12 H19" />
+      <path d="M13.5 6.5 L19 12 L13.5 17.5" />
+    </>
+  ),
+  terminal: (
+    <>
+      <path d="M5 7 L10 12 L5 17" />
+      <path d="M12.5 17.5 H19" />
+    </>
+  ),
+  trash: (
+    <>
+      <path d="M4.5 7 H19.5" />
+      <path d="M9.5 7 V4.8 H14.5 V7" />
+      <path d="M6.5 7 L7.4 19.2 A1.4 1.4 0 0 0 8.8 20.5 H15.2 A1.4 1.4 0 0 0 16.6 19.2 L17.5 7" />
+    </>
+  ),
 };
 
 export function Icon({
@@ -285,5 +375,5 @@ export function Icon({
 
 /** Heading prefix used by every panel so the icons share one size and gap. */
 export function PanelIcon({ name }: { name: IconName }) {
-  return <Icon name={name} size={13} className="panel-icon" />;
+  return <Icon name={name} size={16} className="panel-icon" />;
 }

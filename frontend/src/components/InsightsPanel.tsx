@@ -1,10 +1,10 @@
 import type { TurnRecord } from '../hooks/useVoiceSession';
-import type { TurnUsage } from '../lib/protocol';
+import type { SessionMode, TurnUsage } from '../lib/protocol';
 import { bandsOf, slowestLeg, type LegBandKey, type LegMedian } from '../lib/legs';
 import { medianOf, summarize } from '../lib/stats';
 import { inr, ms, monthly, num, usd } from '../lib/format';
 import { LegBars } from './Waterfall';
-import { PanelIcon } from './Icon';
+import { Icon, PanelIcon } from './Icon';
 
 /**
  * The right-hand rail: the two numbers a run is judged on, and one sentence
@@ -14,7 +14,7 @@ import { PanelIcon } from './Icon';
  * out what it meant. A median with no verdict beside it is a number you have to
  * interpret every single time.
  */
-export function InsightsPanel({ turns }: { turns: TurnRecord[] }) {
+export function InsightsPanel({ turns, mode }: { turns: TurnRecord[]; mode?: SessionMode }) {
   /**
    * Time to first audio, from t0 — the server's figure, because it is the only
    * one measured from t0.
@@ -60,14 +60,19 @@ export function InsightsPanel({ turns }: { turns: TurnRecord[] }) {
     })
     .filter((b): b is LegMedian => b !== undefined);
 
-  const worst = slowestLeg(legs);
+  // A realtime model answers from your audio, not from a transcript. The STT
+  // band it can carry is when that transcript arrived — a by-product, not a
+  // leg the reply waited on — so it is reported, never split out or ranked.
+  const transcriptMs = mode === 'realtime' ? legs.find((l) => l.key === 'stt')?.ms : undefined;
+  const split = mode === 'realtime' ? [] : legs;
+  const worst = slowestLeg(split);
 
   return (
     <section className="panel">
       <h2>
         <PanelIcon name="lightning" />
         Time to first audio
-        <span className="right muted">median of {ttfa.n}</span>
+        <span className="right">median of {ttfa.n}</span>
       </h2>
 
       <div className="hero">
@@ -82,26 +87,42 @@ export function InsightsPanel({ turns }: { turns: TurnRecord[] }) {
       </div>
 
       {browserSide && (
-        <p className="muted small foot">
+        <p className="foot">
           In the browser, audible a median of <strong>{ms(browserSide.median)} ms</strong> after the final transcript
           arrived — measured from a different origin than the figure above, so the two are not differenced.
         </p>
       )}
 
-      {legs.length > 0 && (
-        <div className="split">
-          <span className="field-label">Median per leg</span>
-          <LegBars legs={legs} scaleMs={ttfa.median} />
-          <p className="muted small foot">
-            Measured against their own start marks, so they overlap and do not add up to the turn.
-          </p>
+      {split.length === 0 && (
+        <p className="foot">
+          {mode === 'realtime'
+            ? 'No leg was timed on its own, so there is nothing to split: a realtime model answers straight from your audio.'
+            : 'No leg was timed on its own, so there is nothing to split.'}
+          {transcriptMs !== undefined && ` Its transcript of your speech arrived at ${ms(transcriptMs)} ms (median).`}
+        </p>
+      )}
+
+      {split.length > 0 && (
+        <div className="leg-medians">
+          <h3>Median per leg</h3>
+          <LegBars legs={split} scaleMs={ttfa.median} />
+          <p className="foot">Measured against their own start marks, so they overlap and do not add up to the turn.</p>
         </div>
       )}
 
       {worst && (
         <p className="verdict">
-          <strong>{worst.name}</strong> is the slowest leg at {ms(worst.ms)} ms median. That is the one worth swapping
-          before anything else.
+          <Icon name="crystal" size={16} />
+          {split.length > 1 ? (
+            <span>
+              <strong>{worst.name}</strong> is the slowest leg at {ms(worst.ms)} ms median. Swap it first.
+            </span>
+          ) : (
+            <span>
+              Only <strong>{worst.name}</strong> was measured ({ms(worst.ms)} ms median), so there is no slower leg to
+              single out.
+            </span>
+          )}
         </p>
       )}
     </section>
@@ -137,6 +158,9 @@ export function CostPanel({ usage }: { usage: TurnUsage[] }) {
     const llm = t.legs.find((l) => l.leg === 'llm');
     return sum + (llm ? llm.inputUnits + llm.outputUnits : 0);
   }, 0);
+  // A locally counted figure is never shown as a measurement, here or anywhere.
+  const estimated = usage.some((t) => t.legs.some((l) => l.source === 'local'));
+  const tokensEstimated = usage.some((t) => t.legs.some((l) => l.leg === 'llm' && l.source === 'local'));
 
   /**
    * The FX rate the server actually used, recovered from the figures it sent.
@@ -155,25 +179,37 @@ export function CostPanel({ usage }: { usage: TurnUsage[] }) {
       <h2>
         <PanelIcon name="potion" />
         Cost
-        {inrPerUsd !== undefined && <span className="right muted">₹{inrPerUsd.toFixed(2)} / $1 · assumed</span>}
+        {inrPerUsd !== undefined && <span className="right">₹{inrPerUsd.toFixed(2)} / $1, assumed</span>}
       </h2>
 
       <div className="hero">
         <span className="hero-v small">{usd(perTurn)}</span>
-        <span className="hero-u">/ turn</span>
-        <span className="hero-sub">{inr(totalInr / usage.length)}</span>
+        <span className="hero-sub">per turn · {inr(totalInr / usage.length)}</span>
       </div>
 
-      <div className="stat-row">
-        <Stat label="10k turns a day" value={monthly(perTurn, 10_000)} sub="per month" />
-        <Stat label="this conversation" value={usd(totalUsd)} sub={`${usage.length} turns`} />
-        {tokens > 0 && <Stat label="LLM tokens" value={num(tokens)} />}
-      </div>
+      <dl className="cost-list">
+        <dt>This conversation</dt>
+        <dd>
+          {usd(totalUsd)} · {usage.length} {usage.length === 1 ? 'turn' : 'turns'}
+        </dd>
+        <dt>At 10k turns a day</dt>
+        <dd title="Assumes every future turn costs what the ones measured here did">
+          ≈ {monthly(perTurn, 10_000)} per month
+        </dd>
+        {tokens > 0 && (
+          <>
+            <dt>LLM tokens</dt>
+            <dd className={tokensEstimated ? 'est' : ''} title={tokensEstimated ? 'Some counted locally' : undefined}>
+              {`${tokensEstimated ? '~' : ''}${num(tokens)}`}
+            </dd>
+          </>
+        )}
+      </dl>
+
+      {estimated && <p className="foot">Some counts are estimated locally, marked ~ in the usage table.</p>}
 
       {unpriced.length > 0 && (
-        <p className="muted small foot">
-          No rate on file for {unpriced.join(', ')} — every figure above is a floor, not a bill.
-        </p>
+        <p className="foot">No rate on file for {unpriced.join(', ')} — every figure above is a floor, not a bill.</p>
       )}
     </section>
   );

@@ -10,19 +10,19 @@ import { UsagePanel } from './UsagePanel';
 import { Waterfall, WaterfallAxis, WaterfallLegend, type WaterfallRow } from './Waterfall';
 import { Icon, PanelIcon } from './Icon';
 
-type Tab = 'turns' | 'usage' | 'marks';
+type Tab = 'timeline' | 'usage' | 'marks';
 
 /**
- * The per-turn detail, three ways: as a waterfall, as the billing table, and as
+ * The per-turn detail, three ways: as a timeline, as the billing table, and as
  * the raw marks.
  *
  * They are tabs rather than three stacked panels because they answer the same
  * question at different resolutions, and only one of them is ever the one you
- * want. The waterfall leads because "which leg is slow" is the question this
+ * want. The timeline leads because "which leg is slow" is the question this
  * bench exists to answer.
  */
 export function TurnsPanel({ turns, usage }: { turns: TurnRecord[]; usage: TurnUsage[] }) {
-  const [tab, setTab] = useState<Tab>('turns');
+  const [tab, setTab] = useState<Tab>('timeline');
 
   const rows: WaterfallRow[] = turns.map((t) => ({
     turnId: t.turnId,
@@ -53,42 +53,55 @@ export function TurnsPanel({ turns, usage }: { turns: TurnRecord[]; usage: TurnU
   const browserSide = medianOf(turns.map((t) => t.clientTtfaMs).filter((v): v is number => v !== undefined));
 
   return (
-    <section className="panel grow">
-      <h2>
-        <PanelIcon name="hourglass" />
-        <TabButton tab="turns" active={tab} onSelect={setTab}>
+    <section className="panel grow turns-panel">
+      <div className="turns-head">
+        <h2>
+          <PanelIcon name="hourglass" />
           Turns
-        </TabButton>
-        <TabButton tab="usage" active={tab} onSelect={setTab}>
-          Tokens &amp; cost
-        </TabButton>
-        <TabButton tab="marks" active={tab} onSelect={setTab}>
-          Marks
-        </TabButton>
-        {tab === 'turns' && <WaterfallLegend />}
-      </h2>
+        </h2>
+        {/* A group of toggles, as the Runs metric switch is: the tab role
+            promises arrow keys and a tabpanel this does not have. */}
+        <div className="tabs" role="group" aria-label="Turn detail">
+          <TabButton tab="timeline" active={tab} onSelect={setTab}>
+            Timeline
+          </TabButton>
+          <TabButton tab="usage" active={tab} onSelect={setTab}>
+            Usage and cost
+          </TabButton>
+          <TabButton tab="marks" active={tab} onSelect={setTab}>
+            Raw marks
+          </TabButton>
+        </div>
+        {tab === 'timeline' && <WaterfallLegend />}
+      </div>
 
       {turns.length === 0 && tab !== 'usage' && <p className="muted">Complete a turn to collect numbers.</p>}
 
-      {tab === 'turns' && turns.length > 0 && (
+      {tab === 'timeline' && turns.length > 0 && (
         <div className="scroller">
-          <Waterfall rows={rows} scaleMs={scaleMs} />
-          <WaterfallAxis scaleMs={scaleMs} />
-          <p className="muted small foot">
-            Bars are drawn where each leg actually ran, so they overlap — a pipeline opens the TTS socket while the
-            LLM is still thinking. They do <strong>not</strong> add up to the turn, and the tick is the moment the
-            server sent its first audio byte. Hatched = the reply playing out after that.
+          <div className="wf-scroll">
+            <WaterfallAxis scaleMs={scaleMs} />
+            <Waterfall rows={rows} scaleMs={scaleMs} />
+          </div>
+          <p className="foot">
+            Each leg runs in its own lane, drawn where it actually ran, so a pipeline opening the TTS socket while the
+            LLM is still thinking shows as overlap. The legs do <strong>not</strong> add up to the turn. The tick is the
+            first audio byte the server sent; hatched is the reply playing.
             {browserSide !== undefined && (
               <>
                 {' '}
-                In the browser, the reply became audible a median of <strong>{ms(browserSide)} ms</strong> after the
-                final transcript arrived here — a different clock on a different origin, so it is reported beside
-                these numbers rather than subtracted from them.
+                In the browser the reply became audible a median of <strong>{ms(browserSide)} ms</strong> after the
+                final transcript arrived — a different clock on a different origin, so it is reported beside these
+                numbers, not subtracted from them.
               </>
             )}
           </p>
-          <button type="button" className="ghost" onClick={() => downloadJson(turns, `turns-${Date.now()}.json`)}>
-            <Icon name="download" size={12} />
+          <button
+            type="button"
+            className="ghost inline export"
+            onClick={() => downloadJson(turns, `turns-${Date.now()}.json`)}
+          >
+            <Icon name="download" size={14} />
             Export turns as JSON
           </button>
         </div>
@@ -140,7 +153,7 @@ function MarksTable({ turns }: { turns: TurnRecord[] }) {
           </tbody>
         </table>
       </div>
-      <p className="muted small foot">
+      <p className="foot">
         Turn {turn.turnId}, the most recent. Audio rendered: {secs(turn.derived.audioDurationMs)}. First occurrence of
         a mark wins, so a provider that reports a stage twice cannot move t0 out from under the other numbers.
       </p>
@@ -160,7 +173,12 @@ function TabButton({
   children: React.ReactNode;
 }) {
   return (
-    <button type="button" className={`tab ${tab === active ? 'on' : ''}`} onClick={() => onSelect(tab)}>
+    <button
+      type="button"
+      aria-pressed={tab === active}
+      className={tab === active ? 'on' : ''}
+      onClick={() => onSelect(tab)}
+    >
       {children}
     </button>
   );

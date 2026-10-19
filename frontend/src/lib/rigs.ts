@@ -43,8 +43,17 @@ export interface Rig {
  * Rig identity colours, in fixed order. Same rule as the leg palette: the
  * colour follows the rig, not its position, so deleting rig B does not repaint
  * rig C into B's colour and quietly invalidate a chart the user was reading.
+ *
+ * These are the four house colours plus two, all far darker than the leg
+ * palette in `legs.ts`. The previous set reused the leg hexes outright, so rig
+ * A was drawn in exactly the STT blue — a rig could be read as a leg. Every
+ * rig badge also carries its letter, so colour is never the only cue. All six
+ * take white text at 4.5:1 or better.
  */
-export const RIG_COLORS = ['#3987e5', '#d95926', '#199e70', '#9085e9', '#c98500', '#d55181'];
+export const RIG_COLORS = ['#8e1f2f', '#2a3f7a', '#8a6a12', '#1e4d36', '#6b3fa0', '#7a4a2a'];
+
+/** A, B, C… from the colour index, so the badge letter follows the rig like its colour does. */
+export const rigLetter = (rig: Pick<Rig, 'colorIndex'>): string => String.fromCharCode(65 + (rig.colorIndex % 26));
 
 export const rigColor = (rig: Pick<Rig, 'colorIndex'>): string => RIG_COLORS[rig.colorIndex % RIG_COLORS.length];
 
@@ -325,7 +334,7 @@ export function slotsOf(rig: Rig, providers: ProviderEntry[]): RigSlot[] {
   ];
 }
 
-/** Short breadcrumb for the top bar and the tabs: provider names only. */
+/** Short breadcrumb for the sidebar's rig list: provider names only. */
 export function chainOf(rig: Rig, providers: ProviderEntry[]): string[] {
   return slotsOf(rig, providers).map((s) => s.providerName);
 }

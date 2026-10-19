@@ -1,0 +1,103 @@
+/* Bench layout: chain, session bar, conversation, prompt. Owned by the bench screen. */
+
+.bench { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+
+/* -------------------------------- header --------------------------------- */
+
+.rig-name-input {
+  width: auto; min-width: 8ch; max-width: 100%; min-height: 0; padding: 0 6px; margin-left: -7px;
+  font-family: var(--font-display); font-size: inherit; font-weight: inherit; letter-spacing: inherit;
+  line-height: inherit; color: var(--ink); background: var(--surface); border-color: var(--line-strong);
+}
+
+/* ----------------------------- signal chain ------------------------------ */
+
+.chain-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.chain { display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; }
+.chain-arrow { display: flex; align-items: center; color: var(--ink-3); }
+
+.chain-card {
+  flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 12px;
+  padding: 16px; text-align: left; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+  transition: border-color 120ms ease;
+}
+.chain-card:hover:not(:disabled) { border-color: var(--line-strong); }
+/* Locked, not unavailable: the card is still the record of what is running. */
+.chain-card:disabled { cursor: default; }
+
+.chain-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 8px; }
+.chain-stage {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2);
+}
+.chain-swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 10px; }
+.chain-ready { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.chain-ready.ok { color: var(--ok); }
+.chain-ready.miss { color: var(--warn); font-weight: 600; }
+
+.chain-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.chain-provider { font-size: 16px; font-weight: 600; }
+.chain-model { font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
+
+.chain-foot {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px;
+  margin-top: auto; padding-top: 10px; border-top: 1px solid var(--hairline); font-size: 13px;
+}
+.chain-ms { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+
+.chain-cmd summary {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px;
+  border-radius: var(--radius-sm); font-size: 13px; color: var(--ink-3); cursor: pointer; list-style: none;
+}
+.chain-cmd summary::-webkit-details-marker { display: none; }
+.chain-cmd summary:hover { color: var(--magic); background: var(--magic-soft); }
+.chain-cmd[open] summary { color: var(--ink-2); }
+.chain-cmd .cmd { margin-top: 6px; }
+
+/* ------------------------------ session bar ------------------------------ */
+
+.session-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 16px; }
+.session-bar .badge { margin-right: 4px; }
+.meter { display: inline-block; width: 64px; height: 6px; border-radius: 999px; background: var(--chip); overflow: hidden; }
+.meter-fill { display: block; height: 100%; background: var(--err); transition: width 60ms linear; }
+.turn-detection { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.turn-detection-locked { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-3); }
+
+/* ------------------------------ conversation ----------------------------- */
+
+.convo { display: flex; flex-direction: column; padding: 0; }
+.convo h2 { margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--hairline); }
+.convo-count { font-size: 13px; font-weight: 400; }
+.convo-speaking { display: inline-flex; align-items: center; gap: 6px; }
+
+.transcript { display: flex; flex-direction: column; gap: 14px; padding: 18px; min-height: 160px; max-height: 330px; overflow-y: auto; }
+.transcript-empty { margin: auto 0; text-align: center; }
+.bubble { max-width: 72%; padding: 10px 14px; overflow-wrap: anywhere; }
+.bubble.user { align-self: flex-end; border-radius: 14px 14px 4px 14px; background: var(--magic-soft); }
+.bubble.assistant { align-self: flex-start; border-radius: 14px 14px 14px 4px; background: var(--sunken); border: 1px solid var(--hairline); }
+.bubble.partial { color: var(--ink-3); font-style: italic; }
+@media (max-width: 640px) { .bubble { max-width: 88%; } }
+
+.listening {
+  align-self: flex-end; display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border-radius: 999px; border: 1px dashed var(--line-strong);
+  font-size: 13px; color: var(--ink-3);
+}
+.listening i { width: 8px; height: 8px; border-radius: 50%; background: var(--err); animation: pulse 1.2s ease-in-out infinite; }
+.speaking-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok-dot); animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+.composer { display: flex; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--hairline); }
+.composer input { flex: 1; min-width: 0; }
+
+/* --------------------------------- prompt -------------------------------- */
+
+.prompt-lock { display: inline-flex; align-items: center; gap: 4px; }
+.prompt-text { margin-bottom: 0; }
+
+/* -------------------------------- layout --------------------------------- */
+
+.bench-cols { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px; }
+.bench-main { flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+.bench-side { flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }

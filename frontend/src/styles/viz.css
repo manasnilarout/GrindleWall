@@ -1,0 +1,91 @@
+/* Data viz: leg bars, the turn timeline, insights and cost. Shared by bench, runs and report. */
+/* ------------------------------- leg bars --------------------------------- */
+/*
+ * Per-leg medians, one bar each against a shared scale. Never a stacked bar:
+ * these legs overlap, so a stack's total is not the turn and a segment's share
+ * is a fraction of a number that does not exist.
+ */
+.leg-bars { display: flex; flex-direction: column; gap: 10px; margin: 0; }
+.leg-bar-row { display: grid; grid-template-columns: 84px minmax(0, 1fr) 64px; align-items: center; gap: 10px; font-size: 13px; }
+.leg-bars.bare .leg-bar-row { grid-template-columns: minmax(0, 1fr); }
+.leg-bar-name { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.leg-bar-track { display: block; height: 8px; border-radius: 999px; background: var(--ground); overflow: hidden; }
+.leg-bar-fill { display: block; height: 100%; border-radius: 999px; }
+.leg-bar-val { text-align: right; font-weight: 500; }
+
+/* ------------------------------ turns card ------------------------------- */
+
+.turns-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  margin: -6px -18px 14px; padding: 0 18px 12px; border-bottom: 1px solid var(--hairline);
+}
+.turns-head h2 { margin: 0; }
+.turns-panel .export { margin: 8px 0 0 -8px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-left: auto; font-size: 12px; color: var(--ink-2); }
+.legend > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.legend i { display: inline-block; width: 12px; height: 6px; border-radius: 2px; }
+.legend i.legend-tick { width: 2px; height: 12px; border-radius: 1px; background: var(--ink); }
+.legend i.legend-tail { height: 10px; }
+
+/* -------------------------------- timeline -------------------------------- */
+/*
+ * Turn | track | first audio. The track has one lane per leg (STT, LLM, TTS
+ * top to bottom, the LEG_BANDS order) so overlapping legs sit beside each
+ * other instead of on top of each other. Every row shares one scale; the
+ * gridlines sit at the same fractions as the axis labels.
+ */
+.wf-scroll { overflow-x: auto; padding-bottom: 2px; }
+.wf-grid { display: grid; grid-template-columns: 40px minmax(420px, 1fr) 84px; gap: 12px; align-items: center; }
+.wf { display: flex; flex-direction: column; }
+.wf-row { min-height: 34px; }
+.wf-n { font-size: 13px; color: var(--ink-2); }
+.wf-total { text-align: right; font-size: 13px; font-weight: 500; white-space: nowrap; }
+.wf-total.slow { color: var(--warn); }
+.wf-total.slowest { color: var(--err); font-weight: 600; }
+
+.wf-track {
+  position: relative; height: 22px;
+  /* Three empty lanes, so a leg that was never measured reads as an empty lane rather than a missing row. */
+  background:
+    linear-gradient(var(--sunken), var(--sunken)) 0 0 / 100% 6px no-repeat,
+    linear-gradient(var(--sunken), var(--sunken)) 0 8px / 100% 6px no-repeat,
+    linear-gradient(var(--sunken), var(--sunken)) 0 16px / 100% 6px no-repeat;
+}
+.wf-track.wf-silent { background: none; height: auto; font-size: 12px; color: var(--ink-3); }
+.wf-grid-line { position: absolute; top: -4px; bottom: -4px; width: 1px; margin-left: -1px; background: var(--hairline); }
+.wf-seg { position: absolute; height: 6px; border-radius: 2px; }
+.wf-seg.lane-stt { top: 0; }
+.wf-seg.lane-llm { top: 8px; }
+.wf-seg.lane-tts { top: 16px; }
+/* The reply playing after the first byte. A hatch, because it is audio time, not latency. */
+.wf-tail, .legend-tail {
+  background-color: var(--sunken);
+  background-image: repeating-linear-gradient(135deg, var(--line-strong) 0 1.5px, transparent 1.5px 5px);
+}
+.wf-tail { position: absolute; top: 0; bottom: 0; border-radius: 0 3px 3px 0; }
+/* The moment the server sent its first audio byte — the turn's actual latency. */
+.wf-mark { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--ink); border-radius: 1px; }
+
+.wf-axis { font-size: 11px; color: var(--ink-3); padding-bottom: 6px; }
+.wf-axis-track { position: relative; height: 16px; }
+.wf-t0 { position: absolute; left: 0; white-space: nowrap; }
+.wf-tick { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.wf-tick:last-child { transform: translateX(-100%); }
+
+/* -------------------------------- insights -------------------------------- */
+
+.leg-medians h3 { margin-top: 20px; }
+
+.verdict {
+  display: flex; gap: 10px; align-items: flex-start;
+  margin: 16px 0 0; padding: 12px; border-radius: var(--radius);
+  background: var(--magic-soft); color: var(--magic-ink); font-size: 13px; line-height: 1.5;
+}
+.verdict .icon { margin-top: 2px; }
+
+/* ---------------------------------- cost ---------------------------------- */
+
+.cost-list { margin: 14px 0 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; font-size: 13px; }
+.cost-list dt { color: var(--ink-3); }
+.cost-list dd { margin: 0; text-align: right; font-weight: 500; }
