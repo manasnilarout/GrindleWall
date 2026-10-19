@@ -17,6 +17,7 @@ import { useVoiceSession } from './hooks/useVoiceSession';
 import { RigTabs, type RigScore } from './components/RigTabs';
 import { RigRail } from './components/RigRail';
 import { RigBuilder } from './components/RigBuilder';
+import { CreateCodeDialog } from './components/CreateCodeDialog';
 import { PromptWidget } from './components/PromptWidget';
 import { Transcript } from './components/Transcript';
 import { TurnsPanel } from './components/TurnsPanel';
@@ -80,6 +81,7 @@ export function Bench({
   const [rigs, setRigs] = useState<Rig[]>([]);
   const [activeRigId, setActiveRigId] = useState('');
   const [editing, setEditing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [view, setView] = useState<View>('bench');
   const [consoleExpanded, setConsoleExpanded] = useState(false);
   const [showReport, setShowReport] = useState(true);
@@ -279,6 +281,7 @@ export function Bench({
                   onEdit={() => setEditing(true)}
                   onRename={(name) => updateRig({ ...activeRig, name })}
                   onDelete={() => deleteRig(activeRig.id)}
+                  onCreateCode={() => setExporting(true)}
                 />
               </ErrorBoundary>
 
@@ -433,6 +436,16 @@ export function Bench({
           disabled={locked}
           onChange={updateRig}
           onClose={() => setEditing(false)}
+        />
+      )}
+
+      {exporting && activeRig && (
+        <CreateCodeDialog
+          rig={activeRig}
+          providers={providers}
+          systemPrompt={systemPrompt}
+          turnDetection={turnDetection}
+          onClose={() => setExporting(false)}
         />
       )}
     </div>

@@ -502,6 +502,48 @@ console.log('\nStore — a session survives a round trip to disk');
   }
 }
 
+console.log('\nStore — the index row carries a prompt fingerprint and speech time, never the prompt');
+{
+  /*
+   * The bench's "Create code" export reads these two off the listing: the
+   * prompt hash to stop averaging a Latency-probe run with a Naturalness-probe
+   * run, and speech time as the denominator of cost per minute — `durationMs`
+   * is wall clock (the socket was open), so one tab left open dominated it.
+   * The expected digest is the published SHA-256 test vector for "abc"
+   * (FIPS 180-2, appendix B.1), not whatever the code happens to produce.
+   */
+  const dir = await mkdtemp(join(tmpdir(), 'voicebench-index-'));
+  try {
+    const store = new SessionStore(dir);
+    const config = { mode: 'pipeline', systemPrompt: 'abc', turnDetection: 'server_vad' } as StartConfig;
+    const spoke = new UsageLedger('spoke', 'pipeline', 'spoke', config);
+    const tts = (audioSeconds?: number) =>
+      leg({ leg: 'tts', providerId: 'sarvam-tts', modelId: 'bulbul:v3', unit: 'characters', outputUnits: 40, audioSeconds, source: 'local' });
+    spoke.record(1, [leg({ inputUnits: 100, outputUnits: 20 }), tts(2.5)]);
+    spoke.record(2, [leg({ inputUnits: 100, outputUnits: 20 }), tts(1.25)]);
+    // A turn whose TTS reported no audio duration adds nothing, and is not a 0.
+    spoke.record(3, [leg({ inputUnits: 100, outputUnits: 20 }), tts(undefined)]);
+    await store.save(spoke.summary());
+
+    const silent = new UsageLedger('silent', 'pipeline', 'silent', { ...config, systemPrompt: 'Speak Hindi. नमस्ते' });
+    silent.record(1, [leg({ inputUnits: 100, outputUnits: 20 })]);
+    await store.save(silent.summary());
+
+    const list = await store.list();
+    const row = list.find((r) => r.recordId === spoke.recordId);
+    const quiet = list.find((r) => r.recordId === silent.recordId);
+    check('the prompt hash is SHA-256 of the prompt as sent', row?.promptSha256,
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    ok('a different prompt hashes differently', quiet?.promptSha256 !== undefined && quiet.promptSha256 !== row?.promptSha256);
+    ok('the prompt text itself stays out of the listing',
+      !JSON.stringify(list).includes('नमस्ते') && !('systemPrompt' in (row?.config ?? {})));
+    check('speech time is the leg totals\' audioSeconds, summed', row?.speechSeconds, 3.75);
+    check('a record with no reported audio has no speech time, not zero', quiet?.speechSeconds, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 console.log('\nA provider that leaks its credentials into an error must not reach the client');
 {
   process.env.TEST_FAKE_API_KEY = 'sk-super-secret-value-1234';

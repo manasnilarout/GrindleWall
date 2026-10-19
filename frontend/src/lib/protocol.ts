@@ -227,4 +227,33 @@ export interface SessionIndexEntry {
   costUsd: number;
   costInr: number;
   unpriced: string[];
+  /**
+   * What produced the record, minus the system prompt (free text, and the one
+   * field that would make the listing grow with every conversation). Lets a
+   * caller find every run of one provider combination — the bench's "Create
+   * code" export cites them as provenance — without fetching each record.
+   * Optional: a backend older than this field serves rows without it.
+   */
+  config?: Omit<StartConfig, 'systemPrompt'>;
+  /**
+   * SHA-256 (hex) of the UTF-8 system prompt exactly as the session was started
+   * with it. The prompt moves TTFA (the Latency / Naturalness presets exist to),
+   * so a caller grouping runs needs to tell prompts apart; the hash does that
+   * without putting the text back into the listing. Absent from a backend older
+   * than this field — such a row cannot be matched on its prompt.
+   */
+  promptSha256?: string;
+  /**
+   * Wall-clock time the socket was open (`endedAt - startedAt`), silence and
+   * time on screen included. NOT a usage denominator — see `speechSeconds`.
+   */
+  durationMs?: number;
+  /**
+   * Seconds of assistant speech the conversation produced: every leg total's
+   * `audioSeconds`, summed. This is the "minute" a cost per minute should divide
+   * by. Absent when no leg reported audio, and from a backend older than this
+   * field; a caller must leave such a row out of a rate, never count it as zero.
+   */
+  speechSeconds?: number;
+  latency?: SessionSummary['latency'];
 }

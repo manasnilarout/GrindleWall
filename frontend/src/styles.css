@@ -334,6 +334,44 @@ button { font: inherit; cursor: pointer; }
   display: inline-flex; align-items: center; gap: 4px;
 }
 .cmd-copy:hover { color: var(--accent); border-color: var(--accent); }
+.cmd-actions { display: flex; align-items: center; gap: 9px; margin-top: 8px; }
+
+/* ----------------------------- create code ------------------------------- */
+
+.cc-legs { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+.cc-leg { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+.cc-leg .field-label { width: 28px; flex: 0 0 28px; }
+.cc-leg code { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-rows { display: flex; flex-direction: column; gap: 6px; }
+.cc-row {
+  display: grid; grid-template-columns: 116px 1fr 1fr 1.4fr 1.2fr 22px; gap: 8px; align-items: end;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); padding: 8px 9px 0;
+}
+.cc-row .field { margin-bottom: 8px; }
+.cc-lang { display: flex; flex-direction: column; gap: 2px; padding-bottom: 9px; min-width: 0; }
+.cc-lang b { font-weight: 500; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-lang code { font-size: 10.5px; color: var(--muted); }
+.cc-lang .pill, .cc-lang .ghost.inline { align-self: flex-start; margin-left: 0; padding-left: 0; }
+.cc-lang .pill { padding-left: 6px; }
+.cc-remove { padding-bottom: 12px; justify-content: center; }
+.cc-add { display: flex; align-items: end; gap: 8px; margin-top: 10px; }
+.cc-add .field { flex: 1; }
+.cc-add .btn { margin-bottom: 10px; }
+.cc-stats { margin-top: 0; }
+.cc-code {
+  font-size: 10.5px; line-height: 1.55; word-break: break-all; background: #2a1f16; color: #e8d6b0;
+  border-color: var(--line); resize: none;
+}
+.slot h3.cc-sub { margin: 14px 0 7px; font-size: 10px; }
+.checklist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.check { display: flex; gap: 8px; align-items: baseline; font-size: 12px; line-height: 1.45; }
+.check-mark { width: 16px; flex: 0 0 16px; text-align: center; font-weight: 700; font-size: 11px; }
+.check.block { color: var(--err); }
+.check.warn { color: var(--warn); }
+.check.ok { color: var(--ok); }
+@media (max-width: 720px) {
+  .cc-row { grid-template-columns: 1fr 1fr; padding-bottom: 0; }
+}
 
 /* ------------------------------- run bar --------------------------------- */
 
