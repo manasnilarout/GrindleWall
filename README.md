@@ -145,11 +145,22 @@ the STT and TTS models list are offered — and a voice for each. The two legs k
 a language where their catalogs spell it differently (in this bench's catalog, Sarvam's Odia is
 `or-IN` on STT and `od-IN` on TTS); the stack row is keyed by the base code both normalise to. The first row is the default.
 
-The dialog also cites the recorded sessions that ran the same three providers and models, with their
-TTFA and cost per minute, as provenance inside the code. Those numbers are informational; MagickVoice
-does not read them.
+The dialog also cites, as provenance inside the code, the recorded sessions that measured this exact
+stack: the same three providers and models under server VAD, run under the bench's **current system
+prompt** (matched on a SHA-256 the session listing carries, so the text stays out of it), speaking one of
+the stack's languages **in that row's voice**. The prompt and the voice both move TTFA, so a session that
+differs in either is not averaged in — the checklist says how many were left out and why, and warns on a
+row no session ever voiced. TTFA is the median of each session's median, and the second figure is the
+**median of per-session p95s**, labelled as such (it is not a p95 of turns). Cost per minute is total cost
+over minutes of **assistant speech** (the TTS audio the session produced), not over wall clock, which
+counted silence and a tab left open; a session with no speech time recorded is left out of the rate
+rather than counted as zero minutes. Those numbers are informational; MagickVoice does not read them.
 
-What blocks an export: realtime rigs, mock providers, a provider or `@variant` with no MagickVoice
+A typed voice id (Cartesia, Murf, ElevenLabs) is what a session actually sends, so it prefills every
+row — the rig's own and each language added after it — not just the first.
+
+What blocks an export: realtime rigs, a bench set to push-to-talk (a v1 code carries server VAD only),
+mock providers, a provider or `@variant` with no MagickVoice
 equivalent (the map is `frontend/src/lib/voice-stack/export.ts`), a language or voice the bench catalog
 does not list for that model. Custom voice ids and languages never measured on this combination are
 warnings, not blockers. The checks run against this bench's catalog only — MagickVoice validates the
@@ -273,7 +284,7 @@ labelled a **floor, not a bill**.
 
 ```bash
 cd backend  && npm run turn:selftest             # 36 checks on turn attribution and the TTFA derivation
-cd backend  && npm run usage:selftest            # 133 checks on arithmetic, persistence, redaction and per-leg latency medians
+cd backend  && npm run usage:selftest            # 138 checks on arithmetic, persistence, redaction, per-leg latency medians and the index row
 cd backend  && npm run catalog:selftest          # 114 checks — every provider/model/language path the UI can click
 cd backend  && npm run gemini:selftest           # 37 checks incl. token-usage parsing
 cd backend  && npm run murf:selftest             # 40 checks against a local fake
@@ -290,14 +301,17 @@ cd backend  && npm run nova:rates                # re-measures Nova Sonic's publ
 cd backend  && npm run models                    # 10 checks against the vendors' free model listings (needs a key, bills nothing)
 cd backend  && npm run smoke                     # usage + summary over the real WS protocol
 cd backend  && npm run realtime:probe            # a realtime turn with real SPEECH in (needs a key, billable)
-cd frontend && npm run render-check              # 114 checks: actually renders every panel, and pins the rules
+cd frontend && npm run render-check              # 128 checks: actually renders every panel, and pins the rules
                                                  # (voice resolution, leg overlap, TTFA attribution) that only a call can prove.
                                                  # tsc did not catch this project's last UI crash. Start the backend
-                                                 # and it additionally runs 10 checks against the live 26-provider catalog.
+                                                 # and it additionally runs 10 checks against the live 26-provider catalog;
+                                                 # reach a magic-voice-core checkout (beside this repo, or MAGIC_VOICE_CORE)
+                                                 # and one more checks the synced voice-stack spec is byte-identical to it.
 ```
 
-871 backend checks plus 114 frontend render checks, none of which needs a key or a network — and 10
-further render checks when the backend happens to be up, since those read the live catalog. (The
+876 backend checks plus 128 frontend render checks, none of which needs a key or a network — and 10
+further render checks when the backend happens to be up, since those read the live catalog (plus the one
+mirror check when a core checkout is reachable). (The
 102 this used to claim was the two figures added together, which the same sentence then described
 as needing no network.) Read the caveat in
 [The five late providers, and what contact with the vendor changed](#the-five-late-providers-and-what-contact-with-the-vendor-changed)

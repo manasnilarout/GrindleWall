@@ -440,7 +440,13 @@ export function Bench({
       )}
 
       {exporting && activeRig && (
-        <CreateCodeDialog rig={activeRig} providers={providers} onClose={() => setExporting(false)} />
+        <CreateCodeDialog
+          rig={activeRig}
+          providers={providers}
+          systemPrompt={systemPrompt}
+          turnDetection={turnDetection}
+          onClose={() => setExporting(false)}
+        />
       )}
     </div>
   );

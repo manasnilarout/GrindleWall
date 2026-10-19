@@ -21,9 +21,11 @@
  * "core will accept it".
  */
 import { languagesFor, resolveVoice, voicesFor, type ProviderEntry } from '../catalog';
-import type { SessionIndexEntry } from '../protocol';
-import type { Rig } from '../rigs';
+import type { SessionIndexEntry, StartConfig } from '../protocol';
+import { typedVoiceIdOf, type Rig } from '../rigs';
+import { utf8Encode } from './bytes';
 import { normaliseLanguageCode } from './language';
+import { sha256Hex } from './sha256';
 import {
   LLM_REASONING_LEVELS,
   VOICE_STACK_KIND,
@@ -131,6 +133,8 @@ export type ExportProvenance = {
   latency?: Record<string, unknown>;
   costPerMinute?: Record<string, unknown>;
   measuredLanguages?: string[];
+  /** SHA-256 of the system prompt the cited sessions ran under; see {@link promptSha256}. */
+  promptSha256?: string;
 };
 
 export interface ExportSelection {
@@ -147,11 +151,39 @@ export interface ExportCheck {
 }
 
 /**
- * The spec this rig and selection describe. Throws when a leg cannot be mapped,
- * so call {@link checkExportable} first: it reports the same failures, all of
- * them, in words.
+ * What the bench is set to beyond the rig itself. Required, not optional, so a
+ * caller cannot forget it: the dialog used to be handed only the rig, and a
+ * bench on push-to-talk exported a server-VAD code with a green checklist.
  */
-export function buildVoiceStackSpec(rig: Rig, _providers: ProviderEntry[], selection: ExportSelection): VoiceStackSpecInput {
+export interface ExportContext {
+  /** The bench's turn detection (the prompt panel's select), which every session it runs uses. */
+  turnDetection: StartConfig['turnDetection'];
+  /** What {@link citeSessions} found, for the checklist's wording. Absent: no sessions read. */
+  citation?: Citation;
+}
+
+/** Why a v1 code cannot carry this turn detection, or `null` when it can. */
+function turnDetectionBlocker(turnDetection: StartConfig['turnDetection']): string | null {
+  return turnDetection === 'server_vad'
+    ? null
+    : 'Push-to-talk (manual turn detection) cannot be exported — a v1 code carries server VAD only. ' +
+        'Switch the bench to Server VAD, run the stack, then export.';
+}
+
+/**
+ * The spec this rig and selection describe. Throws when a leg cannot be mapped
+ * or the bench's turn detection is one a v1 code cannot carry, so call
+ * {@link checkExportable} first: it reports the same failures, all of them, in
+ * words.
+ */
+export function buildVoiceStackSpec(
+  rig: Rig,
+  _providers: ProviderEntry[],
+  selection: ExportSelection,
+  context: ExportContext,
+): VoiceStackSpecInput {
+  const turnBlocker = turnDetectionBlocker(context.turnDetection);
+  if (turnBlocker) throw new Error(turnBlocker);
   const legs = legsOf(rig);
   const mapped = legs.map(({ leg, providerId, modelId }) => {
     const result = mapLeg(leg, providerId, modelId);
@@ -189,10 +221,19 @@ export function buildVoiceStackSpec(rig: Rig, _providers: ProviderEntry[], selec
  * Everything that stands between this rig and a code, as a checklist. `block`
  * means no code is produced; `warn` is exported anyway and said out loud.
  */
-export function checkExportable(rig: Rig, providers: ProviderEntry[], selection: ExportSelection): ExportCheck[] {
+export function checkExportable(
+  rig: Rig,
+  providers: ProviderEntry[],
+  selection: ExportSelection,
+  context: ExportContext,
+): ExportCheck[] {
   if (rig.mode === 'realtime') {
     return [{ level: 'block', message: 'Realtime stacks are not supported by core yet — export a pipeline rig (STT → LLM → TTS).' }];
   }
+  // Same shape as the realtime refusal, for the same reason: the code would
+  // describe a turn loop other than the one the bench is running.
+  const turnBlocker = turnDetectionBlocker(context.turnDetection);
+  if (turnBlocker) return [{ level: 'block', message: turnBlocker }];
 
   const checks: ExportCheck[] = [];
   const block = (message: string) => checks.push({ level: 'block', message });
@@ -229,13 +270,13 @@ export function checkExportable(rig: Rig, providers: ProviderEntry[], selection:
   }
 
   checks.push(...checkLanguages(rig, providers, selection));
-  checks.push(...checkMeasured(selection));
+  checks.push(...checkMeasured(selection, context.citation));
 
   // Last, and only when everything above is clean: the spec's own schema. It
   // catches what the catalog cannot — a name too long, a voice id the spec's
   // character set refuses — in the same words core will use.
   if (legsOk && !checks.some((c) => c.level === 'block')) {
-    const parsed = voiceStackSpecSchema.safeParse(buildVoiceStackSpec(rig, providers, selection));
+    const parsed = voiceStackSpecSchema.safeParse(buildVoiceStackSpec(rig, providers, selection, context));
     if (!parsed.success) {
       for (const issue of parsed.error.issues) block(`${issue.path.join('.') || 'spec'}: ${issue.message}`);
     }
@@ -302,18 +343,44 @@ function checkLanguages(rig: Rig, providers: ProviderEntry[], selection: ExportS
   return out;
 }
 
-function checkMeasured(selection: ExportSelection): ExportCheck[] {
+function checkMeasured(selection: ExportSelection, citation?: Citation): ExportCheck[] {
+  const out: ExportCheck[] = [];
+  const warn = (message: string) => out.push({ level: 'warn', message });
   const provenance = selection.provenance;
-  if (!provenance?.sessions?.length) {
-    return [{ level: 'warn', message: 'No recorded session used this exact STT/LLM/TTS combination — the code carries no measurements.' }];
+  const cited = Boolean(provenance?.sessions?.length);
+
+  if (!cited) {
+    warn(
+      "No recorded session used this exact stack (STT/LLM/TTS, server VAD, the current system prompt, and a row's language " +
+        'in its voice) — the code carries no measurements.',
+    );
   }
-  const measured = new Set(provenance.measuredLanguages ?? []);
-  const unmeasured = selection.languages
-    .map((row) => normaliseLanguageCode(row.code))
-    .filter((code): code is string => Boolean(code) && !measured.has(code as string));
-  return unmeasured.length
-    ? [{ level: 'warn', message: `Never measured on this combination: ${unmeasured.join(', ')}.` }]
-    : [];
+  if (citation?.otherPrompt) {
+    warn(`${plural(citation.otherPrompt)} on these legs ran under a different system prompt and ${citation.otherPrompt === 1 ? 'is' : 'are'} not cited — the prompt moves TTFA.`);
+  }
+  if (citation?.unhashed) {
+    warn(
+      `${plural(citation.unhashed)} on these legs ${citation.unhashed === 1 ? 'was' : 'were'} listed without a prompt hash ` +
+        '(a backend older than this export) and cannot be matched on the prompt, so not cited — update and restart the backend.',
+    );
+  }
+
+  const measured = new Set(provenance?.measuredLanguages ?? []);
+  const unmeasured: string[] = [];
+  for (const row of selection.languages) {
+    const code = normaliseLanguageCode(row.code);
+    if (!code || measured.has(code)) continue;
+    // A session that spoke this language in ANOTHER voice is not evidence for
+    // this row — TTS latency moves with the voice — but it is worth naming.
+    const others = citation?.otherVoices[code] ?? [];
+    if (others.length) {
+      warn(`${code}: no recorded session used the voice "${row.voice.trim()}" — sessions on this stack spoke ${code} in ${others.map((v) => `"${v}"`).join(', ')}, so none is cited for it.`);
+    } else {
+      unmeasured.push(code);
+    }
+  }
+  if (cited && unmeasured.length) warn(`Never measured on this combination: ${unmeasured.join(', ')}.`);
+  return out;
 }
 
 function legsOf(rig: Rig): Array<{ leg: Leg; providerId: string; modelId: string }> {
@@ -331,7 +398,8 @@ const MAX_PROVENANCE_SESSIONS = 40;
 
 /**
  * Records that ran this rig's three legs, provider and model (variant included),
- * under server VAD — the only turn detection a v1 code carries (`turn.detection:
+ * under server VAD — the first cut of {@link citeSessions}, which then narrows
+ * by prompt and per-row voice — the only turn detection a v1 code carries (`turn.detection:
  * 'server_vad'`), so a push-to-talk ('manual') record measured a different
  * turn loop and its latency is not this stack's. Languages may differ.
  */
@@ -360,46 +428,135 @@ export function measuredLanguageOf(session: SessionIndexEntry): string | null {
 }
 
 /**
- * What the matching records measured, in the shape the spec carries.
- *
- * Each record already holds its own TTFA median and p95, but not its turns, so
- * the cross-record figures are medians OF those per-record values — the
- * `basis` field says exactly that, so nobody reads them as a pooled p95. Cost
- * per minute is pooled honestly (total cost over total minutes) and marked a
- * floor when any record had an unpriced leg.
+ * The index row's prompt fingerprint, computed the way the backend computes it
+ * (`promptSha256` in `backend/src/store/SessionStore.ts`): SHA-256 of the
+ * UTF-8 prompt exactly as sent, untrimmed, as lowercase hex.
  */
-export function provenanceFrom(rig: Rig, sessions: SessionIndexEntry[], now = new Date()): ExportProvenance {
-  const matched = matchingSessions(rig, sessions).sort((a, b) => b.startedAt - a.startedAt);
+export function promptSha256(prompt: string): string {
+  return sha256Hex(utf8Encode(prompt));
+}
+
+/** Which recorded sessions a code may cite, and what was left out and why. */
+export interface Citation {
+  /** Cited as this stack's measurements, newest first. */
+  cited: SessionIndexEntry[];
+  /** The prompt hash they were matched on. */
+  promptSha256: string;
+  /** Same legs under server VAD, but another system prompt. Not cited. */
+  otherPrompt: number;
+  /** Same legs under server VAD, listed without a prompt hash (an older backend). Not cited. */
+  unhashed: number;
+  /**
+   * Per stack row (base code): the voices other sessions on these legs and this
+   * prompt spoke that language in, when that is not the row's voice.
+   */
+  otherVoices: Record<string, string[]>;
+}
+
+/**
+ * The sessions that measured THIS stack: {@link matchingSessions} (the three
+ * legs under server VAD), run under the bench's current system prompt, and
+ * speaking one of the stack's languages in that row's voice.
+ *
+ * The prompt and the voice are both latency inputs — the prompt presets exist
+ * to move TTFA, and TTS time-to-first-byte moves with the voice — so averaging
+ * across either would cite a number this stack never produced. A row from a
+ * backend that lists no prompt hash cannot be matched on the prompt, and is
+ * counted (so the checklist can say so) rather than either cited or silently
+ * dropped. A session in a language the stack does not carry measures nothing
+ * about it.
+ */
+export function citeSessions(rig: Rig, sessions: SessionIndexEntry[], rows: ExportLanguage[], systemPrompt: string): Citation {
+  const hash = promptSha256(systemPrompt);
+  const voiceOf = new Map<string, string>();
+  for (const row of rows) {
+    const code = normaliseLanguageCode(row.code);
+    if (code && !voiceOf.has(code)) voiceOf.set(code, row.voice.trim());
+  }
+
+  const citation: Citation = { cited: [], promptSha256: hash, otherPrompt: 0, unhashed: 0, otherVoices: {} };
+  for (const s of matchingSessions(rig, sessions)) {
+    if (typeof s.promptSha256 !== 'string') {
+      citation.unhashed += 1;
+      continue;
+    }
+    if (s.promptSha256 !== hash) {
+      citation.otherPrompt += 1;
+      continue;
+    }
+    const code = measuredLanguageOf(s);
+    const want = code ? voiceOf.get(code) : undefined;
+    if (!code || want === undefined) continue;
+    const voice = s.config?.voice?.trim() ?? '';
+    if (voice && voice === want) {
+      citation.cited.push(s);
+    } else {
+      const seen = (citation.otherVoices[code] ??= []);
+      const name = voice || '(no voice recorded)';
+      if (!seen.includes(name)) seen.push(name);
+    }
+  }
+  citation.cited.sort((a, b) => b.startedAt - a.startedAt);
+  return citation;
+}
+
+/**
+ * What the cited records measured, in the shape the spec carries.
+ *
+ * Each index row holds its session's TTFA median and p95, not its turns, so the
+ * cross-record figures are medians OF those per-session values, and they are
+ * named that way: `ttfaSessionP95MedianMs` is the median of per-session p95s,
+ * NOT a p95 of turns — a 2-turn session's p95 is nearly its max. `basis` says
+ * so in words.
+ *
+ * Cost per minute divides by minutes of assistant SPEECH (`speechSeconds`),
+ * never by `durationMs`: that is wall clock, so silence and a tab left open
+ * counted as usage and one long-open session pulled the rate toward zero. A row
+ * without speech time — no TTS audio reported, or an older backend — is left
+ * out of the rate entirely (its cost too), never counted as zero minutes.
+ */
+export function provenanceFrom(citation: Citation | undefined, now = new Date()): ExportProvenance {
   const provenance: ExportProvenance = { source: 'grindelwald', exportedAt: now.toISOString() };
+  const matched = citation?.cited ?? [];
   if (matched.length === 0) return provenance;
 
   provenance.sessions = matched.slice(0, MAX_PROVENANCE_SESSIONS).map((s) => s.recordId);
   provenance.sessionCount = matched.length;
   provenance.measuredLanguages = [...new Set(matched.map(measuredLanguageOf).filter((c): c is string => Boolean(c)))].sort();
+  provenance.promptSha256 = citation!.promptSha256;
 
   const medians = matched.map((s) => s.latency?.ttfaMedianMs).filter(isNum);
   const p95s = matched.map((s) => s.latency?.ttfaP95Ms).filter(isNum);
   if (medians.length) {
     provenance.latency = {
       ttfaMedianMs: round1(median(medians)),
-      ...(p95s.length ? { ttfaP95Ms: round1(median(p95s)) } : {}),
-      basis: `median across ${medians.length} session${medians.length === 1 ? '' : 's'} of each session's own value`,
+      ...(p95s.length ? { ttfaSessionP95MedianMs: round1(median(p95s)) } : {}),
+      basis:
+        `median across ${plural(medians.length)} of each session's own TTFA median` +
+        (p95s.length ? `; the p95 figure is the median of ${plural(p95s.length)}' own p95s, not a p95 of turns` : ''),
     };
   }
 
-  const minutes = matched.reduce((sum, s) => sum + (s.durationMs ?? 0), 0) / 60_000;
+  const spoken = matched.filter((s) => isNum(s.speechSeconds) && s.speechSeconds > 0);
+  const minutes = spoken.reduce((sum, s) => sum + (s.speechSeconds as number), 0) / 60;
   if (minutes > 0) {
     provenance.costPerMinute = {
-      usd: round4(matched.reduce((sum, s) => sum + s.costUsd, 0) / minutes),
-      inr: round4(matched.reduce((sum, s) => sum + s.costInr, 0) / minutes),
-      floor: matched.some((s) => s.unpriced.length > 0),
+      usd: round4(spoken.reduce((sum, s) => sum + s.costUsd, 0) / minutes),
+      inr: round4(spoken.reduce((sum, s) => sum + s.costInr, 0) / minutes),
+      floor: spoken.some((s) => s.unpriced.length > 0),
+      speechMinutes: round2(minutes),
+      basis:
+        `total cost over minutes of assistant speech (TTS audio), pooled across ${spoken.length} of ${plural(matched.length)}` +
+        (spoken.length < matched.length ? '; sessions with no speech time recorded are left out' : ''),
     };
   }
   return provenance;
 }
 
+const plural = (n: number) => `${n} session${n === 1 ? '' : 's'}`;
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const round1 = (v: number) => Math.round(v * 10) / 10;
+const round2 = (v: number) => Math.round(v * 100) / 100;
 const round4 = (v: number) => Math.round(v * 10_000) / 10_000;
 
 function median(values: number[]): number {
@@ -445,21 +602,36 @@ export function sharedLanguages(rig: Rig, providers: ProviderEntry[]): LanguageO
 }
 
 /**
- * A new row for `option`, prefilled: the rig's own vendor codes where they name
- * this language (so the rig's own row is exactly what was measured), else the
- * first spelling each leg lists; the voice is kept when this language still
- * offers it, the same rule `resolveVoice` applies everywhere else.
+ * The voice a row for `ttsLang` starts with, as a session would SEND it: the
+ * rig's typed id where its TTS vendor takes one (`startConfigOf` sends that,
+ * not the dropdown), else the rig's own voice on the rig's own language — kept
+ * even when the list no longer offers it, so the checklist names it rather than
+ * it quietly changing — else the rig's voice if that language offers it, else
+ * the first it lists (`resolveVoice`'s rule).
+ */
+export function pickedVoiceFor(rig: Rig, providers: ProviderEntry[], ttsLang: string): string {
+  if (ttsLang === rig.ttsLanguage && rig.voice) return rig.voice;
+  return resolveVoice(providers, rig.ttsProviderId, rig.ttsModelId, ttsLang, rig.voice);
+}
+
+/**
+ * A row for `option`, prefilled. The ONE row builder: the rig's own row and
+ * every language added after it go through here, so an added language carries
+ * the same voice the rig measured. (It did not: only the first row folded in a
+ * typed Cartesia/Murf/ElevenLabs id, and an added row silently switched to the
+ * catalog voice under a green checklist.) Vendor codes are the rig's own where
+ * they name this language, else the first spelling each leg lists.
  */
 export function rowFor(rig: Rig, providers: ProviderEntry[], option: LanguageOption): ExportLanguage {
   const sttLang = option.stt.includes(rig.sttLanguage) ? rig.sttLanguage : option.stt[0];
   const ttsLang = option.tts.includes(rig.ttsLanguage) ? rig.ttsLanguage : option.tts[0];
-  return { code: option.code, sttLang, ttsLang, voice: resolveVoice(providers, rig.ttsProviderId, rig.ttsModelId, ttsLang, rig.voice) };
+  return { code: option.code, sttLang, ttsLang, voice: typedVoiceIdOf(rig, providers) || pickedVoiceFor(rig, providers, ttsLang) };
 }
 
 /**
  * The row the rig itself speaks, or none. When both legs share that language
- * it is prefilled from the rig; when they do not, the rig's own codes are kept
- * as they are so the checklist says what is wrong with them instead of the row
+ * it is {@link rowFor}'s; when they do not, the rig's own codes are kept as
+ * they are so the checklist says what is wrong with them instead of the row
  * quietly vanishing.
  */
 export function initialRows(rig: Rig, providers: ProviderEntry[]): ExportLanguage[] {
@@ -467,11 +639,6 @@ export function initialRows(rig: Rig, providers: ProviderEntry[]): ExportLanguag
   const code = normaliseLanguageCode(rig.ttsLanguage) ?? normaliseLanguageCode(rig.sttLanguage);
   if (!code) return [];
   const option = sharedLanguages(rig, providers).find((o) => o.code === code);
-  const tts = providers.find((p) => p.id === rig.ttsProviderId);
-  const custom = tts?.acceptsVoiceId ? rig.customVoiceId.trim() : '';
-  if (option) {
-    const row = rowFor(rig, providers, option);
-    return [{ ...row, voice: custom || (option.tts.includes(rig.ttsLanguage) ? rig.voice || row.voice : row.voice) }];
-  }
-  return [{ code, sttLang: rig.sttLanguage, ttsLang: rig.ttsLanguage, voice: custom || rig.voice }];
+  if (option) return [rowFor(rig, providers, option)];
+  return [{ code, sttLang: rig.sttLanguage, ttsLang: rig.ttsLanguage, voice: typedVoiceIdOf(rig, providers) || rig.voice }];
 }

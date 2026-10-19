@@ -146,22 +146,29 @@ export function withDefaults(raw: Rig, providers: ProviderEntry[]): Rig {
 }
 
 /**
- * The `StartConfig` this rig would send.
+ * The typed voice id this rig's voice owner will actually be sent, or `''`.
  *
  * A typed voice id only counts for a vendor that takes one, so switching mode
  * or provider cannot smuggle an id into a session that would reject it — the
- * same rule the picker applies when it resolves the dropdown.
+ * same rule the picker applies when it resolves the dropdown. Shared with the
+ * voice-stack export, which must name the voice a session SENT, not the one
+ * the dropdown happens to show.
  */
+export function typedVoiceIdOf(rig: Rig, providers: ProviderEntry[]): string {
+  const owner = providers.find(
+    (p) => p.id === (rig.mode === 'realtime' ? rig.realtimeProviderId : rig.ttsProviderId),
+  );
+  return owner?.acceptsVoiceId ? rig.customVoiceId.trim() : '';
+}
+
+/** The `StartConfig` this rig would send. */
 export function startConfigOf(
   rig: Rig,
   providers: ProviderEntry[],
   systemPrompt: string,
   turnDetection: StartConfig['turnDetection'],
 ): StartConfig {
-  const owner = providers.find(
-    (p) => p.id === (rig.mode === 'realtime' ? rig.realtimeProviderId : rig.ttsProviderId),
-  );
-  const voice = owner?.acceptsVoiceId && rig.customVoiceId.trim() ? rig.customVoiceId.trim() : rig.voice;
+  const voice = typedVoiceIdOf(rig, providers) || rig.voice;
 
   return {
     mode: rig.mode,

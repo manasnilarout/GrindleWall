@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { SessionIndexEntry, SessionSummary, StartConfig } from '../shared/protocol.js';
 import { config } from '../config.js';
 
@@ -203,7 +203,9 @@ export class SessionStore {
         costInr: s.costInr ?? 0,
         unpriced: s.unpriced ?? [],
         config: s.config ? withoutPrompt(s.config) : undefined,
+        promptSha256: typeof s.config?.systemPrompt === 'string' ? promptSha256(s.config.systemPrompt) : undefined,
         durationMs: s.durationMs,
+        speechSeconds: speechSecondsOf(s),
         latency: s.latency,
       };
       this.index.set(file, { mtimeMs, size, entry });
@@ -233,4 +235,28 @@ export const sessionStore = new SessionStore();
 function withoutPrompt(config: StartConfig): Omit<StartConfig, 'systemPrompt'> {
   const { systemPrompt: _prompt, ...rest } = config;
   return rest;
+}
+
+/**
+ * The index row's prompt fingerprint; see `SessionIndexEntry.promptSha256`. The
+ * prompt is hashed exactly as it was sent — no trimming — because that string
+ * is what the LLM saw. The bench's export computes the same digest in the
+ * browser, so the two must agree byte for byte.
+ */
+export function promptSha256(prompt: string): string {
+  return createHash('sha256').update(prompt, 'utf8').digest('hex');
+}
+
+/**
+ * Seconds of assistant speech; see `SessionIndexEntry.speechSeconds`. Read from
+ * the leg totals, which are summed from the per-turn rows, so it cannot
+ * disagree with the turns table. `undefined` — not 0 — when no leg reported
+ * audio, so a rate that divides by it can tell "no data" from "silent".
+ */
+export function speechSecondsOf(summary: Pick<SessionSummary, 'totals'>): number | undefined {
+  const seconds = (Array.isArray(summary.totals) ? summary.totals : [])
+    .map((leg) => leg?.audioSeconds)
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0);
+  if (seconds.length === 0) return undefined;
+  return Math.round(seconds.reduce((a, b) => a + b, 0) * 1000) / 1000;
 }

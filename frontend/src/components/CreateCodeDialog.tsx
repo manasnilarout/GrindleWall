@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { authFetch } from '../lib/auth';
 import { resolveVoice, voicesFor, type ProviderEntry } from '../lib/catalog';
-import type { SessionIndexEntry } from '../lib/protocol';
-import type { Rig } from '../lib/rigs';
+import type { SessionIndexEntry, StartConfig } from '../lib/protocol';
+import { typedVoiceIdOf, type Rig } from '../lib/rigs';
 import {
   buildVoiceStackSpec,
   checkExportable,
+  citeSessions,
   initialRows,
   mapLeg,
+  pickedVoiceFor,
   provenanceFrom,
   rowFor,
   sharedLanguages,
   type ExportCheck,
+  type ExportContext,
   type ExportLanguage,
 } from '../lib/voice-stack/export';
 import { decodeVoiceStack, encodeVoiceStack, type VoiceStackSpec } from '../lib/voice-stack/spec';
@@ -41,12 +44,21 @@ type Output =
 export function CreateCodeDialog({
   rig,
   providers,
+  systemPrompt,
+  turnDetection,
   onClose,
   sessions: injectedSessions,
   languages,
 }: {
   rig: Rig;
   providers: ProviderEntry[];
+  /**
+   * The bench's current prompt and turn detection — what every session it runs
+   * is started with. Required: the prompt picks which recorded sessions are
+   * cited, and a push-to-talk bench must not get a server-VAD code.
+   */
+  systemPrompt: string;
+  turnDetection: StartConfig['turnDetection'];
   onClose: () => void;
   /** Supplied by render-check, which cannot run the fetch effect. */
   sessions?: SessionIndexEntry[];
@@ -56,7 +68,7 @@ export function CreateCodeDialog({
   const [name, setName] = useState(rig.name);
   const [description, setDescription] = useState('');
   const [rows, setRows] = useState<Row[]>(() =>
-    languages ? languages.map((row) => ({ ...row, custom: '' })) : initialRowsWithCustom(rig, providers),
+    (languages ?? initialRows(rig, providers)).map((row) => editable(rig, providers, row)),
   );
   const [sessions, setSessions] = useState<SessionIndexEntry[] | undefined>(injectedSessions);
   const [sessionsError, setSessionsError] = useState<string>();
@@ -80,22 +92,24 @@ export function CreateCodeDialog({
   const addable = shared.filter((o) => !rows.some((r) => r.code === o.code));
   const settled = sessions !== undefined || sessionsError !== undefined;
 
-  // Computed once per sessions load, so `exportedAt` — and with it the code —
-  // does not change under the user between two copies.
-  const provenance = useMemo(
-    () => (sessions ? provenanceFrom(rig, sessions) : { source: 'grindelwald', exportedAt: new Date().toISOString() }),
-    [rig, sessions],
+  // Fixed when the dialog opens, so `exportedAt` — and with it the code — does
+  // not change under the user between two copies. The citation itself does
+  // follow the rows: which sessions count depends on each row's voice.
+  const [openedAt] = useState(() => new Date());
+  const exportRows = rows.map(({ custom, ...row }) => ({ ...row, voice: custom.trim() || row.voice }));
+  const rowsKey = JSON.stringify(exportRows);
+  const citation = useMemo(
+    () => (sessions ? citeSessions(rig, sessions, exportRows, systemPrompt) : undefined),
+    // `exportRows` is a fresh array each render; its content is `rowsKey`.
+    [rig, sessions, rowsKey, systemPrompt],
   );
+  const provenance = useMemo(() => provenanceFrom(citation, openedAt), [citation, openedAt]);
 
-  const selection = {
-    languages: rows.map(({ custom, ...row }) => ({ ...row, voice: custom.trim() || row.voice })),
-    name,
-    description,
-    provenance,
-  };
-  const checks = checkExportable(rig, providers, selection);
+  const selection = { languages: exportRows, name, description, provenance };
+  const context: ExportContext = { turnDetection, citation };
+  const checks = checkExportable(rig, providers, selection, context);
   const blocked = checks.some((c) => c.level === 'block');
-  const output = produce(blocked, settled, () => buildVoiceStackSpec(rig, providers, selection));
+  const output = produce(blocked, settled, () => buildVoiceStackSpec(rig, providers, selection, context));
 
   const update = (i: number, patch: Partial<Row>) => setRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const remove = (i: number) => setRows((prev) => prev.filter((_, j) => j !== i));
@@ -103,7 +117,7 @@ export function CreateCodeDialog({
   const add = () => {
     const option = shared.find((o) => o.code === (adding || addable[0]?.code));
     if (!option) return;
-    setRows((prev) => [...prev, { ...rowFor(rig, providers, option), custom: '' }]);
+    setRows((prev) => [...prev, editable(rig, providers, rowFor(rig, providers, option))]);
     setAdding('');
   };
 
@@ -304,14 +318,17 @@ export function CreateCodeDialog({
   );
 }
 
-function initialRowsWithCustom(rig: Rig, providers: ProviderEntry[]): Row[] {
-  const tts = providers.find((p) => p.id === rig.ttsProviderId);
-  const custom = tts?.acceptsVoiceId ? rig.customVoiceId.trim() : '';
-  // `initialRows` already folds a typed id into `voice`; split it back out so
-  // the picker shows it as the override it is.
-  return initialRows(rig, providers).map((row) =>
-    custom && row.voice === custom ? { ...row, voice: rig.voice, custom } : { ...row, custom: '' },
-  );
+/**
+ * A row as the editor holds it. `rowFor` folds the rig's typed voice id into
+ * `voice` (that is what a session sends); split it back out so the picker shows
+ * it as the override it is, over the voice the dropdown would offer for that
+ * language. Every row — the rig's own, an injected one, an added one — comes
+ * through here, so none can lose the override the others keep.
+ */
+function editable(rig: Rig, providers: ProviderEntry[], row: ExportLanguage): Row {
+  const typed = typedVoiceIdOf(rig, providers);
+  if (!typed || row.voice !== typed) return { ...row, custom: '' };
+  return { ...row, voice: pickedVoiceFor(rig, providers, row.ttsLang), custom: typed };
 }
 
 /** Encode, then decode with core's own decoder before anything is shown. */
@@ -358,10 +375,15 @@ function ProvenanceSummary({
     return <p className="banner warn inline-banner">Could not read recorded sessions ({sessionsError}). The code is exported without measurements.</p>;
   }
   if (!provenance.sessions?.length) {
-    return <p className="muted small">No recorded session ran these three legs. Run one and end the conversation to file it.</p>;
+    return (
+      <p className="muted small">
+        No recorded session matches this stack yet — same three legs, server VAD, this system prompt, and a row&apos;s language in
+        its voice. Run one and end the conversation to file it.
+      </p>
+    );
   }
-  const latency = provenance.latency as { ttfaMedianMs?: number; ttfaP95Ms?: number; basis?: string } | undefined;
-  const cost = provenance.costPerMinute as { usd?: number; inr?: number; floor?: boolean } | undefined;
+  const latency = provenance.latency as { ttfaMedianMs?: number; ttfaSessionP95MedianMs?: number; basis?: string } | undefined;
+  const cost = provenance.costPerMinute as { usd?: number; inr?: number; floor?: boolean; basis?: string } | undefined;
   return (
     <>
       <div className="stat-row cc-stats">
@@ -372,7 +394,10 @@ function ProvenanceSummary({
         {latency?.ttfaMedianMs !== undefined && (
           <span className="stat">
             <span className="stat-value">{latency.ttfaMedianMs} ms</span>
-            <span className="stat-label">TTFA median{latency.ttfaP95Ms !== undefined ? ` · p95 ${latency.ttfaP95Ms} ms` : ''}</span>
+            <span className="stat-label">
+              TTFA median
+              {latency.ttfaSessionP95MedianMs !== undefined ? ` · median session p95 ${latency.ttfaSessionP95MedianMs} ms` : ''}
+            </span>
           </span>
         )}
         {cost?.usd !== undefined && (
@@ -380,7 +405,7 @@ function ProvenanceSummary({
             <span className="stat-value">
               ${cost.usd} · ₹{cost.inr}
             </span>
-            <span className="stat-label">per minute{cost.floor ? ' (floor — a leg was unpriced)' : ''}</span>
+            <span className="stat-label">per minute of assistant speech{cost.floor ? ' (floor — a leg was unpriced)' : ''}</span>
           </span>
         )}
         <span className="stat">
@@ -388,7 +413,13 @@ function ProvenanceSummary({
           <span className="stat-label">languages spoken</span>
         </span>
       </div>
-      {latency?.basis && <p className="muted small foot">Latency is the {latency.basis}. Travels in the code as provenance; core never reads it.</p>}
+      {(latency?.basis || cost?.basis) && (
+        <p className="muted small foot">
+          {latency?.basis && <>Latency is the {latency.basis}. </>}
+          {cost?.basis && <>Cost is the {cost.basis}. </>}
+          Travels in the code as provenance; core never reads it.
+        </p>
+      )}
     </>
   );
 }

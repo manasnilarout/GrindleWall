@@ -11,6 +11,10 @@
  * `MAGIC_VOICE_CORE` (the core repo root) or the default sibling checkout, and
  * the script fails loudly when it is not there rather than leaving a stale copy
  * looking current.
+ *
+ * "Sibling" means beside THIS repo: `here` is `<repo>/frontend/scripts`, so
+ * three `..` reach the directory that holds the repo, and core is looked for
+ * there. A checkout anywhere else is reached through `MAGIC_VOICE_CORE`.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -19,7 +23,10 @@ import { fileURLToPath } from 'node:url';
 const FILES = ['spec.ts', 'language.ts', 'canonical-json.ts', 'sha256.ts', 'bytes.ts'];
 
 const here = dirname(fileURLToPath(import.meta.url));
-const coreRoot = resolve(process.env.MAGIC_VOICE_CORE ?? join(here, '..', '..', '..', '..', 'magic-voice-core'));
+// frontend/scripts → frontend → <repo> → the directory holding <repo>.
+const siblingCore = resolve(here, '..', '..', '..', 'magic-voice-core');
+const override = process.env.MAGIC_VOICE_CORE?.trim();
+const coreRoot = resolve(override || siblingCore);
 const source = join(coreRoot, 'src', 'voice-stacks');
 const target = join(here, '..', 'src', 'lib', 'voice-stack');
 
@@ -29,7 +36,12 @@ const die = (message) => {
 };
 
 if (!existsSync(source)) {
-  die(`core spec directory not found at ${source} — set MAGIC_VOICE_CORE to the magic-voice-core checkout`);
+  const from = override ? 'MAGIC_VOICE_CORE' : 'the default sibling checkout beside this repo';
+  die(
+    `core spec directory not found at ${source} (from ${from}). ` +
+      `Set MAGIC_VOICE_CORE to the magic-voice-core repo root, e.g. ` +
+      `MAGIC_VOICE_CORE=/path/to/magic-voice-core npm run sync-voice-stack-spec`,
+  );
 }
 
 const copies = FILES.map((file) => {
