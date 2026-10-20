@@ -6,11 +6,12 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { afterAll } from 'vitest';
 import WebSocket from 'ws';
 import { CATALOG } from '../../../src/providers/catalog.js';
 import type { ClientMessage, ServerMessage, StartConfig } from '../../../src/shared/protocol.js';
@@ -18,11 +19,26 @@ import type { ClientMessage, ServerMessage, StartConfig } from '../../../src/sha
 export const BACKEND_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 export const AUTH_USERNAME = 'admin@magickvoice.com';
 
-/** Every child ever spawned by this worker, killed on exit whatever happens. */
+/** Every child ever spawned by this file's tests, killed after the file whatever happens. */
 const children = new Set<ChildProcess>();
-process.on('exit', () => {
+/** Session dirs this module created (never a caller's own), removed after the file. */
+const ownDirs = new Set<string>();
+/*
+ * A file-level hook rather than `process.on('exit')`: Vitest tears its fork
+ * workers down without emitting 'exit', so an exit handler never runs. Registered
+ * at import, i.e. first, so with the default 'stack' hook order it runs after the
+ * file's own afterAll(server.stop()) hooks.
+ */
+afterAll(() => {
   for (const c of children) if (c.exitCode === null && c.signalCode === null) c.kill('SIGKILL');
+  for (const d of ownDirs) rmSync(d, { recursive: true, force: true });
 });
+
+function ownTempDir(): string {
+  const d = mkdtempSync(join(tmpdir(), 'gw-int-server-'));
+  ownDirs.add(d);
+  return d;
+}
 
 export async function freePort(): Promise<number> {
   return new Promise((res, rej) => {
@@ -97,7 +113,7 @@ export interface BootOptions {
 
 export async function bootServer(opts: BootOptions = {}): Promise<ServerHandle> {
   const port = await freePort();
-  const sessionDir = opts.sessionDir ?? mkdtempSync(join(tmpdir(), 'gw-int-server-'));
+  const sessionDir = opts.sessionDir ?? ownTempDir();
   const env = baseEnv();
   env.PORT = String(port);
   env.HOST = '127.0.0.1';
@@ -160,7 +176,7 @@ export async function bootExpectingExit(
   const env = baseEnv();
   env.PORT = String(port);
   env.HOST = '127.0.0.1';
-  env.SESSION_DIR = opts.sessionDir ?? mkdtempSync(join(tmpdir(), 'gw-int-server-'));
+  env.SESSION_DIR = opts.sessionDir ?? ownTempDir();
   for (const [k, v] of Object.entries(opts.env ?? {})) {
     if (v === undefined) delete env[k];
     else env[k] = v;

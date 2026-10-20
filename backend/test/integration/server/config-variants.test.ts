@@ -67,8 +67,9 @@ describe('SESSION_MAX_RECORDS, custom CORS_ORIGINS and USD_PER_INR', () => {
     const pricing = (await (await fetch(`${server.base}/api/pricing`)).json()) as { usdPerInr: number; inrPerUsd: number };
     expect(pricing.usdPerInr).toBe(0.0125);
     expect(pricing.inrPerUsd).toBe(80);
-    const { sessions } = (await (await fetch(`${server.base}/api/sessions`)).json()) as { sessions: SessionIndexEntry[] };
-    const detail = (await (await fetch(`${server.base}/api/sessions/${sessions[0].recordId}`)).json()) as { usdPerInr: number };
+    // Its own conversation, so this does not depend on the prune test having run first.
+    const recordId = await conversation('fx');
+    const detail = (await (await fetch(`${server.base}/api/sessions/${recordId}`)).json()) as { usdPerInr: number };
     expect(detail.usdPerInr).toBe(0.0125);
   });
 });

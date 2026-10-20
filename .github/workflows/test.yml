@@ -51,7 +51,7 @@ jobs:
           done
 
   frontend:
-    name: Frontend — typecheck, unit + component tests, render-check, build
+    name: Frontend — typecheck, unit + component tests, build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:

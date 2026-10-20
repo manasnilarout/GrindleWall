@@ -44,14 +44,14 @@ runs offline against fixtures; when the backend is up it also hits
 `GET /api/catalog` and seeds a rig from every provider.
 
 There is no linter. Verification is typecheck, the Vitest suites (`npm test` in
-each tree — no key, no network), plus the scripts in the tables below; CI
+each tree — no key, no network beyond 127.0.0.1), plus the scripts in the tables below; CI
 (`.github/workflows/test.yml`) runs all the no-key ones on every PR. Browser UI changes still need `render-check`;
 `tsc` passing is not evidence that a component renders.
 
 ## Commands
 
 ```bash
-cd backend  && npm run typecheck        # tsc --noEmit over src/ and scripts/
+cd backend  && npm run typecheck        # tsc --noEmit over src/, scripts/ and test/
 cd frontend && npm run typecheck
 cd backend  && npm test                 # vitest unit + integration (no keys)
 cd frontend && npm test                 # vitest unit + component tests

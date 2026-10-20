@@ -125,7 +125,7 @@ async function answer(rec: Recorder, cid: string, audio: Buffer = tone(60), expe
 /* ======================================================================== */
 
 describe('Nova Sonic — preamble and request shape', () => {
-  it('queues the preamble in the one order Nova accepts, with the documented shapes', async () => {
+  it('queues the preamble in the documented order, with the documented shapes (doc-derived, not measured)', async () => {
     await open();
     expect(order()).toEqual(PREAMBLE);
 

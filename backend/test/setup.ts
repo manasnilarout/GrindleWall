@@ -1,6 +1,7 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { afterAll } from 'vitest';
 
 /**
  * Runs before every test file, BEFORE any src module is imported. `config.ts`
@@ -19,10 +20,18 @@ const VENDOR_KEYS = [
   'SARVAM_API_KEY',
   'CARTESIA_API_KEY',
   'MURF_API_KEY',
+  // Catalog entries not wired up yet; blanked so readiness cannot flip either.
+  'DEEPGRAM_API_KEY',
+  'ASSEMBLYAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'GROQ_API_KEY',
   'AUTH_PASSWORD',
   'AUTH_HMAC_SECRET',
 ];
 for (const k of VENDOR_KEYS) process.env[k] = '';
 
-// Never write records into the repo's data/sessions.
-process.env.SESSION_DIR = mkdtempSync(join(tmpdir(), 'grindelwald-test-'));
+// Never write records into the repo's data/sessions. Removed again after the
+// file, so repeated local runs do not pile up temp dirs.
+const sessionDir = mkdtempSync(join(tmpdir(), 'grindelwald-test-'));
+process.env.SESSION_DIR = sessionDir;
+afterAll(() => rmSync(sessionDir, { recursive: true, force: true }));
