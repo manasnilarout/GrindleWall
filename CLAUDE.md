@@ -54,7 +54,7 @@ Verification scripts, all in `backend/`:
 | `npm run gemini:live [model\|all]` | yes | real TTFT per catalog model variant |
 | `npm run murf:probe` / `npm run murf:voices` | yes | re-measure Murf's request shape + buffering / regenerate its per-model voice catalog |
 | `npm run cartesia:voices` | yes | regenerate Cartesia's 934-voice library and re-measure which languages each Sonic model accepts |
-| `npm run sarvam:voices` | no | regenerate Bulbul v4 Flash's 222-persona table from Sarvam's Voices **doc page** — Sarvam has no voice-listing endpoint, so unlike the two above this is not vendor evidence |
+| `npm run sarvam:voices` | no (optional) | regenerate Bulbul v4 Flash's 222-persona table from Sarvam's Voices **doc page**, checked against the streaming spec's enums. We know of no voice-listing endpoint, so unlike the two above this is not vendor evidence; with `SARVAM_API_KEY` it also sends one bad speaker and diffs the live list Sarvam's docs say the 400 returns (never yet run) |
 
 And in `frontend/`: `npm run render-check` server-renders **every panel** against a real or synthetic
 session record, and — when the backend is up on :8787 — also against the live catalog, where it seeds

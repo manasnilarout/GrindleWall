@@ -87,6 +87,7 @@ that agrees with our hypotheses by construction. Live checks are `roundtrip`,
 | `npm run gemini:live [model\|all]` | real TTFT per catalog model variant |
 | `npm run murf:probe` / `npm run murf:voices` | re-measure Murf request shape + buffering / regenerate per-model voices |
 | `npm run cartesia:voices` | regenerate Cartesia's voice library and per-model language sets |
+| `npm run sarvam:voices` | regenerate Bulbul v4 Flash's persona table from Sarvam's Voices doc page (doc-derived; keyed cross-check with `SARVAM_API_KEY`) |
 | `npm run elevenlabs:buffer` | re-measure rendered audio duration per `chunk_length_schedule` / `auto_mode` |
 
 Scripts take **env vars, not flags**: `TTS`, `TTS_MODEL`, `STT`, `STT_MODEL`,
@@ -127,7 +128,7 @@ binary frames → `AudioSink`.
 |---|---|
 | `backend/src/shared/protocol.ts` | wire contract + `CANONICAL_SAMPLE_RATE`. Mirrored by copy to `frontend/src/lib/protocol.ts`. After editing it: `cd frontend && npm run sync-protocol`. Never hand-edit the frontend copy. |
 | `backend/src/providers/catalog.ts` | single source of truth for UI toggles. Read voices/languages only through `voicesFor(provider, model, language)` and `languagesFor(provider, model)` — never `entry.voices` directly. |
-| `backend/src/providers/murf-catalog.ts` / `cartesia-catalog.ts` | generated. Do not hand-edit. Regenerate with `murf:voices` / `cartesia:voices`. |
+| `backend/src/providers/murf-catalog.ts` / `cartesia-catalog.ts` / `sarvam-catalog.ts` | generated. Do not hand-edit. Regenerate with `murf:voices` / `cartesia:voices` / `sarvam:voices`. |
 | `backend/src/providers/factory.ts` | only session entry point. Validates provider id, model id, and env vars before constructing. |
 | `backend/src/pipeline/PipelineSession.ts` | turn assembly, history, barge-in, metric marks. |
 | `backend/src/metrics/TurnMetrics.ts` | one per turn; first occurrence of a mark wins. |
@@ -231,6 +232,7 @@ Do not hand-edit:
 
 - `backend/src/providers/murf-catalog.ts` — `npm run murf:voices`
 - `backend/src/providers/cartesia-catalog.ts` — `npm run cartesia:voices`
+- `backend/src/providers/sarvam-catalog.ts` — `npm run sarvam:voices`
 - `frontend/src/lib/protocol.ts` — `cd frontend && npm run sync-protocol`
 
 ## Secrets
