@@ -584,11 +584,12 @@ export const CATALOG: ProviderEntry[] = [
     implemented: true,
     envKeys: ['SARVAM_API_KEY'],
     docs: 'https://docs.sarvam.ai/api-reference/speech-to-text/transcribe/realtime/ws',
-    // The streaming spec's `model` enum is exactly `saaras:v3-realtime` and
-    // `saaras:v4` (read 2026-10-20). v4 has no `-realtime` id: this entry used to
-    // say `saaras:v4-realtime`, which the spec never listed. v4 is DOC-DERIVED —
-    // it has not completed a live call here. The spec gives both models the same
-    // language enum, so one list serves both.
+    // The streaming spec's `model` enum, read 2026-10-20, is exactly
+    // `saaras:v3-realtime` and `saaras:v4` — no v4 `-realtime` id. This entry used
+    // to offer `saaras:v4-realtime`, which that enum does not list and which was
+    // never probed here either way. v4 is DOC-DERIVED — it has not completed a
+    // live call. The spec gives both models the same language enum, so one list
+    // serves both.
     models: [
       { id: 'saaras:v3-realtime@fast', name: 'saaras:v3-realtime (fast)', note: 'Lowest latency stream_type' },
       { id: 'saaras:v3-realtime@balanced', name: 'saaras:v3-realtime (balanced)', note: 'Sarvam default — more accurate' },
@@ -866,31 +867,37 @@ export const CATALOG: ProviderEntry[] = [
     kind: 'tts',
     implemented: true,
     envKeys: ['SARVAM_API_KEY'],
-    docs: 'https://docs.sarvam.ai/api-reference-docs/text-to-speech-streaming/stream',
+    docs: 'https://docs.sarvam.ai/api-reference/text-to-speech/stream',
     // Speakers are per model, and the docs say a speaker from another model is
     // invalid. The provider-level voices and languages below are v3's (also used
     // for v3-beta); v4-flash and v2 carry their own. The streaming spec's `model`
     // enum, read 2026-10-20, is exactly bulbul:v2 / v3 / v4-flash:
     //   · bulbul:v4-flash is DOC-DERIVED — same WS contract as v3 per the spec,
     //     222 persona voices generated from the Voices guide by
-    //     `npm run sarvam:voices`, no Malayalam or Odia personas. Never run live.
-    //   · bulbul:v3-beta is no longer in that enum or anywhere in the current
-    //     docs. Kept because nothing shows the API refuses it; that is the open
-    //     question, and only a call with a key settles it.
+    //     `npm run sarvam:voices` (Sarvam's best-practices page says 224; the
+    //     other two are Assamese, whose code is not accepted yet). Its languages
+    //     here are the ones with personas: Sarvam documents ml-IN / od-IN as
+    //     accepted codes with no ml / od personas yet, so they are left out.
+    //     Never run live, and two of the config fields it is sent are disputed
+    //     between Sarvam's own pages — see SarvamTtsProvider's header.
+    //   · bulbul:v3-beta is not in that enum, nor on the Bulbul model page, the
+    //     Voices guide or the v4 Flash best-practices page (the pages checked on
+    //     2026-10-20). Kept because nothing shows the API refuses it; only a call
+    //     with a key settles it.
     //   · bulbul:v2's seven speakers are from the same spec, not measured.
     models: [
       { id: 'bulbul:v3', name: 'bulbul:v3', note: 'Streaming WS, linear16 @ 24kHz — no transcoding' },
       {
         id: 'bulbul:v4-flash',
         name: 'bulbul:v4-flash',
-        note: 'Doc-derived, not yet measured · 222 persona voices · 9 languages',
+        note: 'Doc-derived, not yet measured · 222 persona voices · 9 languages with personas',
         languages: SARVAM_V4_FLASH_LANGUAGES,
       },
-      { id: 'bulbul:v3-beta', name: 'bulbul:v3-beta', note: 'No longer in Sarvam\'s docs (2026-10-20) — unverified' },
+      { id: 'bulbul:v3-beta', name: 'bulbul:v3-beta', note: 'Not in the pages checked 2026-10-20 — unverified' },
       {
         id: 'bulbul:v2',
         name: 'bulbul:v2',
-        note: 'Previous generation, 7 voices',
+        note: 'Previous generation, 7 voices (doc-derived list)',
         voices: [
           { id: 'anushka', name: 'Anushka (f)' },
           { id: 'manisha', name: 'Manisha (f)' },

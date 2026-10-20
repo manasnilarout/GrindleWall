@@ -14,6 +14,7 @@
  * describe — the table's fidelity to the vendor is the untested part.
  */
 import { CATALOG, findProvider, languagesFor, voicesFor, type ProviderEntry } from '../src/providers/catalog.js';
+import { defaultSpeakerFor } from '../src/providers/tts/SarvamTtsProvider.js';
 
 const results: Array<[string, boolean, string?]> = [];
 const check = (n: string, ok: boolean, d?: string) => results.push([n, ok, d]);
@@ -70,19 +71,35 @@ check('cartesia: every voice id is a uuid',
 /* 4. Sarvam: speakers are per model (doc-derived — the docs say another model's
    speaker is invalid), so v4-flash must not inherit v3's names or vice versa,
    and the model ids must be the ones the streaming specs enumerate. */
+const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
 const v4Langs = languagesFor('sarvam-tts', 'bulbul:v4-flash').map((l) => l.id);
-check('sarvam: v4-flash has its own language list', v4Langs.length > 0 && v4Langs.length < 11, `${v4Langs.length}`);
-check('sarvam: v4-flash offers neither Malayalam nor Odia', !v4Langs.includes('ml-IN') && !v4Langs.includes('od-IN'));
-check('sarvam: v4-flash lands on its default persona',
-  voicesFor('sarvam-tts', 'bulbul:v4-flash', v4Langs[0])[0]?.id === 'shubh_enhi_ads');
+// The languages that HAVE v4 personas on the Voices page (2026-10-20). Sarvam
+// accepts ml-IN / od-IN as codes too, but there is no voice to offer under them.
+check('sarvam: v4-flash offers exactly the languages it has personas for',
+  sameSet(v4Langs, ['en-IN', 'hi-IN', 'bn-IN', 'ta-IN', 'te-IN', 'kn-IN', 'mr-IN', 'gu-IN', 'pa-IN']), v4Langs.join(', '));
 const v4Voices = new Set(v4Langs.flatMap((l) => voicesFor('sarvam-tts', 'bulbul:v4-flash', l).map((v) => v.id)));
-check('sarvam: v4-flash carries the 222-persona catalogue', v4Voices.size === 222, `${v4Voices.size}`);
+// A tripwire on the doc page, not on the code: 222 is the Voices page's count
+// (Sarvam's best-practices page says 224). Regenerating with a different count
+// should make someone look, not silently pass.
+check('sarvam: v4-flash carries the 222 personas the Voices page lists', v4Voices.size === 222, `${v4Voices.size}`);
 check('sarvam: every v4-flash voice is a <name>_<lang>_<style> persona',
   [...v4Voices].every((id) => /^[a-z]+_[a-z]+_[a-z_]+$/.test(id)));
 const v3Voices = voicesFor('sarvam-tts', 'bulbul:v3', 'en-IN').map((v) => v.id);
-check('sarvam: v3 and v4-flash share no speaker ids', !v3Voices.some((id) => v4Voices.has(id)));
-check("sarvam: v3's default `shubh` is not offered on v4-flash", !v4Voices.has('shubh'));
-check('sarvam: v2 has its own speakers', voicesFor('sarvam-tts', 'bulbul:v2')[0]?.id === 'anushka');
+check('sarvam: v3 and v4-flash share no speaker ids', v3Voices.length > 0 && !v3Voices.some((id) => v4Voices.has(id)));
+check('sarvam: v2 has its own seven speakers', sameSet(voicesFor('sarvam-tts', 'bulbul:v2').map((v) => v.id),
+  ['anushka', 'manisha', 'vidya', 'arya', 'abhilash', 'karun', 'hitesh']));
+// The provider's fallback speaker and the dropdown's first voice must agree,
+// or a session started without a voice and one started from the UI differ.
+check('sarvam: per-model default speakers are shubh / shubh_enhi_ads / anushka',
+  defaultSpeakerFor('bulbul:v3') === 'shubh' && defaultSpeakerFor('bulbul:v4-flash') === 'shubh_enhi_ads' &&
+  defaultSpeakerFor('bulbul:v2') === 'anushka');
+for (const m of findProvider('sarvam-tts')!.models) {
+  const head = voicesFor('sarvam-tts', m.id, languagesFor('sarvam-tts', m.id)[0]?.id)[0]?.id;
+  check(`sarvam-tts:${m.id}: the provider's default speaker is the catalog's first voice`,
+    defaultSpeakerFor(m.id) === head, `${defaultSpeakerFor(m.id)} vs ${head}`);
+}
+// A regression guard with the enum copied in by hand (read 2026-10-20) — it
+// cannot notice the spec changing; `npm run sarvam` against the API can.
 const sttBases = new Set(findProvider('sarvam-stt')!.models.map((m) => m.id.split('@')[0]));
 check('sarvam: every Saaras id is in the streaming spec enum',
   [...sttBases].every((b) => b === 'saaras:v3-realtime' || b === 'saaras:v4'), [...sttBases].join(', '));

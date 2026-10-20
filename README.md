@@ -292,7 +292,7 @@ labelled a **floor, not a bill**.
 ```bash
 cd backend  && npm run turn:selftest             # 36 checks on turn attribution and the TTFA derivation
 cd backend  && npm run usage:selftest            # 141 checks on arithmetic, persistence, redaction, per-leg latency medians and the index row
-cd backend  && npm run catalog:selftest          # 125 checks — every provider/model/language path the UI can click
+cd backend  && npm run catalog:selftest          # 127 checks — every provider/model/language path the UI can click
 cd backend  && npm run gemini:selftest           # 37 checks incl. token-usage parsing
 cd backend  && npm run murf:selftest             # 40 checks against a local fake
 cd backend  && npm run recorder:selftest         # 40 checks on the conversation recorder's timeline, against real files
@@ -308,7 +308,7 @@ cd backend  && npm run nova:rates                # re-measures Nova Sonic's publ
 cd backend  && npm run models                    # 10 checks against the vendors' free model listings (needs a key, bills nothing)
 cd backend  && npm run smoke                     # usage + summary over the real WS protocol
 cd backend  && npm run realtime:probe            # a realtime turn with real SPEECH in (needs a key, billable)
-cd frontend && npm run render-check              # 177 checks: actually renders every panel, and pins the rules
+cd frontend && npm run render-check              # 178 checks: actually renders every panel, and pins the rules
                                                  # (voice resolution, leg overlap, TTFA attribution) that only a call can prove.
                                                  # tsc did not catch this project's last UI crash. Start the backend
                                                  # and it additionally runs 12 checks against the live 26-provider catalog;
@@ -316,7 +316,7 @@ cd frontend && npm run render-check              # 177 checks: actually renders 
                                                  # and one more checks the synced voice-stack spec is byte-identical to it.
 ```
 
-890 backend checks plus 177 frontend render checks, none of which needs a key or a network — and 12
+892 backend checks plus 178 frontend render checks, none of which needs a key or a network — and 12
 further render checks when the backend happens to be up, since those read the live catalog (plus the one
 mirror check when a core checkout is reachable). (The
 102 this used to claim was the two figures added together, which the same sentence then described
@@ -360,10 +360,12 @@ TTS=sarvam-tts TTS_MODEL=bulbul:v3 STT=sarvam-stt STT_MODEL='saaras:v3-realtime@
 VOICE=ritu STT_MODEL='saaras:v4@balanced' npm run sarvam
 ```
 
-`npm run sarvam`'s model, voice and language are defaults, not fixed values: an exported
-`TTS_MODEL`, `STT_MODEL`, `VOICE` or `LANG_CODE` wins. Until 2026-10-20 the preset assigned them
+`npm run sarvam`'s models and language are defaults, not fixed values: an exported `TTS_MODEL`,
+`STT_MODEL` or `LANG_CODE` wins. The preset sets no voice at all, so an unset `VOICE` becomes the
+chosen model's first catalog voice — `shubh` on v3, `shubh_enhi_ads` on v4-flash, `anushka` on v2 —
+rather than one model's name sent to another. Until 2026-10-20 the preset assigned all four
 inline, which overrides the caller's environment, so the `VOICE=ritu …` line above silently ran
-`shubh` on `saaras:v3-realtime` — whatever it printed was never a v4 measurement.
+`shubh` on `saaras:v3-realtime`; whatever it printed was never a v4 measurement.
 
 **Bulbul v3** — 37 speakers (all selectable in the UI), 11 languages. Requested as
 `linear16` @ 24 kHz, which *is* the bench's canonical format, so audio arrives with zero
@@ -382,46 +384,77 @@ combination to test.
 ### Sarvam v4 — wired from the docs, never run
 
 `saaras:v4` and `bulbul:v4-flash` are in the catalog, and **neither has completed a live call**:
-there is no `SARVAM_API_KEY` in this checkout. Everything below was read from Sarvam's docs on
+there is no `SARVAM_API_KEY` in this checkout. Everything below was read from Sarvam's pages on
 2026-10-20, and none of it is a measurement. To measure them:
 
 ```bash
 cd backend
-TTS_MODEL=bulbul:v4-flash VOICE=shubh_enhi_ads STT_MODEL='saaras:v4@fast' npm run sarvam
+npm run sarvam:voices      # with a key, also diffs the table against the API's own speaker list
+TTS_MODEL=bulbul:v4-flash STT_MODEL='saaras:v4@fast' npm run sarvam
 ```
 
 What the docs say, and where:
 
-- **The streaming STT model id is `saaras:v4`, not `saaras:v4-realtime`.** The
+- **The streaming STT model id is `saaras:v4`.** The
   [streaming spec](https://docs.sarvam.ai/api-reference/speech-to-text/transcribe/realtime/ws.md)'s
-  `model` enum is exactly `saaras:v3-realtime` and `saaras:v4`. The catalog used to offer
-  `saaras:v4-realtime`, which that enum does not list. The spec gives both models the same
-  language enum, so v4 shares v3's list here. The "Global English" v4 adds has no language code
-  of its own in that enum. The enum also has 10 more Indic codes (`ne-IN`, `kok-IN`, `ks-IN`, …)
-  than the catalog's 14 options; they are not offered yet.
-- **`bulbul:v4-flash` is "same request/response contract as bulbul:v3"** per the
+  `model` enum, read 2026-10-20, is exactly `saaras:v3-realtime` and `saaras:v4`. The catalog
+  used to offer `saaras:v4-realtime`, which that enum does not list; that id was never probed
+  here, so whether the API took it is unknown. Saved rigs on the old id are carried over to the
+  new one (`withDefaults` in `frontend/src/lib/rigs.ts`). The spec gives both models the same
+  language enum, so v4 shares v3's list here. The "Global English" v4 adds has no language code of
+  its own in that enum. The enum also has 10 more Indic codes (`ne-IN`, `kok-IN`, `ks-IN`, …) than
+  the catalog's 14 options; they are not offered yet.
+- **`bulbul:v4-flash` is "Same request/response contract as bulbul:v3"** per the
   [TTS streaming spec](https://docs.sarvam.ai/api-reference/text-to-speech/stream.md), whose
-  `model` enum is `bulbul:v2`, `bulbul:v3`, `bulbul:v4-flash`, and it lists 24000 among the
-  socket's `speech_sample_rate` values for every model. So the provider sends v4-flash exactly
-  the config it sends v3, bar the default speaker.
-- **It has its own speakers.** 222 persona ids of the form `<name>_<language>_<style>`
+  `model` enum is `bulbul:v2`, `bulbul:v3`, `bulbul:v4-flash` and which lists 24000 among the
+  socket's `speech_sample_rate` values for every model. So the provider sends v4-flash the config
+  it sends v3, bar the default speaker.
+- **Sarvam's own pages disagree on that config.** The
+  [v4 Flash best-practices page](https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/best-practices.md)
+  gives the WebSocket `output_audio_codec` as "`wav`, `mp3` on WebSocket", and its socket examples
+  send `wav`; the provider sends `linear16`, as it does for v3. The spec's own codec text says
+  "currently supports MP3 only", which v3's measured linear16 already contradicts, so neither page
+  settles it. If the first live call refuses linear16 on v4-flash, switch that model to `wav` —
+  `stripWavHeader` already handles it. The same pages also disagree on `pitch` / `loudness`
+  (spec: "NOT supported for bulbul:v3 or bulbul:v4-flash"; best-practices: ranges for both), but
+  the provider sends neither.
+- **It has its own speakers.** Persona ids of the form `<name>_<language>_<style>`
   (`simran_en_customer`), default `shubh_enhi_ads`; the docs say v3's default `shubh` is not valid
-  on it. The provider now picks its default speaker per model (v3 `shubh`, v4-flash
-  `shubh_enhi_ads`, v2 `anushka`). Sarvam publishes no voice-listing endpoint, so
-  `npm run sarvam:voices` parses the [Voices guide](https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/voices)
-  into `src/providers/sarvam-catalog.ts` — a doc table, not an API answer like Murf's or Cartesia's.
-- **And its own languages:** personas exist for en, hi, bn, gu, kn, mr, pa, ta and te — no Malayalam
-  or Odia ("not yet offered on v4 Flash", [Bulbul model page](https://docs.sarvam.ai/api/getting-started/models/bulbul.md)).
-  The 13 English–Hindi code-mixed (`enhi`) personas have no language code; Sarvam's own examples send
-  them as `hi-IN`, and the default persona with `en-IN`, so they are offered under both. Whether a
-  persona is refused under a language other than its own is untested.
-- **`bulbul:v2` now has its own seven speakers** (`anushka` …), from the same spec. It used to be
-  offered v3's list.
-- **`bulbul:v3-beta` is an open question.** It is in no current Sarvam doc page or spec enum. It
-  stays in the catalog because nothing shows the API refusing it; one call with a key settles it.
+  on it. The provider picks its default speaker per model (v3 `shubh`, v4-flash `shubh_enhi_ads`,
+  v2 `anushka`). The [Voices guide](https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/voices)
+  lists **222**, and the spec's `speaker` enum the same 222; the best-practices page says "**224**
+  speaker IDs on the API today" and the [launch blog](https://www.sarvam.ai/blogs/bulbul-v4-flash/)
+  "224 voice and style combinations". The two extra are the best-practices roster's Assamese
+  personas, "Not in the accepted `language_code` list yet", so they are not offered.
+  `npm run sarvam:voices` builds `src/providers/sarvam-catalog.ts` from the Voices guide, drops any
+  language the spec's `language_code` enum does not list, and diffs the ids against the spec's
+  speaker enum — still a doc table, not an API answer like Murf's or Cartesia's. The route to real
+  evidence: best-practices says an unknown speaker "return[s] **400** with the live speaker list",
+  and the script makes that call when a key is present (it has never run, so the 400's shape is a
+  guess).
+- **And its own languages, meaning the ones with personas:** en, hi, bn, gu, kn, mr, pa, ta and te.
+  Sarvam's pages agree there are no Malayalam or Odia personas yet ("not yet offered on v4 Flash",
+  [Bulbul model page](https://docs.sarvam.ai/api/getting-started/models/bulbul.md)), but
+  best-practices lists all 11 `language_code` values as accepted ("`ml-IN` and `od-IN` are valid
+  codes, but the roster has no `ml` / `od` personas yet"). So the catalog's 9 is a voice gap, not a
+  vendor limit on the code.
+- **Code-mixed personas are filed by this bench, not by Sarvam.** The 13 English–Hindi (`enhi`)
+  personas have no language code. Sarvam's examples send them as `hi-IN`; offering them under
+  `en-IN` too, with `shubh_enhi_ads` first so English lands on the default persona, is our choice.
+  Whether a persona is refused under a language other than its own is untested — though the
+  [change-the-speaker-voice](https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/how-to/change-the-speaker-voice)
+  page itself sends `simran_en_customer` with `language_code="hi-IN"`.
+- **`bulbul:v2` now has its own seven speakers** (`anushka` …), from the TTS streaming spec. It
+  used to be offered v3's list.
+- **`bulbul:v3-beta` is an open question.** It is not in the TTS streaming spec's `model` enum,
+  nor on the Bulbul model page, the Voices guide or the v4 Flash best-practices page — the pages
+  checked on 2026-10-20. It stays in the catalog because nothing shows the API refusing it; one
+  call with a key settles it.
 - **Price:** ₹2.00 per 1,000 characters pay-as-you-go on [sarvam.ai/api-pricing](https://www.sarvam.ai/api-pricing)
-  (Pro ₹1.85, Growth/Business ₹1.70). The docs pricing page still lists only v3. Press reports of a
-  ₹10/10K introductory price until 2026-11-12 are not on Sarvam's page, so no promo is encoded.
+  (Pro ₹1.85, Growth/Business ₹1.70), and "₹20 per 10,000 characters" on the launch blog. The docs
+  pricing page still lists only v3. A [RuntimeWire report](https://runtimewire.com/article/sarvam-bulbul-v4-flash-pricing-launch)
+  headlines "Rs 10 per 10,000 characters through November 12th"; neither Sarvam page shows that
+  offer, so no promo is encoded.
 
 ### Everything is a WebSocket, except the LLM
 

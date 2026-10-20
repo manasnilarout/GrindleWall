@@ -83,6 +83,19 @@ export function blankRig(name: string, colorIndex: number): Rig {
 }
 
 /**
+ * Model ids the catalog has renamed, old -> new. Without this a rig saved under
+ * the old id heals to the provider's FIRST model — a different model from the
+ * one that was benched, presented as if nothing changed. Only for a rename of
+ * the same model; a withdrawn model has no entry and falls back as before.
+ */
+const RENAMED_MODELS: Record<string, string> = {
+  // Sarvam's streaming spec names v4 `saaras:v4`; the catalog offered
+  // `saaras:v4-realtime` until 2026-10-20.
+  'saaras:v4-realtime@fast': 'saaras:v4@fast',
+  'saaras:v4-realtime@balanced': 'saaras:v4@balanced',
+};
+
+/**
  * Fills any empty slot from the catalog, preferring a provider that is actually
  * wired up. Runs over restored rigs too: a rig saved when a provider was
  * registered, reopened after that provider was removed, would otherwise sit
@@ -111,7 +124,9 @@ export function withDefaults(raw: Rig, providers: ProviderEntry[]): Rig {
   const pick = (kind: ProviderEntry['kind'], providerId: string, modelId: string) => {
     const provider = known(kind, providerId) ? providerId : (first(kind)?.id ?? '');
     const models = modelsOf(provider);
-    const model = models.some((m) => m.id === modelId) ? modelId : (models[0]?.id ?? '');
+    const offered = (id: string | undefined) => !!id && models.some((m) => m.id === id);
+    const renamed = RENAMED_MODELS[modelId];
+    const model = offered(modelId) ? modelId : offered(renamed) ? renamed : (models[0]?.id ?? '');
     return { provider, model };
   };
 

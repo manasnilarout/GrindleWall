@@ -650,7 +650,7 @@ const pickerProviders: ProviderEntry[] = [
     envKeys: [], missingEnv: [], models: [{ id: 'mock-chat', name: 'Echo' }] },
   { id: 'sarvam-tts', name: 'Sarvam Bulbul', kind: 'tts', implemented: true, registered: true, ready: true,
     envKeys: ['SARVAM_API_KEY'], missingEnv: [], models: [{ id: 'bulbul:v3', name: 'bulbul:v3' }],
-    voices: [{ id: 'anushka', name: 'Anushka (f)' }], languages: [{ id: 'en-IN', name: 'English (India)' }] },
+    voices: [{ id: 'priya', name: 'Priya (f)' }], languages: [{ id: 'en-IN', name: 'English (India)' }] },
   // The Murf shape: each model brings its own voice and language list.
   { id: 'murf-tts', name: 'Murf Falcon', kind: 'tts', implemented: true, registered: true, ready: true,
     envKeys: ['MURF_API_KEY'], missingEnv: [], acceptsVoiceId: true, voiceIdHint: 'Any Murf voice id.',
@@ -721,7 +721,7 @@ const baseRig: Rig = {
   sttProviderId: 'mock-stt', sttModelId: 'mock-asr',
   llmProviderId: 'mock-llm', llmModelId: 'mock-chat',
   ttsProviderId: 'sarvam-tts', ttsModelId: 'bulbul:v3',
-  voice: 'anushka', ttsLanguage: 'en-IN',
+  voice: 'priya', ttsLanguage: 'en-IN',
 };
 const murfRig: Rig = {
   ...baseRig,
@@ -730,7 +730,7 @@ const murfRig: Rig = {
 const picker = (rig: Rig) =>
   renderToString(h(RigBuilder, { providers: pickerProviders, rig, onChange: () => {}, onClose: () => {}, disabled: false }));
 
-check('RigBuilder: a vendor with only a voice list', () => picker(baseRig), ['Voice', 'Anushka (f)']);
+check('RigBuilder: a vendor with only a voice list', () => picker(baseRig), ['Voice', 'Priya (f)']);
 
 // Realtime, offline: the voice list must come from `rig.language`. Reading the
 // wrong field resolves no language at all, and `voicesFor` then hands back the
@@ -927,7 +927,7 @@ check('RigBuilder: a live session locks every control and says why', () => {
   // The architecture toggle is the one that used to hand a Cartesia UUID to
   // OpenAI Realtime, and `marin` to ElevenLabs' voice_id path segment.
   check('an architecture switch re-resolves the voice to the owning provider', () => {
-    const rt: Rig = { ...baseRig, mode: 'pipeline', realtimeProviderId: 'openai-realtime', realtimeModelId: 'gpt-realtime-2.1', voice: 'anushka' };
+    const rt: Rig = { ...baseRig, mode: 'pipeline', realtimeProviderId: 'openai-realtime', realtimeModelId: 'gpt-realtime-2.1', voice: 'priya' };
     const withRealtime = [...pickerProviders, {
       id: 'openai-realtime', name: 'OpenAI Realtime', kind: 'realtime' as const, implemented: true,
       registered: true, ready: true, envKeys: [], missingEnv: [],
@@ -935,7 +935,7 @@ check('RigBuilder: a live session locks every control and says why', () => {
       voices: [{ id: 'marin', name: 'Marin' }],
     }];
     const next = switchMode(rt, withRealtime, 'realtime');
-    if (next.voice === 'anushka') throw new Error("a Sarvam voice survived into OpenAI Realtime");
+    if (next.voice === 'priya') throw new Error("a Sarvam voice survived into OpenAI Realtime");
     return next.voice;
   }, ['marin']);
 }
@@ -1151,7 +1151,7 @@ check('RigRail', () => renderToString(h(RigRail, {
   rig: baseRig, providers: pickerProviders, systemPrompt: 'Be brief.', turns: [pipelineTurn], locked: false,
   onEdit: () => {},
 })), ['Signal chain', '1 · Speech to text', '2 · Language model', '3 · Text to speech', 'Mock (canned)', 'bulbul:v3',
-  'STT=mock-stt', 'SYSTEM=', '>214<', 'median, to final transcript', 'voice anushka', 'Show CLI command']);
+  'STT=mock-stt', 'SYSTEM=', '>214<', 'median, to final transcript', 'voice priya', 'Show CLI command']);
 check('RigRail (realtime) is one card', () => {
   const html = renderToString(h(RigRail, {
     rig: novaRig, providers: pickerProviders, systemPrompt: '', turns: [], locked: false, onEdit: () => {},
@@ -1296,6 +1296,25 @@ check('withDefaults rejects a cross-kind slot', () => {
   if (crossed.sttProviderId === 'murf-tts') throw new Error('a TTS provider survived in the STT slot');
   return crossed.sttProviderId;
 }, ['mock-stt']);
+
+// A rig saved on `saaras:v4-realtime@…` (the catalog's id until 2026-10-20) must
+// come back on the same model under its new id, not drop to models[0] — v3.
+check('withDefaults carries a renamed model id to its new name', () => {
+  const sarvamStt: ProviderEntry = {
+    id: 'sarvam-stt', name: 'Sarvam Saaras', kind: 'stt', implemented: true, registered: true, ready: true,
+    envKeys: [], missingEnv: [],
+    models: ['saaras:v3-realtime@fast', 'saaras:v3-realtime@balanced', 'saaras:v4@fast', 'saaras:v4@balanced']
+      .map((id) => ({ id, name: id })),
+  };
+  const providers = [...pickerProviders, sarvamStt];
+  const fast = withDefaults({ ...baseRig, sttProviderId: 'sarvam-stt', sttModelId: 'saaras:v4-realtime@fast' }, providers);
+  const balanced = withDefaults({ ...baseRig, sttProviderId: 'sarvam-stt', sttModelId: 'saaras:v4-realtime@balanced' }, providers);
+  const gone = withDefaults({ ...baseRig, sttProviderId: 'sarvam-stt', sttModelId: 'saaras:v1' }, providers);
+  if (fast.sttModelId !== 'saaras:v4@fast') throw new Error(`@fast healed to ${fast.sttModelId}`);
+  if (balanced.sttModelId !== 'saaras:v4@balanced') throw new Error(`@balanced healed to ${balanced.sttModelId}`);
+  if (gone.sttModelId !== 'saaras:v3-realtime@fast') throw new Error(`an unknown id healed to ${gone.sttModelId}`);
+  return `${fast.sttModelId} ${balanced.sttModelId}`;
+}, ['saaras:v4@fast saaras:v4@balanced']);
 
 // A realtime rig is one leg, not three empty ones.
 check('slotsOf: realtime is a single leg', () => {

@@ -482,9 +482,11 @@ export const RATES: Record<string, ProviderRates> = {
     models: {
       // ₹2.00 per 1,000 characters on pay-as-you-go, the same figure for the
       // real-time, streaming and WebSocket rows (Pro ₹1.85, Growth/Business
-      // ₹1.70). Press coverage of the launch quoted a ₹10/10K introductory
-      // price until 2026-11-12; Sarvam's own page showed no such offer on
-      // 2026-10-20, so no step change is encoded.
+      // ₹1.70). Sarvam's launch blog (sarvam.ai/blogs/bulbul-v4-flash) says
+      // the same ₹20 per 10,000 characters. A third-party report
+      // (runtimewire.com/article/sarvam-bulbul-v4-flash-pricing-launch) headlines
+      // "Rs 10 per 10,000 characters through November 12th"; neither Sarvam
+      // page showed that offer on 2026-10-20, so no step change is encoded.
       'bulbul:v4-flash': {
         unit: 'characters',
         currency: 'INR',

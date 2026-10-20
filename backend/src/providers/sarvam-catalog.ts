@@ -5,12 +5,17 @@
  *
  * DOC-DERIVED, not measured: parsed from Sarvam's Voices guide
  * (https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/voices.md) on 2026-10-20.
- * Sarvam publishes no voice-listing endpoint, so unlike the Murf and Cartesia
- * tables nothing here was read from the API. 222 persona ids: 209 filed
- * under 9 languages, and 13 English–Hindi code-mixed (`enhi`) personas
- * that have no language code of their own and are offered under both en-IN and
- * hi-IN. v3's speaker names (`shubh`, `ritu`, …) are documented as invalid
- * on this model, which is why the list hangs off the model.
+ * Unlike the Murf and Cartesia tables nothing here was read from the API.
+ *
+ * 222 persona ids on that page — the streaming spec's speaker enum lists the
+ * same 222, while Sarvam's best-practices page and launch blog say 224
+ * (its roster adds two Assamese personas whose code is not yet accepted). Of
+ * those, 209 are filed under the 9 languages that HAVE personas — the
+ * spec's language_code enum also lists ml-IN and od-IN — and 13 are English–Hindi
+ * code-mixed (`enhi`) personas with no language code of their own. Offering
+ * those under both en-IN and hi-IN is this bench's choice; Sarvam's examples
+ * send them as hi-IN. v3's speaker names (`shubh`, `ritu`, …) are documented
+ * as invalid on this model, which is why the list hangs off the model.
  */
 
 import type { ModelEntry } from './catalog.js';
@@ -20,7 +25,7 @@ export const SARVAM_V4_FLASH_DEFAULT_VOICE = 'shubh_enhi_ads';
 export const SARVAM_V4_FLASH_LANGUAGES: ModelEntry[] = [
   {
     id: 'en-IN',
-    name: 'English',
+    name: 'English (India)',
     voices: [
       { id: 'shubh_enhi_ads', name: 'Shubh · ads (Hinglish)', note: 'Sarvam default persona' },
       { id: 'aditi_en_stories', name: 'Aditi · stories' },

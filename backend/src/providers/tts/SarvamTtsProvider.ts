@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import type { TtsEvents, TtsOptions, TtsProvider, TtsStream } from '../types.js';
 import { resamplePcm16, stripWavHeader } from '../../audio/pcm.js';
+import { SARVAM_V4_FLASH_DEFAULT_VOICE } from '../sarvam-catalog.js';
 
 /**
  * Sarvam Bulbul streaming TTS over WebSocket.
@@ -16,10 +17,17 @@ import { resamplePcm16, stripWavHeader } from '../../audio/pcm.js';
  * We ask for `linear16` @ 24 kHz, which is already our canonical format, so in
  * the normal case there is no transcoding or resampling at all.
  *
- * `bulbul:v4-flash` is documented as the same contract as v3 on this socket, so
- * the only per-model difference here is the default speaker: each model has its
- * own speaker catalogue and the docs say v3's `shubh` is not valid on v4-flash.
- * v4-flash has not completed a live call yet — see README "Sarvam".
+ * `bulbul:v4-flash` is documented by the streaming spec as "Same request/response
+ * contract as bulbul:v3", so the only per-model difference here is the default
+ * speaker: each model has its own speaker catalogue and the docs say v3's
+ * `shubh` is not valid on v4-flash. v4-flash has not completed a live call yet,
+ * and Sarvam's pages disagree on two fields this sends it — see README
+ * "Sarvam v4" before trusting the config below on that model:
+ *   · `output_audio_codec: 'linear16'` — the v4 Flash best-practices page lists
+ *     only `wav` / `mp3` for the WebSocket. (The spec's own codec text says "MP3
+ *     only", which v3's measured linear16 already contradicts.) If v4-flash
+ *     refuses linear16, `wav` is the fallback: `stripWavHeader` already copes.
+ *   · pitch / loudness are not sent at all, so their conflict does not apply.
  */
 
 const WS_BASE = 'wss://api.sarvam.ai/text-to-speech/ws';
@@ -28,16 +36,19 @@ const DEFAULT_LANGUAGE = 'en-IN';
 const DEFAULT_MODEL = 'bulbul:v3';
 
 /**
- * The speaker each model uses when none is chosen — the vendor's own documented
- * default per model (streaming spec, read 2026-10-20). An unlisted model falls
- * back to v3's, which is what it did before the table existed.
+ * The speaker each model uses when none is chosen, read 2026-10-20: v3's and
+ * v2's from the streaming spec's speaker description ("shubh (for bulbul:v3),
+ * anushka (for bulbul:v2)"); v4-flash's from the Voices, Bulbul and best-practices
+ * pages (the spec only says v3/v2 defaults are not valid there). An unlisted
+ * model falls back to v3's, which is what it did before the table existed.
  */
 const DEFAULT_SPEAKER: Record<string, string> = {
   'bulbul:v3': 'shubh',
-  'bulbul:v4-flash': 'shubh_enhi_ads',
+  'bulbul:v4-flash': SARVAM_V4_FLASH_DEFAULT_VOICE,
   'bulbul:v2': 'anushka',
 };
-const defaultSpeakerFor = (model: string) => DEFAULT_SPEAKER[model] ?? DEFAULT_SPEAKER[DEFAULT_MODEL];
+/** Exported so `catalog:selftest` can hold it to the catalog's own default voice. */
+export const defaultSpeakerFor = (model: string) => DEFAULT_SPEAKER[model] ?? DEFAULT_SPEAKER[DEFAULT_MODEL];
 
 /** Lower = lower time-to-first-byte, at the cost of slightly choppier prosody. */
 const MIN_BUFFER_SIZE = 50;
