@@ -32,6 +32,10 @@
     "sarvam:voices": "tsx scripts/sarvam-voices.ts",
     "smoke": "node scripts/smoke.mjs pipeline && node scripts/smoke.mjs realtime",
     "start": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:integration": "vitest run test/integration",
+    "test:unit": "vitest run test/unit",
+    "test:watch": "vitest",
     "turn:selftest": "tsx scripts/turn-selftest.ts",
     "typecheck": "tsc --noEmit",
     "usage:selftest": "tsx scripts/usage-selftest.ts"
@@ -50,6 +54,7 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.5",
     "@types/ws": "^8.5.13",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
   }
 }
