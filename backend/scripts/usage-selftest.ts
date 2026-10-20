@@ -137,7 +137,16 @@ console.log('\nSarvam — ₹30 per 10K characters (TTS) and ₹30 per hour (STT
   check('one hour of audio = ₹30', stt.cost?.amount, 30);
 }
 {
-  const stt = priceLeg(leg({ leg: 'stt', providerId: 'sarvam-stt', modelId: 'saaras:v4-realtime@balanced', unit: 'audio_seconds', inputUnits: 4, source: 'local' }));
+  // v4 Flash is priced on its own (₹2.00/1K chars, sarvam.ai/api-pricing,
+  // 2026-10-20); the older models keep the v3 rate through the fallback.
+  const v4 = priceLeg(leg({ leg: 'tts', providerId: 'sarvam-tts', modelId: 'bulbul:v4-flash', unit: 'characters', outputUnits: 10_000, source: 'local' }));
+  check('bulbul:v4-flash: 10K characters = ₹20', v4.cost?.amount, 20);
+  check('...reported in rupees', v4.cost?.currency, 'INR');
+  const beta = priceLeg(leg({ leg: 'tts', providerId: 'sarvam-tts', modelId: 'bulbul:v3-beta', unit: 'characters', outputUnits: 10_000, source: 'local' }));
+  check('bulbul:v3-beta still prices at the v3 fallback', beta.cost?.amount, 30);
+}
+{
+  const stt = priceLeg(leg({ leg: 'stt', providerId: 'sarvam-stt', modelId: 'saaras:v4@balanced', unit: 'audio_seconds', inputUnits: 4, source: 'local' }));
   check('4s of audio = ₹30 * 4/3600', stt.cost?.amount, Number(((30 / 3600) * 4).toFixed(8)));
   ok('an unlisted Saaras model still prices via the provider fallback', stt.cost !== undefined);
 }

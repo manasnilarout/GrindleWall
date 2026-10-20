@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import type { TtsEvents, TtsOptions, TtsProvider, TtsStream } from '../types.js';
 import { resamplePcm16, stripWavHeader } from '../../audio/pcm.js';
+import { SARVAM_V4_FLASH_DEFAULT_VOICE } from '../sarvam-catalog.js';
 
 /**
  * Sarvam Bulbul streaming TTS over WebSocket.
@@ -15,12 +16,39 @@ import { resamplePcm16, stripWavHeader } from '../../audio/pcm.js';
  *
  * We ask for `linear16` @ 24 kHz, which is already our canonical format, so in
  * the normal case there is no transcoding or resampling at all.
+ *
+ * `bulbul:v4-flash` is documented by the streaming spec as "Same request/response
+ * contract as bulbul:v3", so the only per-model difference here is the default
+ * speaker: each model has its own speaker catalogue and the docs say v3's
+ * `shubh` is not valid on v4-flash. v4-flash has not completed a live call yet,
+ * and Sarvam's pages disagree on two fields this sends it — see README
+ * "Sarvam v4" before trusting the config below on that model:
+ *   · `output_audio_codec: 'linear16'` — the v4 Flash best-practices page lists
+ *     only `wav` / `mp3` for the WebSocket. (The spec's own codec text says "MP3
+ *     only", which v3's measured linear16 already contradicts.) If v4-flash
+ *     refuses linear16, `wav` is the fallback: `stripWavHeader` already copes.
+ *   · pitch / loudness are not sent at all, so their conflict does not apply.
  */
 
 const WS_BASE = 'wss://api.sarvam.ai/text-to-speech/ws';
 const SARVAM_SAMPLE_RATE = 24000;
 const DEFAULT_LANGUAGE = 'en-IN';
-const DEFAULT_SPEAKER = 'shubh';
+const DEFAULT_MODEL = 'bulbul:v3';
+
+/**
+ * The speaker each model uses when none is chosen, read 2026-10-20: v3's and
+ * v2's from the streaming spec's speaker description ("shubh (for bulbul:v3),
+ * anushka (for bulbul:v2)"); v4-flash's from the Voices, Bulbul and best-practices
+ * pages (the spec only says v3/v2 defaults are not valid there). An unlisted
+ * model falls back to v3's, which is what it did before the table existed.
+ */
+const DEFAULT_SPEAKER: Record<string, string> = {
+  'bulbul:v3': 'shubh',
+  'bulbul:v4-flash': SARVAM_V4_FLASH_DEFAULT_VOICE,
+  'bulbul:v2': 'anushka',
+};
+/** Exported so `catalog:selftest` can hold it to the catalog's own default voice. */
+export const defaultSpeakerFor = (model: string) => DEFAULT_SPEAKER[model] ?? DEFAULT_SPEAKER[DEFAULT_MODEL];
 
 /** Lower = lower time-to-first-byte, at the cost of slightly choppier prosody. */
 const MIN_BUFFER_SIZE = 50;
@@ -53,7 +81,7 @@ export class SarvamTtsProvider implements TtsProvider {
     const key = opts.credentials.SARVAM_API_KEY;
     if (!key) throw new Error('SARVAM_API_KEY is not set');
 
-    const model = opts.model || 'bulbul:v3';
+    const model = opts.model || DEFAULT_MODEL;
     const url = `${WS_BASE}?model=${encodeURIComponent(model)}&send_completion_event=true`;
 
     const ws = new WebSocket(url, { headers: { 'api-subscription-key': key } });
@@ -93,7 +121,7 @@ export class SarvamTtsProvider implements TtsProvider {
           // works against either revision of the endpoint.
           language_code: opts.language || DEFAULT_LANGUAGE,
           target_language_code: opts.language || DEFAULT_LANGUAGE,
-          speaker: opts.voice || DEFAULT_SPEAKER,
+          speaker: opts.voice || defaultSpeakerFor(model),
           model,
           speech_sample_rate: String(SARVAM_SAMPLE_RATE),
           output_audio_codec: 'linear16',
