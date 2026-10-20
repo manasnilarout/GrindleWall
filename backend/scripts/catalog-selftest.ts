@@ -10,10 +10,10 @@
  * so what is checked is that every path a user can click through resolves to a
  * non-empty selection. For the generated Murf and Cartesia tables that means a
  * combination the vendor was measured to take; for the doc-derived entries
- * (Gemini speech, ElevenLabs, both OpenAI legs) it means only one the docs
+ * (Gemini speech, ElevenLabs, both OpenAI legs, Sarvam's v4 models) it means only one the docs
  * describe — the table's fidelity to the vendor is the untested part.
  */
-import { CATALOG, languagesFor, voicesFor, type ProviderEntry } from '../src/providers/catalog.js';
+import { CATALOG, findProvider, languagesFor, voicesFor, type ProviderEntry } from '../src/providers/catalog.js';
 
 const results: Array<[string, boolean, string?]> = [];
 const check = (n: string, ok: boolean, d?: string) => results.push([n, ok, d]);
@@ -67,7 +67,27 @@ check('cartesia: Hindi voices are not the English ones',
 check('cartesia: every voice id is a uuid',
   hindi.every((v) => /^[0-9a-f-]{36}$/.test(v.id)), hindi.find((v) => !/^[0-9a-f-]{36}$/.test(v.id))?.id);
 
-/* 4. a free-text voice id is only offered where a vendor was measured to take one */
+/* 4. Sarvam: speakers are per model (doc-derived — the docs say another model's
+   speaker is invalid), so v4-flash must not inherit v3's names or vice versa,
+   and the model ids must be the ones the streaming specs enumerate. */
+const v4Langs = languagesFor('sarvam-tts', 'bulbul:v4-flash').map((l) => l.id);
+check('sarvam: v4-flash has its own language list', v4Langs.length > 0 && v4Langs.length < 11, `${v4Langs.length}`);
+check('sarvam: v4-flash offers neither Malayalam nor Odia', !v4Langs.includes('ml-IN') && !v4Langs.includes('od-IN'));
+check('sarvam: v4-flash lands on its default persona',
+  voicesFor('sarvam-tts', 'bulbul:v4-flash', v4Langs[0])[0]?.id === 'shubh_enhi_ads');
+const v4Voices = new Set(v4Langs.flatMap((l) => voicesFor('sarvam-tts', 'bulbul:v4-flash', l).map((v) => v.id)));
+check('sarvam: v4-flash carries the 222-persona catalogue', v4Voices.size === 222, `${v4Voices.size}`);
+check('sarvam: every v4-flash voice is a <name>_<lang>_<style> persona',
+  [...v4Voices].every((id) => /^[a-z]+_[a-z]+_[a-z_]+$/.test(id)));
+const v3Voices = voicesFor('sarvam-tts', 'bulbul:v3', 'en-IN').map((v) => v.id);
+check('sarvam: v3 and v4-flash share no speaker ids', !v3Voices.some((id) => v4Voices.has(id)));
+check("sarvam: v3's default `shubh` is not offered on v4-flash", !v4Voices.has('shubh'));
+check('sarvam: v2 has its own speakers', voicesFor('sarvam-tts', 'bulbul:v2')[0]?.id === 'anushka');
+const sttBases = new Set(findProvider('sarvam-stt')!.models.map((m) => m.id.split('@')[0]));
+check('sarvam: every Saaras id is in the streaming spec enum',
+  [...sttBases].every((b) => b === 'saaras:v3-realtime' || b === 'saaras:v4'), [...sttBases].join(', '));
+
+/* 5. a free-text voice id is only offered where a vendor was measured to take one */
 for (const p of CATALOG.filter((e: ProviderEntry) => e.acceptsVoiceId)) {
   check(`${p.id}: explains where a voice id comes from`, !!p.voiceIdHint);
 }

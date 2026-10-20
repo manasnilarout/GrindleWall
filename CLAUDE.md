@@ -54,6 +54,7 @@ Verification scripts, all in `backend/`:
 | `npm run gemini:live [model\|all]` | yes | real TTFT per catalog model variant |
 | `npm run murf:probe` / `npm run murf:voices` | yes | re-measure Murf's request shape + buffering / regenerate its per-model voice catalog |
 | `npm run cartesia:voices` | yes | regenerate Cartesia's 934-voice library and re-measure which languages each Sonic model accepts |
+| `npm run sarvam:voices` | no | regenerate Bulbul v4 Flash's 222-persona table from Sarvam's Voices **doc page** — Sarvam has no voice-listing endpoint, so unlike the two above this is not vendor evidence |
 
 And in `frontend/`: `npm run render-check` server-renders **every panel** against a real or synthetic
 session record, and — when the backend is up on :8787 — also against the live catalog, where it seeds
@@ -110,8 +111,8 @@ Key files:
   934 voices under 44 languages. `voicesFor(provider, model, language)` and
   `languagesFor(provider, model)` are the only correct way to read them — never
   `entry.voices` directly. A shared library hangs off the provider as `voicesByLanguage` so
-  it crosses the wire once. Both vendor tables are generated (`murf-catalog.ts`,
-  `cartesia-catalog.ts`); do not hand-edit them. Served via `GET /api/catalog`
+  it crosses the wire once. The vendor tables are generated (`murf-catalog.ts`,
+  `cartesia-catalog.ts`, and Sarvam's doc-derived `sarvam-catalog.ts`); do not hand-edit them. Served via `GET /api/catalog`
   with readiness computed per env var. Entries are **measured, not assumed**: unsupported
   model/setting pairings are absent so the UI cannot produce a 400.
 - `backend/src/providers/factory.ts` — the registration point and the only session entry

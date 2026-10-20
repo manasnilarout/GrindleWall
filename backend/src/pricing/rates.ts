@@ -78,6 +78,12 @@ export const inrPerUsd = 1 / usdPerInr;
 
 const CARTESIA_SRC = 'https://docs.cartesia.ai/pricing';
 const SARVAM_SRC = 'https://docs.sarvam.ai/api/getting-started/pricing';
+/**
+ * Sarvam's marketing pricing page, not the docs one: on 2026-10-20 the docs page
+ * above still listed only Bulbul v3, and this is the only Sarvam page that
+ * prices v4 Flash.
+ */
+const SARVAM_PLANS_SRC = 'https://www.sarvam.ai/api-pricing';
 const GEMINI_SRC = 'https://ai.google.dev/gemini-api/docs/pricing';
 const MURF_SRC = 'https://help.murf.ai/murf-api-plans-and-limits';
 const OPENAI_SRC = 'https://developers.openai.com/api/docs/pricing';
@@ -473,6 +479,24 @@ export const RATES: Record<string, ProviderRates> = {
   },
 
   'sarvam-tts': {
+    models: {
+      // ₹2.00 per 1,000 characters on pay-as-you-go, the same figure for the
+      // real-time, streaming and WebSocket rows (Pro ₹1.85, Growth/Business
+      // ₹1.70). Press coverage of the launch quoted a ₹10/10K introductory
+      // price until 2026-11-12; Sarvam's own page showed no such offer on
+      // 2026-10-20, so no step change is encoded.
+      'bulbul:v4-flash': {
+        unit: 'characters',
+        currency: 'INR',
+        input: 0,
+        output: 20 / 10_000,
+        rate: '₹20 per 10K characters',
+        source: SARVAM_PLANS_SRC,
+        checkedOn: '2026-10-20',
+        confidence: 'verified',
+        note: 'Pay-as-you-go rate; Pro ₹18.50 and Growth/Business ₹17 per 10K.',
+      },
+    },
     fallback: {
       unit: 'characters',
       currency: 'INR',

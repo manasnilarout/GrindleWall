@@ -265,6 +265,7 @@ The table below is a **sample, not the file**: `openai-llm` (7 models), `openai-
 | Gemini 3.5 Flash Lite | $0.30 / $2.50 per 1M | ai.google.dev |
 | Gemini 3.1 Flash Lite | $0.25 / $1.50 per 1M | ai.google.dev |
 | Sarvam Bulbul v3 | ₹30 per 10K characters | docs.sarvam.ai |
+| Sarvam Bulbul v4 Flash | ₹20 per 10K characters (pay-as-you-go) | sarvam.ai/api-pricing, read 2026-10-20 |
 | Sarvam Saaras | ₹30 per hour of audio | docs.sarvam.ai |
 | Cartesia Sonic | ~1 credit per character | docs.cartesia.ai |
 | Cartesia Ink-2 / Ink-whisper | 3 / 1 credits per second | docs.cartesia.ai |
@@ -290,8 +291,8 @@ labelled a **floor, not a bill**.
 
 ```bash
 cd backend  && npm run turn:selftest             # 36 checks on turn attribution and the TTFA derivation
-cd backend  && npm run usage:selftest            # 138 checks on arithmetic, persistence, redaction, per-leg latency medians and the index row
-cd backend  && npm run catalog:selftest          # 114 checks — every provider/model/language path the UI can click
+cd backend  && npm run usage:selftest            # 141 checks on arithmetic, persistence, redaction, per-leg latency medians and the index row
+cd backend  && npm run catalog:selftest          # 125 checks — every provider/model/language path the UI can click
 cd backend  && npm run gemini:selftest           # 37 checks incl. token-usage parsing
 cd backend  && npm run murf:selftest             # 40 checks against a local fake
 cd backend  && npm run recorder:selftest         # 40 checks on the conversation recorder's timeline, against real files
@@ -307,15 +308,15 @@ cd backend  && npm run nova:rates                # re-measures Nova Sonic's publ
 cd backend  && npm run models                    # 10 checks against the vendors' free model listings (needs a key, bills nothing)
 cd backend  && npm run smoke                     # usage + summary over the real WS protocol
 cd backend  && npm run realtime:probe            # a realtime turn with real SPEECH in (needs a key, billable)
-cd frontend && npm run render-check              # 128 checks: actually renders every panel, and pins the rules
+cd frontend && npm run render-check              # 177 checks: actually renders every panel, and pins the rules
                                                  # (voice resolution, leg overlap, TTFA attribution) that only a call can prove.
                                                  # tsc did not catch this project's last UI crash. Start the backend
-                                                 # and it additionally runs 10 checks against the live 26-provider catalog;
+                                                 # and it additionally runs 12 checks against the live 26-provider catalog;
                                                  # reach a magic-voice-core checkout (beside this repo, or MAGIC_VOICE_CORE)
                                                  # and one more checks the synced voice-stack spec is byte-identical to it.
 ```
 
-876 backend checks plus 128 frontend render checks, none of which needs a key or a network — and 10
+890 backend checks plus 177 frontend render checks, none of which needs a key or a network — and 12
 further render checks when the backend happens to be up, since those read the live catalog (plus the one
 mirror check when a core checkout is reachable). (The
 102 this used to claim was the two figures added together, which the same sentence then described
@@ -340,8 +341,8 @@ Both Sarvam legs are wired and both run over **WebSockets**, streaming in and ou
 
 | Leg | Model | Endpoint |
 |---|---|---|
-| STT | `saaras:v3-realtime` / `v4-realtime` | `wss://api.sarvam.ai/speech-to-text-realtime/ws` |
-| TTS | `bulbul:v3` (also v3-beta, v2) | `wss://api.sarvam.ai/text-to-speech/ws` |
+| STT | `saaras:v3-realtime` / `saaras:v4` | `wss://api.sarvam.ai/speech-to-text-realtime/ws` |
+| TTS | `bulbul:v3` / `bulbul:v4-flash` (also v3-beta, v2) | `wss://api.sarvam.ai/text-to-speech/ws` |
 
 ```bash
 echo 'SARVAM_API_KEY=your_key' >> backend/.env
@@ -356,8 +357,13 @@ resampling in one shot. Pass your own text and language:
 ```bash
 TTS=sarvam-tts TTS_MODEL=bulbul:v3 STT=sarvam-stt STT_MODEL='saaras:v3-realtime@fast' \
   npx tsx scripts/roundtrip.ts "नमस्ते, आप कैसे हैं?" hi-IN
-VOICE=ritu STT_MODEL='saaras:v4-realtime@balanced' npm run sarvam
+VOICE=ritu STT_MODEL='saaras:v4@balanced' npm run sarvam
 ```
+
+`npm run sarvam`'s model, voice and language are defaults, not fixed values: an exported
+`TTS_MODEL`, `STT_MODEL`, `VOICE` or `LANG_CODE` wins. Until 2026-10-20 the preset assigned them
+inline, which overrides the caller's environment, so the `VOICE=ritu …` line above silently ran
+`shubh` on `saaras:v3-realtime` — whatever it printed was never a v4 measurement.
 
 **Bulbul v3** — 37 speakers (all selectable in the UI), 11 languages. Requested as
 `linear16` @ 24 kHz, which *is* the bench's canonical format, so audio arrives with zero
@@ -372,6 +378,50 @@ latency measurement — the honest definition of "the user stopped talking".
 
 STT and TTS languages are chosen **independently**, so `auto` in / `hi-IN` out is a valid
 combination to test.
+
+### Sarvam v4 — wired from the docs, never run
+
+`saaras:v4` and `bulbul:v4-flash` are in the catalog, and **neither has completed a live call**:
+there is no `SARVAM_API_KEY` in this checkout. Everything below was read from Sarvam's docs on
+2026-10-20, and none of it is a measurement. To measure them:
+
+```bash
+cd backend
+TTS_MODEL=bulbul:v4-flash VOICE=shubh_enhi_ads STT_MODEL='saaras:v4@fast' npm run sarvam
+```
+
+What the docs say, and where:
+
+- **The streaming STT model id is `saaras:v4`, not `saaras:v4-realtime`.** The
+  [streaming spec](https://docs.sarvam.ai/api-reference/speech-to-text/transcribe/realtime/ws.md)'s
+  `model` enum is exactly `saaras:v3-realtime` and `saaras:v4`. The catalog used to offer
+  `saaras:v4-realtime`, which that enum does not list. The spec gives both models the same
+  language enum, so v4 shares v3's list here. The "Global English" v4 adds has no language code
+  of its own in that enum. The enum also has 10 more Indic codes (`ne-IN`, `kok-IN`, `ks-IN`, …)
+  than the catalog's 14 options; they are not offered yet.
+- **`bulbul:v4-flash` is "same request/response contract as bulbul:v3"** per the
+  [TTS streaming spec](https://docs.sarvam.ai/api-reference/text-to-speech/stream.md), whose
+  `model` enum is `bulbul:v2`, `bulbul:v3`, `bulbul:v4-flash`, and it lists 24000 among the
+  socket's `speech_sample_rate` values for every model. So the provider sends v4-flash exactly
+  the config it sends v3, bar the default speaker.
+- **It has its own speakers.** 222 persona ids of the form `<name>_<language>_<style>`
+  (`simran_en_customer`), default `shubh_enhi_ads`; the docs say v3's default `shubh` is not valid
+  on it. The provider now picks its default speaker per model (v3 `shubh`, v4-flash
+  `shubh_enhi_ads`, v2 `anushka`). Sarvam publishes no voice-listing endpoint, so
+  `npm run sarvam:voices` parses the [Voices guide](https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/voices)
+  into `src/providers/sarvam-catalog.ts` — a doc table, not an API answer like Murf's or Cartesia's.
+- **And its own languages:** personas exist for en, hi, bn, gu, kn, mr, pa, ta and te — no Malayalam
+  or Odia ("not yet offered on v4 Flash", [Bulbul model page](https://docs.sarvam.ai/api/getting-started/models/bulbul.md)).
+  The 13 English–Hindi code-mixed (`enhi`) personas have no language code; Sarvam's own examples send
+  them as `hi-IN`, and the default persona with `en-IN`, so they are offered under both. Whether a
+  persona is refused under a language other than its own is untested.
+- **`bulbul:v2` now has its own seven speakers** (`anushka` …), from the same spec. It used to be
+  offered v3's list.
+- **`bulbul:v3-beta` is an open question.** It is in no current Sarvam doc page or spec enum. It
+  stays in the catalog because nothing shows the API refusing it; one call with a key settles it.
+- **Price:** ₹2.00 per 1,000 characters pay-as-you-go on [sarvam.ai/api-pricing](https://www.sarvam.ai/api-pricing)
+  (Pro ₹1.85, Growth/Business ₹1.70). The docs pricing page still lists only v3. Press reports of a
+  ₹10/10K introductory price until 2026-11-12 are not on Sarvam's page, so no promo is encoded.
 
 ### Everything is a WebSocket, except the LLM
 

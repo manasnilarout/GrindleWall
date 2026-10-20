@@ -2088,6 +2088,36 @@ const againstRealCatalog = async () => {
     }, ['/']);
   }
 
+  /*
+   * Sarvam's bulbul:v4-flash keeps its own speaker catalogue (persona ids such as
+   * `simran_en_customer`), and the docs say v3's `shubh` is not valid on it. So
+   * moving a rig from v3 to v4-flash must swap the voice, and a v3-only language
+   * (Odia) must not survive the move with an empty voice list under it.
+   */
+  const sarvamTts = providers.find((p) => p.id === 'sarvam-tts');
+  if (sarvamTts?.models.some((m) => m.id === 'bulbul:v4-flash')) {
+    const v3Rig: Rig = {
+      ...rigs[0], mode: 'pipeline', ttsProviderId: 'sarvam-tts', ttsModelId: 'bulbul:v3',
+      ttsLanguage: 'en-IN', voice: 'shubh',
+    };
+    check('switching Sarvam v3 -> v4-flash swaps v3\'s speaker for a v4 persona', () => {
+      const moved = switchVoicedModel(v3Rig, providers, 'tts', 'bulbul:v4-flash');
+      if (moved.voice === 'shubh') throw new Error('v3\'s speaker survived onto v4-flash');
+      if (moved.voice !== 'shubh_enhi_ads') throw new Error(`landed on ${moved.voice}, not the default persona`);
+      const odia = switchVoicedModel({ ...v3Rig, ttsLanguage: 'od-IN' }, providers, 'tts', 'bulbul:v4-flash');
+      if (odia.ttsLanguage === 'od-IN') throw new Error('Odia survived onto v4-flash');
+      if (!odia.voice) throw new Error('the move left no voice');
+      const back = switchVoicedModel(moved, providers, 'tts', 'bulbul:v3');
+      if (back.voice !== 'shubh') throw new Error(`moving back landed on ${back.voice}`);
+      return moved.voice;
+    }, ['shubh_enhi_ads']);
+    check('RigBuilder renders Sarvam v4-flash\'s persona voices', () =>
+      renderToString(h(RigBuilder, {
+        providers, rig: switchVoicedModel(v3Rig, providers, 'tts', 'bulbul:v4-flash'),
+        onChange: () => {}, onClose: () => {}, disabled: false,
+      })), ['Voice', 'Shubh · ads (Hinglish)']);
+  }
+
   // Every rig the UI can seed must produce a config the factory would accept.
   check('every seeded rig produces a startable config', () => {
     for (const rig of rigs) {
