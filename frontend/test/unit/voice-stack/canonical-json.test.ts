@@ -167,6 +167,16 @@ describe('canonicalJson: rejection', () => {
   // holes, so a sparse array never reaches the `undefined` check and serialises
   // as `[1,,2]` — which is not JSON — instead of throwing. Repro:
   // `canonicalJson([1, , 2])` returns "[1,,2]".
+  //
+  // Left pinned: this file is a synced copy, so the fix belongs upstream in
+  // magic-voice-core (then `npm run sync-voice-stack-spec`). The bench cannot
+  // reach it: canonicalJson is only called from spec.ts, on zod-parsed values,
+  // and zod's array parse (`[...ctx.data]`) turns any hole into `undefined`,
+  // which the element schema rejects. The only unparsed values are
+  // provenance's `latency` / `costPerMinute` passthroughs, which
+  // `provenanceFrom` builds as object literals with no arrays; every other
+  // array export.ts and CreateCodeDialog build comes from map/filter/spread
+  // over dense arrays.
   it.fails('rejects a sparse-array hole the way it rejects an undefined element', () => {
     // eslint-disable-next-line no-sparse-arrays
     expect(() => canonicalJson([1, , 2])).toThrow(CanonicalJsonError);

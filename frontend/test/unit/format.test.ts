@@ -244,10 +244,9 @@ describe('monthly', () => {
     expect(monthly(1, Infinity)).toBe('—');
   });
 
-  // BUG (src/lib/format.ts:98): totals in [999.5, 1000) take the `toFixed(0)`
-  // branch and round up to "1000" — printed without the separator that the
-  // ">= 1000" branch one cent later gives "$1,000".
-  it.fails('formats a total that rounds to 1000 the same way as 1000 itself', () => {
+  // Totals in [999.5, 1000) round to 1000, so the branch is chosen on the
+  // rounded value and they get the separator "$1,000" has too.
+  it('formats a total that rounds to 1000 the same way as 1000 itself', () => {
     expect(monthly(999.6 / 30, 1)).toBe('$1,000');
   });
 });

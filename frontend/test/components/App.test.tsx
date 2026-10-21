@@ -210,15 +210,12 @@ describe('App', () => {
     });
 
     /*
-     * BUG (minor): `addRig` takes the high-water mark of the rigs that EXIST
-     * (src/App.tsx:139), so deleting the most recently added rig hands its
-     * colour index — and letter — to the next one. `Rig.colorIndex` is
-     * documented as "Assigned on creation and never reused" (src/lib/rigs.ts:23),
-     * and the comment at App.tsx:137 says reusing a deleted rig's colour is
-     * exactly what the high-water mark is for avoiding. Repro: delete Rig C,
-     * add a rig — it is "Rig C" again, in C's colour.
+     * `addRig` takes the session's high-water mark, deleted rigs included, so
+     * deleting the most recently added rig does not hand its colour index —
+     * and letter — to the next one (`Rig.colorIndex`: "never reused within a
+     * session").
      */
-    it.fails('a colour is never reused after a delete', async () => {
+    it('a colour is never reused after a delete', async () => {
       backend();
       await onBench();
       fireEvent.click(rigItem('Rig C'));

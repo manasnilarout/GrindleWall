@@ -94,7 +94,8 @@ export function pct(part: number, whole: number): string {
 export function monthly(perTurn: number, turnsPerDay: number): string {
   const total = perTurn * turnsPerDay * 30;
   if (!Number.isFinite(total)) return '—';
-  if (total >= 1000) return `$${Math.round(total).toLocaleString('en-US')}`;
+  // Compared after rounding: $999.60 prints as "1,000", so it takes this branch.
+  if (Math.round(total) >= 1000) return `$${Math.round(total).toLocaleString('en-US')}`;
   if (total >= 10) return `$${total.toFixed(0)}`;
   return `$${total.toFixed(2)}`;
 }

@@ -130,6 +130,12 @@ export function useVoiceSession() {
    * and a derived network band for a measurement that was not its own.
    */
   const lastClientTtfa = useRef<{ token: number; ms: number } | null>(null);
+  /**
+   * The give-up timer `endConversation` arms. Held so a new conversation (and
+   * unmount) can cancel it: it only checks for 'ending', so one left over from
+   * the previous conversation would close the next one early.
+   */
+  const endTimerRef = useRef<number | undefined>(undefined);
 
   /** The config this session was started with, so log lines can be attributed. */
   const configRef = useRef<StartConfig | undefined>(undefined);
@@ -190,6 +196,7 @@ export function useVoiceSession() {
       // Left over from a previous session these would be credited to turn 1.
       pendingTtfaRef.current = null;
       lastClientTtfa.current = null;
+      window.clearTimeout(endTimerRef.current);
 
       const sink = sinkRef.current ?? new AudioSink();
       sinkRef.current = sink;
@@ -278,18 +285,15 @@ export function useVoiceSession() {
                   detail: MARK_NOTE[mark.name],
                 })),
             );
+            // Claimed before `setTurns`, not inside its updater: React may run
+            // the updater at render time, after the ref below is nulled.
+            // Only the turn still being awaited may claim the stash.
+            const clientTtfaMs = claimTtfa(lastClientTtfa.current, sink.currentToken);
+            lastClientTtfa.current = null;
             setTurns((prev) => [
               ...prev,
-              {
-                turnId: msg.turnId,
-                marks: msg.marks,
-                derived: msg.derived,
-                // Only the turn still being awaited may claim the stash.
-                clientTtfaMs: claimTtfa(lastClientTtfa.current, sink.currentToken),
-                label: labelRef.current,
-              },
+              { turnId: msg.turnId, marks: msg.marks, derived: msg.derived, clientTtfaMs, label: labelRef.current },
             ]);
-            lastClientTtfa.current = null;
             break;
           case 'usage':
             setUsage((prev) => [...prev, msg.usage]);
@@ -416,7 +420,8 @@ export function useVoiceSession() {
     await stopMic();
     sinkRef.current?.flush();
     // Don't strand the user in 'ending' if the backend dies mid-report.
-    window.setTimeout(() => {
+    window.clearTimeout(endTimerRef.current);
+    endTimerRef.current = window.setTimeout(() => {
       setState((prev) => {
         if (prev !== 'ending') return prev;
         log('warn', 'No summary came back — the conversation is still saved server-side.');
@@ -438,6 +443,7 @@ export function useVoiceSession() {
 
   useEffect(
     () => () => {
+      window.clearTimeout(endTimerRef.current);
       detach(wsRef.current);
       void recRef.current?.stop();
       void sinkRef.current?.close();

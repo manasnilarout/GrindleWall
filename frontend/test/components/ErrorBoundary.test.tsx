@@ -71,14 +71,11 @@ describe('ErrorBoundary', () => {
   });
 
   /*
-   * BUG: Retry never re-renders the children. Both buttons call
-   * `this.setState({})`, and a class component's setState MERGES — an empty
-   * patch leaves `state.error` exactly where it was, so the boundary renders
-   * the crash screen again even after the child has recovered.
-   * (src/components/ErrorBoundary.tsx:42 and :57; the fix is
-   * `this.setState({ error: undefined })`.)
+   * Retry clears `state.error`, so a recovered child renders again. An empty
+   * `setState({})` would not: a class component's setState MERGES, and an
+   * empty patch leaves the error where it was.
    */
-  it.fails('Retry renders the recovered child (panel boundary)', () => {
+  it('Retry renders the recovered child (panel boundary)', () => {
     render(
       <ErrorBoundary panel="Turns">
         <Bomb />
@@ -89,7 +86,7 @@ describe('ErrorBoundary', () => {
     expect(screen.getByText('healthy child')).toBeTruthy();
   });
 
-  it.fails('Retry render renders the recovered child (page boundary)', () => {
+  it('Retry render renders the recovered child (page boundary)', () => {
     render(
       <ErrorBoundary>
         <Bomb />
@@ -100,7 +97,7 @@ describe('ErrorBoundary', () => {
     expect(screen.getByText('healthy child')).toBeTruthy();
   });
 
-  it('recovers when remounted with a healthy child (the only way out today)', () => {
+  it('recovers when remounted with a healthy child', () => {
     const { rerender } = render(
       <ErrorBoundary key="a" panel="Cost">
         <Bomb />

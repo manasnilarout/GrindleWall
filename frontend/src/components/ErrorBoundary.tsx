@@ -22,6 +22,9 @@ export class ErrorBoundary extends Component<Props, { error?: Error }> {
     return { error };
   }
 
+  /** Clears the error so the children render again. An empty patch would merge and keep it. */
+  private retry = () => this.setState({ error: undefined });
+
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('UI crashed:', error, info.componentStack);
   }
@@ -41,7 +44,7 @@ export class ErrorBoundary extends Component<Props, { error?: Error }> {
             <strong>This panel crashed.</strong>
             <pre style={{ whiteSpace: 'pre-wrap', margin: '8px 0 0' }}>{error.message}</pre>
           </div>
-          <button type="button" className="ghost" onClick={() => this.setState({})}>
+          <button type="button" className="ghost" onClick={this.retry}>
             <Icon name="refresh" size={12} />
             Retry
           </button>
@@ -55,7 +58,7 @@ export class ErrorBoundary extends Component<Props, { error?: Error }> {
           <strong>The UI crashed.</strong>
           <pre style={{ whiteSpace: 'pre-wrap', margin: '8px 0 0' }}>{error.message}</pre>
         </div>
-        <button type="button" className="btn primary" onClick={() => this.setState({})}>
+        <button type="button" className="btn primary" onClick={this.retry}>
           <Icon name="refresh" size={12} />
           Retry render
         </button>

@@ -183,17 +183,12 @@ describe('useVoiceSession', () => {
     });
 
     /*
-     * BUG: the browser-side TTFA never reaches a turn. In the `metrics` case
-     * (src/hooks/useVoiceSession.ts:288) `claimTtfa(lastClientTtfa.current, …)`
-     * is evaluated INSIDE the `setTurns` updater, and line 292 nulls
-     * `lastClientTtfa.current` synchronously right after. The `push(...)` of
-     * the marks a few lines up has already queued a `setLogs` update on the
-     * same fiber, so React cannot compute the `setTurns` updater eagerly; it
-     * runs at render time, reads the nulled ref, and stores `undefined`.
-     * Verified by running this same test against a copy of the hook that
-     * reads the claim before calling `setTurns`: it passes there.
+     * The `metrics` case claims the stash BEFORE `setTurns`, then nulls the
+     * ref. Claimed inside the updater it read the nulled ref: the marks'
+     * `setLogs` is already queued on the same fiber, so React runs the
+     * `setTurns` updater at render time, after the null, and stored `undefined`.
      */
-    it.fails('the browser-side TTFA lands on the turn whose audio became audible', async () => {
+    it('the browser-side TTFA lands on the turn whose audio became audible', async () => {
       const now = vi.spyOn(performance, 'now');
       const { hook, ws, sink } = await connected();
       now.mockReturnValue(1000);
@@ -484,13 +479,11 @@ describe('useVoiceSession', () => {
     });
 
     /*
-     * BUG (minor): the 8 s give-up timer from `endConversation`
-     * (src/hooks/useVoiceSession.ts:419) is never cleared and is not tied to
-     * the socket it was armed for. It only checks `prev === 'ending'`, so a
-     * timer left over from conversation A closes conversation B if B is being
-     * ended when A's timer fires — B is given less than its 8 s.
+     * The 8 s give-up timer from `endConversation` only checks
+     * `prev === 'ending'`, so `connect` (and unmount) clear it: one left over
+     * from conversation A must not close conversation B before B's own 8 s.
      */
-    it.fails('a previous conversation\'s give-up timer does not cut the next one short', async () => {
+    it('a previous conversation\'s give-up timer does not cut the next one short', async () => {
       vi.useFakeTimers();
       const { hook, ws } = await connected();
       await act(async () => hook.result.current.endConversation());

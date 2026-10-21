@@ -4,6 +4,7 @@ import type { SessionSummary } from './lib/protocol';
 import {
   blankRig,
   loadRigs,
+  rigLetter,
   saveRigs,
   seedRigs,
   startConfigOf,
@@ -116,6 +117,12 @@ export function Bench({
     if (rigs.length) saveRigs(rigs, activeRigId);
   }, [rigs, activeRigId]);
 
+  /** Highest colorIndex any rig has held this session, deleted rigs included. */
+  const colorHighWater = useRef(-1);
+  useEffect(() => {
+    colorHighWater.current = rigs.reduce((max, r) => Math.max(max, r.colorIndex), colorHighWater.current);
+  }, [rigs]);
+
   const activeRig = rigs.find((r) => r.id === activeRigId);
 
   const updateRig = useCallback(
@@ -134,10 +141,11 @@ export function Bench({
    * during render.
    */
   const addRig = useCallback(() => {
-    // colorIndex is the high-water mark, not the length: reusing a deleted
-    // rig's colour would repaint a chart someone is mid-comparison on.
-    const nextIndex = rigs.reduce((max, r) => Math.max(max, r.colorIndex), -1) + 1;
-    const rig = withDefaults(blankRig(`Rig ${String.fromCharCode(65 + nextIndex)}`, nextIndex), providers);
+    // colorIndex is the session's high-water mark, not the length and not the
+    // max of the rigs left: reusing a deleted rig's colour would repaint a
+    // chart someone is mid-comparison on.
+    const nextIndex = rigs.reduce((max, r) => Math.max(max, r.colorIndex), colorHighWater.current) + 1;
+    const rig = withDefaults(blankRig(`Rig ${rigLetter({ colorIndex: nextIndex })}`, nextIndex), providers);
     setRigs((prev) => [...prev, rig]);
     setActiveRigId(rig.id);
     setView('bench');

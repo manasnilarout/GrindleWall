@@ -226,11 +226,10 @@ describe('withDefaults', () => {
     expect(JSON.stringify(input)).toBe(snapshot);
   });
 
-  // BUG (src/lib/rigs.ts:408-411): `strip` is documented as dropping
-  // "undefined/non-string fields" but only drops undefined and null, so a stored
-  // `customVoiceId: 42` survives `withDefaults` as a number and
-  // `typedVoiceIdOf` / `envCommandOf` then throw on `.trim()`.
-  it.fails('coerces a non-string field from storage to a string', () => {
+  // `strip` drops a field whose type differs from a blank rig's, so a stored
+  // `customVoiceId: 42` heals to the blank '' instead of reaching
+  // `typedVoiceIdOf` / `envCommandOf` and throwing on `.trim()`.
+  it('coerces a non-string field from storage to a string', () => {
     const healed = withDefaults({ ...rig(), customVoiceId: 42 } as unknown as Rig, PROVIDERS);
     expect(typeof healed.customVoiceId).toBe('string');
   });
@@ -794,8 +793,8 @@ describe('loadRigs / saveRigs', () => {
     expect(() => saveRigs([r1], 'rig_a')).not.toThrow();
   });
 
-  // Consequence of the `strip` bug above: a stored non-string field reaches the UI.
-  it.fails('never hands the UI a rig whose envCommandOf throws', () => {
+  // End to end through storage: a stored non-string field never reaches the UI.
+  it('never hands the UI a rig whose envCommandOf throws', () => {
     const storage = new MemoryStorage();
     storage.setItem('bench.rigs.v1', JSON.stringify({ rigs: [{ ...rig({ ttsProviderId: 'cartesia-tts' }), customVoiceId: 42 }] }));
     useStorage(storage);
