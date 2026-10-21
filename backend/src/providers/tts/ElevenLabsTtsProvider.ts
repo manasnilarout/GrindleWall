@@ -176,7 +176,7 @@ interface ElevenLabsMessage {
   audio?: string | null;
   isFinal?: boolean | null;
   is_final?: boolean | null;
-  error?: string | { message?: string; status?: string };
+  error?: string | { message?: string; status?: string } | null;
   message?: string;
   code?: number | string;
 }
@@ -281,8 +281,9 @@ export class ElevenLabsTtsProvider implements TtsProvider {
       // bare `code` as fatal means any future frame that happens to carry one
       // aborts a healthy turn and raises an error the vendor never sent.
       // Missing a real error is recoverable here (the socket close still ends
-      // the turn); inventing one is not.
-      if (msg.error !== undefined) {
+      // the turn); inventing one is not — so an explicit `error: null` counts as
+      // absent, not as a failure.
+      if (msg.error != null) {
         const detail =
           typeof msg.error === 'string'
             ? msg.error

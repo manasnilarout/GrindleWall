@@ -20,7 +20,11 @@ import type { SessionMode, StartConfig } from './protocol';
 export interface Rig {
   id: string;
   name: string;
-  /** Assigned on creation and never reused, so a rig keeps its colour on the tabs. */
+  /**
+   * Assigned on creation and never reused within a session — not even a
+   * deleted rig's — so a rig keeps its colour on the tabs. Only the index is
+   * unique: the colour wraps every `RIG_COLORS.length` and the letter every 26.
+   */
   colorIndex: number;
   mode: SessionMode;
   realtimeProviderId: string;
@@ -404,11 +408,20 @@ function sh(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Drops undefined/non-string fields so a spread cannot reintroduce a hole. */
+/** The type each field should have, read off a blank rig. */
+const BLANK: Readonly<Record<string, unknown>> = { ...blankRig('', 0) };
+
+/**
+ * Drops undefined/null fields, and any whose type differs from a blank rig's,
+ * so a spread cannot reintroduce a hole — or a `customVoiceId: 42` from storage
+ * that crashes the first `.trim()`.
+ */
 function strip(rig: Rig): Partial<Rig> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(rig)) {
-    if (value !== undefined && value !== null) out[key] = value;
+    if (value === undefined || value === null) continue;
+    if (key in BLANK && typeof value !== typeof BLANK[key]) continue;
+    out[key] = value;
   }
   return out as Partial<Rig>;
 }

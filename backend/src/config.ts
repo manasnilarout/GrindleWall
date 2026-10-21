@@ -1,7 +1,8 @@
 import 'dotenv/config';
 
 export const config = {
-  port: Number(process.env.PORT ?? 8787),
+  /** Empty or junk (`PORT=`, `PORT=abc`) is unset, never `listen(0)`'s random port. */
+  port: sanePort(process.env.PORT, 8787),
   /**
    * Bind address. Unset locally so Node keeps its dual-stack default. Containers
    * set `HOST=0.0.0.0` so the published port and compose DNS can reach it.
@@ -62,6 +63,11 @@ function sanePositive(raw: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function sanePort(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return raw?.trim() && Number.isInteger(n) && n > 0 && n <= 65_535 ? n : fallback;
+}
+
 /** Passed to every provider so no provider reads process.env directly. */
 export function credentials(): Record<string, string | undefined> {
   return { ...process.env };
@@ -76,21 +82,30 @@ export function credentials(): Record<string, string | undefined> {
  * boundary rather than trusting each adapter to be careful.
  */
 export function redactSecrets(text: string): string {
-  let out = text;
+  // value -> label. Login secrets go first so they keep their own label when an
+  // env var holds the same value.
+  const secrets = new Map<string, string>();
   // Human passwords and HMAC keys are often shorter than the floor below.
   // Always scrub the ones we actually use for the login gate.
   for (const [key, value] of [
     ['AUTH_PASSWORD', config.authPassword],
     ['AUTH_HMAC_SECRET', config.authHmacSecret],
   ] as const) {
-    if (!value) continue;
-    while (out.includes(value)) out = out.replace(value, `«${key} redacted»`);
+    if (value && !secrets.has(value)) secrets.set(value, key);
   }
   for (const [key, value] of Object.entries(process.env)) {
     // Short values produce false positives (PATH fragments, "1", locale names).
     if (!value || value.length < 12) continue;
     if (!/(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)) continue;
-    while (out.includes(value)) out = out.replace(value, `«${key} redacted»`);
+    if (!secrets.has(value)) secrets.set(value, key);
   }
-  return out;
+  if (secrets.size === 0) return text;
+  // One pass, longest value first: a short password inside an API key must not
+  // break the key apart before the key is matched, and a secret that occurs in
+  // its own «… redacted» marker must not be matched again (that looped forever).
+  const pattern = [...secrets.keys()]
+    .sort((a, b) => b.length - a.length)
+    .map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+  return text.replace(new RegExp(pattern, 'g'), (match) => `«${secrets.get(match)} redacted»`);
 }

@@ -58,6 +58,8 @@ interface Turn {
   /** Character counts, used only to estimate tokens when the vendor reports none. */
   llmInChars: number;
   llmOutChars: number;
+  /** Kept past cancel/close: what it reports billing is read when the turn drains. */
+  tts?: TtsStream;
   /** The LLM leg has finished, so its usage (if any) has arrived. */
   llmSettled: boolean;
   drained: boolean;
@@ -162,7 +164,7 @@ export class PipelineSession implements VoiceSession {
   }
 
   sendText(text: string): void {
-    if (this.closed || !text.trim()) return;
+    if (this.closed || typeof text !== 'string' || !text.trim()) return;
     this.beginTurn();
     this.turn!.metrics.mark('stt_final');
     this.ctx.events.onUserTranscript(text, true, this.turn!.id);
@@ -195,6 +197,9 @@ export class PipelineSession implements VoiceSession {
   async close(): Promise<void> {
     this.closed = true;
     this.interrupt();
+    // The record is filed as soon as this resolves, so a cut-off turn cannot
+    // wait out the LLM grace period: it is billed now, with what it has.
+    this.drainNow();
     this.flushTail();
     this.sttStream?.close();
     this.sttStream = undefined;
@@ -203,7 +208,12 @@ export class PipelineSession implements VoiceSession {
   /** Called the moment the user stops talking — t0 for every latency number. */
   private beginTurn(): void {
     // New input arriving over a live answer is barge-in, whatever the transport.
-    if (this.turn?.phase === 'running') this.interrupt();
+    // The old turn is billed now rather than after the grace period: once the
+    // next one opens, its late LLM reports are ignored anyway.
+    if (this.turn?.phase === 'running') {
+      this.interrupt();
+      this.drainNow();
+    }
     if (this.turn) return; // already pending — same turn, second signal
 
     this.turnCounter += 1;
@@ -249,7 +259,7 @@ export class PipelineSession implements VoiceSession {
       // Marked before open() so that vendor connection setup is counted in the
       // TTS number instead of silently inflating time-to-first-audio.
       metrics.mark('tts_request_sent');
-      this.ttsStream = await this.parts.tts.open(
+      const ttsStream = await this.parts.tts.open(
         {
           model: this.parts.ttsModel,
           voice: config.voice,
@@ -271,6 +281,14 @@ export class PipelineSession implements VoiceSession {
           },
         },
       );
+      // Barged in on (or closed) during the handshake: the turn is over, so
+      // its LLM must not start and this stream must not speak.
+      if (this.turn !== turn || !this.speaking) {
+        ttsStream.cancel();
+        this.settleLlm(turnId); // never called, so there is nothing to wait for
+        return;
+      }
+      this.ttsStream = turn.tts = ttsStream;
 
       turn.llmInChars = this.history.reduce((n, m) => n + m.content.length, 0);
 
@@ -362,18 +380,26 @@ export class PipelineSession implements VoiceSession {
   private requestDrain(turnId: number, audioMs?: number): void {
     const turn = this.turn;
     if (!turn || turn.id !== turnId || turn.drained) return;
+    // The first request knows how much audio was emitted; a barge-in that cuts
+    // a drain short does not, and must not erase it.
+    turn.drainAudioMs ??= audioMs;
 
     if (!turn.llmSettled && !turn.drainTimer) {
-      turn.drainAudioMs = audioMs;
       turn.drainTimer = setTimeout(() => {
         turn.drainTimer = undefined;
-        this.emitUsage(turn, audioMs);
+        this.emitUsage(turn, turn.drainAudioMs);
       }, LLM_SETTLE_GRACE_MS);
       // Don't hold the process open for a turn nobody is waiting on.
       turn.drainTimer.unref?.();
       return;
     }
-    this.emitUsage(turn, audioMs);
+    this.emitUsage(turn, turn.drainAudioMs);
+  }
+
+  /** Bills a cut-off turn still waiting on its LLM's counts, without waiting. */
+  private drainNow(): void {
+    const turn = this.turn;
+    if (turn?.phase === 'running') this.emitUsage(turn, turn.drainAudioMs);
   }
 
   /** Emits a turn's consumption exactly once. */
@@ -424,7 +450,7 @@ export class PipelineSession implements VoiceSession {
         // it arrives — but a one-shot provider that was interrupted before it
         // issued its single request sent nothing, and must not be billed for
         // the whole reply. See `billableCharacters` in types.ts.
-        outputUnits: this.ttsStream?.billableCharacters?.() ?? turn.ttsChars,
+        outputUnits: turn.tts?.billableCharacters?.() ?? turn.ttsChars,
         audioSeconds: audioMs === undefined ? undefined : round(audioMs / 1000, 3),
         source: 'local',
       },

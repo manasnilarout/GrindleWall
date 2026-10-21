@@ -219,7 +219,9 @@ const NOVA_SONIC_REGIONS: Record<string, { speech: { in: number; out: number }; 
   'us-west-2': { speech: { in: 3, out: 12 }, text: { in: 0.319, out: 2.651 } },
 };
 
-const NOVA_REGION = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'us-east-1';
+// `||`, not `??`, matching NovaSonicProvider: an EMPTY AWS_REGION is unset there,
+// so the session runs in AWS_DEFAULT_REGION and must be priced there too.
+const NOVA_REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
 
 function novaSonic(region: string): Rate | undefined {
   const r = NOVA_SONIC_REGIONS[region];
@@ -553,16 +555,20 @@ export const RATES: Record<string, ProviderRates> = {
  * produced, never the price per token, so the suffix is stripped for lookup.
  */
 export function rateFor(providerId: string, modelId: string): Rate | undefined {
-  const entry = RATES[providerId];
+  // Own keys only: `toString` / `constructor` must not resolve to a prototype member.
+  const entry = Object.hasOwn(RATES, providerId) ? RATES[providerId] : undefined;
   if (!entry) return undefined;
   const base = modelId.split('@')[0];
-  return entry.models?.[base] ?? entry.models?.[modelId] ?? entry.fallback;
+  const own = (id: string) => (entry.models && Object.hasOwn(entry.models, id) ? entry.models[id] : undefined);
+  return own(base) ?? own(modelId) ?? entry.fallback;
 }
 
 /** Applies the dated step change, if the vendor announced one and it has passed. */
 export function effective(rate: Rate, at = Date.now()): Rate {
   if (!rate.until || !rate.then) return rate;
-  if (at <= Date.parse(`${rate.until}T23:59:59Z`)) return rate;
+  // The whole `until` day is before the step, to the millisecond: it applies
+  // from 00:00:00Z the next day, not from 23:59:59Z.
+  if (at < Date.parse(`${rate.until}T00:00:00Z`) + 86_400_000) return rate;
   return {
     ...rate,
     ...rate.then,

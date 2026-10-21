@@ -47,12 +47,20 @@ export class SessionStore {
     this.maxRecords = Number.isFinite(maxRecords) && maxRecords > 0 ? Math.floor(maxRecords) : 0;
   }
 
-  /** Deletes the oldest records beyond the cap. No-op unless a cap is set. */
+  /**
+   * Deletes the oldest records beyond the cap. No-op unless a cap is set.
+   *
+   * Works from the FILENAME, never the `recordId` inside the file: the contents
+   * are untrusted, and a record saying `"recordId": "../victim"` used to make
+   * pruning unlink a file outside the store — while a copied record whose name
+   * and id disagreed was never pruned at all, so the cap was silently exceeded.
+   */
   private async prune(): Promise<void> {
     if (this.maxRecords <= 0) return;
-    const entries = await this.list();
-    for (const stale of entries.slice(this.maxRecords)) {
-      await unlink(this.path(stale.recordId)).catch(() => {});
+    const rows = await this.listRows();
+    for (const { file } of rows.slice(this.maxRecords)) {
+      // `file` came from readdir of this.dir, so it has no path separators.
+      await unlink(join(this.dir, file)).catch(() => {});
       /*
        * The recording is part of the record. Pruning the JSON and leaving the
        * WAV would quietly turn the cap into a no-op — audio is ~5.8 MB/minute
@@ -66,11 +74,11 @@ export class SessionStore {
        * saved — while SESSION_MAX_RECORDS silently stopped pruning for good.
        */
       try {
-        await unlink(this.audioPath(stale.recordId));
+        await unlink(this.audioPath(file.slice(0, -'.json'.length)));
       } catch {
         /* no recording, or an id this store will not touch */
       }
-      this.index.delete(`${stale.recordId}.json`);
+      this.index.delete(file);
     }
   }
 
@@ -155,6 +163,15 @@ export class SessionStore {
   }
 
   async list(): Promise<SessionIndexEntry[]> {
+    // The id is the filename's, so every listed entry is one `get()` can find.
+    return (await this.listRows()).map(({ file, entry }) => {
+      const recordId = file.slice(0, -'.json'.length);
+      return entry.recordId === recordId ? entry : { ...entry, recordId };
+    });
+  }
+
+  /** `list()`, newest first, keeping the file each entry was read from. */
+  private async listRows(): Promise<{ file: string; entry: SessionIndexEntry }[]> {
     try {
       await this.init();
       const files = (await readdir(this.dir)).filter((f) => f.endsWith('.json'));
@@ -162,9 +179,10 @@ export class SessionStore {
       // Drop cache entries for records that have been deleted from under us.
       const live = new Set(files);
       for (const key of this.index.keys()) if (!live.has(key)) this.index.delete(key);
-      return entries
-        .filter((e): e is SessionIndexEntry => e !== undefined)
-        .sort((a, b) => b.startedAt - a.startedAt);
+      return files
+        .map((file, i) => ({ file, entry: entries[i] }))
+        .filter((r): r is { file: string; entry: SessionIndexEntry } => r.entry !== undefined)
+        .sort((a, b) => b.entry.startedAt - a.entry.startedAt);
     } catch (err) {
       console.error('[store] cannot list records:', (err as Error).message);
       return [];
@@ -219,7 +237,9 @@ export class SessionStore {
     }
   }
 
+  /** Refuses any id that is not one this store generates, so it can never leave `dir`. */
   private path(recordId: string): string {
+    if (!isSafeId(recordId)) throw new Error(`Unsafe record id: ${recordId}`);
     return join(this.dir, `${recordId}.json`);
   }
 }

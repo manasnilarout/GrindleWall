@@ -22,6 +22,8 @@
   },
   "include": [
     "src",
-    "scripts"
+    "scripts",
+    "test",
+    "vitest.config.ts"
   ]
 }

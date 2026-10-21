@@ -1,0 +1,113 @@
+name: Tests
+
+# Every check here runs without a vendor key: unit + integration tests against
+# local fakes, the existing no-key self-tests, the WS smoke test over mock
+# providers, and the frontend render-check. None of it is vendor evidence —
+# the live probes in backend/scripts are, and they are deliberately not run.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend — typecheck, unit + integration tests, self-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Unit tests
+        run: npm run test:unit
+      - name: Integration tests
+        run: npm run test:integration
+      - name: No-key self-tests
+        run: |
+          set -e
+          for s in auth:selftest gemini:selftest usage:selftest turn:selftest catalog:selftest \
+                   murf:selftest recorder:selftest gemini:speech:selftest elevenlabs:selftest \
+                   openai:realtime:selftest nova:selftest openai:llm:selftest; do
+            echo "::group::npm run $s"
+            npm run -s "$s"
+            echo "::endgroup::"
+          done
+
+  frontend:
+    name: Frontend — typecheck, unit + component tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Protocol copy is in sync with the backend
+        run: diff -u ../backend/src/shared/protocol.ts src/lib/protocol.ts
+      - run: npm run typecheck
+      - name: Unit + component tests
+        run: npm test
+      - run: npm run build
+
+  end-to-end:
+    name: End-to-end — smoke over WS + render-check against the live catalog
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      - run: npm ci
+        working-directory: frontend
+      - name: Start backend (mock providers, no keys)
+        working-directory: backend
+        env:
+          SESSION_DIR: ${{ runner.temp }}/sessions
+        run: |
+          nohup npm start > "$RUNNER_TEMP/backend.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8787/api/health && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/backend.log"
+          exit 1
+      - name: Smoke (pipeline + realtime)
+        working-directory: backend
+        run: npm run smoke
+      - name: Render-check (fixtures + live catalog)
+        working-directory: frontend
+        run: npm run render-check
+      - name: Backend log
+        if: always()
+        run: cat "$RUNNER_TEMP/backend.log" || true

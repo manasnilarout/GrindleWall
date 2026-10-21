@@ -238,9 +238,14 @@ class OpenAiRealtimeSession implements VoiceSession {
         return;
       }
       if (this.closed) return;
+      // Nothing more can arrive or be sent, so the session is over: a later
+      // close() is then a no-op rather than relabelling the bill below.
+      this.closed = true;
       this.ctx.events.onError(new Error(`OpenAI Realtime closed unexpectedly (${detail})`));
       // The socket is gone, so no `response.done` is coming for whatever was in
-      // flight. Bill it from what we have rather than losing the turn.
+      // flight — the open turn included. End it now and bill everything from
+      // what we have rather than losing the turn.
+      if (this.active && !this.active.ended) this.endTurn(this.active);
       this.flushBilling('socket closed before the vendor reported usage');
     });
 
@@ -435,6 +440,9 @@ class OpenAiRealtimeSession implements VoiceSession {
   }
 
   private onMessage(raw: string): void {
+    // Frames already in flight when close() ran must not open turns or play
+    // audio for a session the caller has finished with.
+    if (this.closed) return;
     let msg: ServerEvent;
     try {
       msg = JSON.parse(raw);

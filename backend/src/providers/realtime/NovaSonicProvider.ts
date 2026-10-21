@@ -5,6 +5,8 @@ import {
   type InvokeModelWithBidirectionalStreamInput,
 } from '@aws-sdk/client-bedrock-runtime';
 import { NodeHttp2Handler } from '@smithy/node-http-handler';
+import { Writable } from 'node:stream';
+import { finished } from 'node:stream/promises';
 import WebSocket from 'ws';
 import type { RealtimeProvider, SessionContext, VoiceSession } from '../types.js';
 import { CANONICAL_SAMPLE_RATE, type LegUsage, type SessionMode } from '../../shared/protocol.js';
@@ -114,7 +116,7 @@ const MAX_STREAM_MS = 8 * 60_000;
 const STREAM_WARN_MS = 7 * 60_000;
 
 const HANDSHAKE_TIMEOUT_MS = 20_000;
-/** How long `close()` waits for the teardown events to be pulled. */
+/** How long `close()` waits for the teardown events to reach the wire. */
 const TEARDOWN_DRAIN_MS = 500;
 
 const delay = (ms: number) =>
@@ -212,6 +214,10 @@ export class EventQueue {
   /**
    * Resolves when `stream()` has yielded everything and reached its exit.
    *
+   * That is PULLED, not written: the SDK signs and pipes each event after it
+   * pulls it, asynchronously, so this alone is not proof anything reached the
+   * wire. `BedrockTransport.endInput()` waits on the request stream as well.
+   *
    * `close()` used to be fire-and-forget: it queued contentEnd/promptEnd/
    * sessionEnd and then called `client.destroy()` in the same synchronous run.
    * The SDK's pull is parked on a promise, and its continuation is a microtask
@@ -268,6 +274,13 @@ export class EventQueue {
 class BedrockTransport implements NovaTransport {
   private readonly queue = new EventQueue();
   private client?: BedrockRuntimeClient;
+  /**
+   * The HTTP/2 stream the request body is piped into. The SDK hands the same
+   * duplex back as the raw response body, which is where `open()` picks it up.
+   * Its `finish` is what `endInput()` waits for: the last pulled event signed,
+   * written, and the request half-closed.
+   */
+  private requestStream?: Writable;
 
   constructor(
     private readonly opts: {
@@ -330,6 +343,19 @@ class BedrockTransport implements NovaTransport {
       }),
     });
     this.client = client;
+
+    // Captures the raw response body before deserialization, so `endInput()`
+    // can wait for the request half to finish writing. Public middleware API;
+    // no request or response is altered.
+    client.middlewareStack.add(
+      (next) => async (args) => {
+        const result = await next(args);
+        const body = (result.response as { body?: unknown } | undefined)?.body;
+        if (body instanceof Writable) this.requestStream = body;
+        return result;
+      },
+      { step: 'deserialize', name: 'novaSonicCaptureRequestStream' },
+    );
 
     const response = await client.send(
       new InvokeModelWithBidirectionalStreamCommand({
@@ -394,7 +420,22 @@ class BedrockTransport implements NovaTransport {
     this.queue.close();
     // Bounded: if the stream is already dead nothing will ever drain it, and a
     // hung teardown would block the socket layer's close on a dead connection.
-    await Promise.race([this.queue.whenDrained, delay(TEARDOWN_DRAIN_MS)]);
+    await Promise.race([this.written(), delay(TEARDOWN_DRAIN_MS)]);
+  }
+
+  /**
+   * Resolves once the queue is pulled dry AND the request stream has finished
+   * writing it. Waiting on `whenDrained` alone let `destroy()` tear the HTTP/2
+   * session down while the teardown events were still being signed and piped,
+   * so none of them went out. Verified only against the local fake HTTP/2
+   * server in test/integration/vendors-realtime-llm/nova-bedrock.test.ts —
+   * never against Bedrock itself.
+   */
+  private async written(): Promise<void> {
+    await this.queue.whenDrained;
+    const req = this.requestStream;
+    if (!req) return; // never got a stream; nothing to wait on
+    await finished(req, { readable: false }).catch(() => {}); // an error or premature close also ends the wait
   }
 
   destroy(): void {
@@ -809,7 +850,8 @@ class NovaSonicSession implements VoiceSession {
     // AWAITED. The teardown events above are only queued; the SDK pulls them on
     // a microtask that cannot run until this function yields, so destroying the
     // transport in the same synchronous run meant none of the three ever
-    // reached AWS. Bounded by TEARDOWN_DRAIN_MS so a dead stream cannot hang
+    // reached AWS. endInput() waits until they are written and the request
+    // half-closed, bounded by TEARDOWN_DRAIN_MS so a dead stream cannot hang
     // the socket layer's close.
     await transport?.endInput();
     // Anything still waiting on a usage event will never get one.

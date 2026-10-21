@@ -20,12 +20,21 @@ cd backend  && npm install && cp .env.example .env && npm run dev   # :8787
 cd frontend && npm install && npm run dev                           # :5173, proxies /api + /ws to :8787
 ```
 
-Typecheck (there is no linter and no test runner — verification is via the scripts below):
+Typecheck and tests (there is no linter):
 
 ```bash
-cd backend  && npm run typecheck        # tsc --noEmit over src/ and scripts/
+cd backend  && npm run typecheck        # tsc --noEmit over src/, scripts/ and test/
 cd frontend && npm run typecheck
+cd backend  && npm test                 # vitest: test/unit + test/integration
+cd frontend && npm test                 # vitest: test/unit (node) + test/components (jsdom)
 ```
+
+The Vitest suites need no key and no network beyond 127.0.0.1: backend integration tests run
+providers against local fakes and boot the real server as a child process. Like the self-tests
+below, a green suite is **not vendor evidence**. `backend/test/setup.ts` blanks every vendor key
+and points `SESSION_DIR` at a temp dir before any module loads, so a developer's `.env` cannot
+turn a test into a billed call. `.github/workflows/test.yml` runs typecheck, both suites, the
+no-key self-tests, `smoke` and `render-check` (live catalog included) on every PR.
 
 Verification scripts, all in `backend/`:
 
