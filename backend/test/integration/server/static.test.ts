@@ -45,11 +45,10 @@ describe('STATIC_DIR: the all-in-one image serving the built UI', () => {
     }
   });
 
-  // index.ts:314 tests `req.path.startsWith('/ws')`, where the /api test beside
-  // it is exact (`=== '/api' || startsWith('/api/')`). Any client route that
-  // merely begins with the letters "ws" gets a JSON 404 instead of the shell.
-  // Low severity — no current UI route starts with "ws".
-  it.fails('a client route that only begins with "ws" still gets the shell', async () => {
+  // The /ws exclusion is exact (`=== '/ws' || startsWith('/ws/')`), like the
+  // /api one beside it, so a client route that merely begins with the letters
+  // "ws" still gets the shell rather than a JSON 404.
+  it('a client route that only begins with "ws" still gets the shell', async () => {
     const r = await fetch(`${server.base}/wsx-is-not-ws`);
     expect(r.status).toBe(200);
   });

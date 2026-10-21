@@ -183,6 +183,9 @@ export function handleSocket(ws: WebSocket): void {
       send({ type: 'error', message: 'Malformed control message' });
       return;
     }
+    // Valid JSON that is not an object (`null`, a number, a string) is no
+    // message at all; ignored, like an unknown type.
+    if (typeof msg !== 'object' || msg === null) return;
 
     switch (msg.type) {
       case 'start': {
@@ -230,12 +233,22 @@ export function handleSocket(ws: WebSocket): void {
         break;
       }
       case 'user_text':
-        session?.sendText(msg.text);
+        if (typeof msg.text === 'string') session?.sendText(msg.text);
         break;
-      case 'start_recording':
+      case 'start_recording': {
         if (!recorder) break;
-        await recorder.start();
+        const rec = recorder;
+        try {
+          await rec.start();
+        } catch (err) {
+          // Costs the recording, not the conversation: dropped, so the rest of
+          // it goes unrecorded and the end of it does not report this twice.
+          if (recorder === rec) recorder = undefined;
+          console.error(`[${socketId}] recording failed to start:`, err);
+          send({ type: 'log', level: 'warn', message: `Audio is not being recorded: ${redactSecrets((err as Error).message)}` });
+        }
         break;
+      }
       case 'commit_audio':
         session?.commitAudio();
         break;

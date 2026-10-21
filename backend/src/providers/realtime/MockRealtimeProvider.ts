@@ -61,7 +61,7 @@ class MockRealtimeSession implements VoiceSession {
   }
 
   sendText(text: string): void {
-    if (this.closed || !text.trim()) return;
+    if (this.closed || typeof text !== 'string' || !text.trim()) return;
     this.ctx.events.onUserTranscript(text, true, this.turnId + 1);
     this.respond(`You typed: ${text}. The mock realtime provider replies with a synthetic voice.`);
   }
@@ -69,12 +69,15 @@ class MockRealtimeSession implements VoiceSession {
   interrupt(): void {
     clearTimeout(this.timer);
     this.timer = undefined;
+    const emitted = (this.active?.sentBytes ?? 0) > 0;
     // A cut-off answer still consumed audio in both directions. Without this,
     // barge-in — and close(), which is what ending a conversation does — loses
     // the entire turn, and the mocks are the reference for real providers.
     this.bill();
     if (this.speaking) {
       this.speaking = false;
+      // Audio already on the wire was never heard; the recorder must drop it.
+      if (emitted) this.ctx.events.onInterrupt?.();
       this.ctx.events.onTurnEnd(this.turnId);
     }
   }

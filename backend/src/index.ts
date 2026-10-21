@@ -311,7 +311,7 @@ function serveUi(app: express.Express, dir: string): void {
     }),
   );
   app.get('*', (req, res) => {
-    if (req.path === '/api' || req.path.startsWith('/api/') || req.path.startsWith('/ws')) {
+    if (req.path === '/api' || req.path.startsWith('/api/') || req.path === '/ws' || req.path.startsWith('/ws/')) {
       res.status(404).json({ error: 'Not found' });
       return;
     }

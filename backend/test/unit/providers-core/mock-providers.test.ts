@@ -546,10 +546,9 @@ describe('MockRealtimeProvider', () => {
   });
 
   // CLAUDE.md: "both session kinds raise [onInterrupt] when audio already
-  // emitted is cut off", and the mocks are the reference implementations.
-  // MockRealtimeSession.interrupt() never calls ctx.events.onInterrupt, so the
-  // conversation recorder keeps the never-heard tail of a barged-in mock reply.
-  it.fails('barge-in after audio was emitted raises onInterrupt (BUG: the realtime mock never does)', async () => {
+  // emitted is cut off", and the mocks are the reference implementations, so
+  // the recorder can drop the never-heard tail of a barged-in mock reply.
+  it('barge-in after audio was emitted raises onInterrupt', async () => {
     const { s, rec } = session();
     s.sendText('hello');
     await vi.advanceTimersByTimeAsync(300 + 40 * 4);

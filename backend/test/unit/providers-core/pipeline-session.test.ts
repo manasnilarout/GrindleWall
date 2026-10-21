@@ -12,9 +12,6 @@
  *   - usage is counted in the unit the vendor bills; a missing vendor count is
  *     estimated and flagged 'local'
  *   - audio left over after the last turn is a tail record with only an STT leg
- *
- * Tests marked `it.fails` are genuine bugs: each states the expected behaviour
- * and currently fails. See the comment above each for the mechanism.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PipelineSession } from '../../../src/pipeline/PipelineSession.js';
@@ -736,19 +733,11 @@ describe('overlapping turns', () => {
   });
 
   /*
-   * BUG (PipelineSession.ts beginTurn, `if (this.turn) return;`): when the
-   * previous turn is running and its LLM has not settled, beginTurn()'s own
-   * interrupt() only schedules the drain (requestDrain keeps `this.turn` set for
-   * LLM_SETTLE_GRACE_MS), so the `if (this.turn) return` that is meant for "a
-   * pending turn, second signal" fires on the RUNNING turn. sendText() then
-   * reuses turn 1: a second turn_start:1, the second answer streamed under id 1,
-   * and when the grace timer fires it clears `this.turn` mid-answer, so the
-   * second answer's TTS onDone is dropped and the turn never ends. Observed:
-   * turn_start [1,1], no metrics, the second answer never billed, its TTS
-   * stream never closed; the next STT partial then reads as a barge-in and
-   * closes it as turn_end:0.
+   * The first turn's LLM has not settled, so its interrupt() only schedules a
+   * drain; beginTurn() bills it at once instead, so the new input opens turn 2
+   * rather than falling into the "already pending" early return on turn 1.
    */
-  it.fails('a second typed question while the first answer is still streaming opens turn 2 (BUG: turn 1 is reused)', async () => {
+  it('a second typed question while the first answer is still streaming opens turn 2', async () => {
     const h = pipeline();
     await h.session.start();
     const t1 = await textTurn(h, 'first');
@@ -763,12 +752,11 @@ describe('overlapping turns', () => {
   });
 
   /*
-   * BUG, same root cause: the speech-end signal that should set t0 for the next
-   * turn is swallowed by `if (this.turn) return`, so the next turn's t0 is the
-   * moment its transcript arrives — every latency number for that turn is
-   * understated by the STT leg's whole endpointing delay.
+   * Same path: the speech end opens the next turn, so its t0 is the speech end,
+   * not the moment its transcript arrives — otherwise every latency number for
+   * that turn is understated by the STT leg's whole endpointing delay.
    */
-  it.fails('a speech end over a still-streaming answer sets t0 for the next turn (BUG: t0 moves to the final)', async () => {
+  it('a speech end over a still-streaming answer sets t0 for the next turn', async () => {
     const h = pipeline();
     await h.session.start();
     const t1 = await textTurn(h, 'first');
@@ -785,14 +773,11 @@ describe('overlapping turns', () => {
   });
 
   /*
-   * BUG (PipelineSession.ts runTurn, after `await this.parts.tts.open(...)`):
-   * nothing re-checks that the turn is still current once the TTS handshake
-   * resolves. A barge-in during the handshake (100s of ms for socket vendors)
-   * leaves a dead turn that then assigns `this.ttsStream`, starts its LLM, pushes
-   * its tokens into a TTS stream nobody will close, and forwards that audio to
-   * the client after the user has cut in.
+   * runTurn() re-checks the turn once the TTS handshake resolves: a barge-in
+   * during it (100s of ms for socket vendors) cancels the fresh stream and
+   * never starts the LLM, so nothing speaks after the user has cut in.
    */
-  it.fails('a barge-in while TTS is still connecting does not start that turn’s LLM (BUG: it does)', async () => {
+  it('a barge-in while TTS is still connecting does not start that turn’s LLM', async () => {
     const h = pipeline({ tts: { openDelayMs: 200 } });
     await h.session.start();
     h.session.sendText('q');
@@ -1089,14 +1074,12 @@ describe('usage accounting', () => {
   });
 
   /*
-   * BUG (PipelineSession.ts interrupt(): `this.ttsStream = undefined` runs
-   * before requestDrain(), and emitUsage() reads
-   * `this.ttsStream?.billableCharacters?.()`): on barge-in the hook is never
-   * consulted, so a one-shot vendor (GeminiTtsProvider, which only sends on
-   * flush) is billed for the whole streamed reply although its request was
-   * never made — the exact case types.ts documents billableCharacters for.
+   * The turn keeps its own TTS stream, so billableCharacters() is consulted
+   * even after interrupt() has cancelled it: a one-shot vendor (GeminiTtsProvider,
+   * which only sends on flush) that never made its request is billed nothing —
+   * the exact case types.ts documents billableCharacters for.
    */
-  it.fails('barge-in before a one-shot TTS flushed bills the 0 chars it sent (BUG: bills every pushed char)', async () => {
+  it('barge-in before a one-shot TTS flushed bills the 0 chars it sent', async () => {
     const h = pipeline({ tts: { billable: (c) => (c.flushes ? c.texts.join('').length : 0) } });
     await h.session.start();
     const { llm } = await textTurn(h, 'q');
@@ -1107,13 +1090,11 @@ describe('usage accounting', () => {
   });
 
   /*
-   * BUG (PipelineSession.ts requestDrain(): when a drain is already waiting,
-   * the early-emit path calls `emitUsage(turn, audioMs)` with the NEW call's
-   * audioMs — undefined from interrupt() — instead of `turn.drainAudioMs`,
-   * which settleLlm() and the timer path both use). A TTS failure followed by
-   * the user speaking within the grace period loses the TTS leg's audioSeconds.
+   * A drain already waiting keeps the audio duration its first request gave
+   * it: a TTS failure followed by the user speaking within the grace period
+   * (whose interrupt() knows no duration) still bills the TTS audioSeconds.
    */
-  it.fails('a pending drain preempted by the next turn keeps its TTS audioSeconds (BUG: dropped)', async () => {
+  it('a pending drain preempted by the next turn keeps its TTS audioSeconds', async () => {
     const h = pipeline();
     await h.session.start();
     const { llm, tts } = await textTurn(h, 'q');
@@ -1239,15 +1220,11 @@ describe('tail records and close()', () => {
   });
 
   /*
-   * BUG (PipelineSession.ts close(): it calls interrupt(), whose requestDrain()
-   * only SCHEDULES the bill when the LLM has not settled — an unref'd
-   * LLM_SETTLE_GRACE_MS timer — and returns). session-socket.ts finalize()
-   * reads ledger.summary() right after `await session.close()`, so a
-   * conversation ended while the model is still streaming is saved without
-   * its last turn. turn-selftest's "Ending mid-answer" case only passes because
-   * its fake LLM has already finished.
+   * session-socket.ts finalize() reads ledger.summary() right after `await
+   * session.close()`, so close() bills a cut-off turn at once rather than after
+   * the LLM grace period — otherwise the record is saved without its last turn.
    */
-  it.fails('close() while the LLM is still streaming bills the turn before close() resolves (BUG: 750ms later)', async () => {
+  it('close() while the LLM is still streaming bills the turn before close() resolves', async () => {
     const h = pipeline();
     await h.session.start();
     const { llm } = await textTurn(h, 'hello');

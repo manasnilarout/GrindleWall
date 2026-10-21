@@ -159,13 +159,10 @@ describe('control-message and start errors', () => {
 });
 
 /*
- * ---------------------------------------------------------------------------
- * Known bugs. Each is `it.fails`: the assertion states the CORRECT behaviour,
- * and the test passes for as long as the server gets it wrong. Each crash case
- * boots its own server, because the bug takes the whole process down.
- * ---------------------------------------------------------------------------
+ * Each case boots its own server: each was once a single control frame that
+ * took the whole process down, and a regression would again.
  */
-describe('known bugs: a single control frame crashes the whole server', () => {
+describe('a single control frame cannot crash the server', () => {
   async function withServer(fn: (server: ServerHandle) => Promise<void>, env: Record<string, string> = {}, sessionDir?: string) {
     const server = await bootServer({ env, sessionDir });
     try {
@@ -175,10 +172,10 @@ describe('known bugs: a single control frame crashes the whole server', () => {
     }
   }
 
-  // session-socket.ts:187 — `JSON.parse('null')` succeeds, then `msg.type`
-  // throws inside the async 'message' handler; the rejection is unhandled and
-  // Node exits. Any client can send it, before or after `start`.
-  it.fails('the JSON literal null is ignored like any other non-message', async () => {
+  // `JSON.parse('null')` succeeds, so session-socket.ts checks the parsed value
+  // is an object before reading `msg.type`; an unhandled rejection in the async
+  // 'message' handler would exit Node. Any client can send it.
+  it('the JSON literal null is ignored like any other non-message', async () => {
     await withServer(async (server) => {
       const ws = await WsClient.connect(server.wsUrl);
       ws.send('null');
@@ -187,10 +184,9 @@ describe('known bugs: a single control frame crashes the whole server', () => {
     });
   });
 
-  // MockRealtimeProvider.ts:64 / PipelineSession.ts:165 — `text.trim()` on an
-  // absent or non-string `text`, reached from session-socket.ts:233 without a
-  // guard. Same unhandled rejection, same exit.
-  it.fails('user_text without a string text is ignored', async () => {
+  // Checked at the socket, and again in each session's sendText(), so
+  // `text.trim()` is never reached with an absent or non-string `text`.
+  it('user_text without a string text is ignored', async () => {
     await withServer(async (server) => {
       const ws = await WsClient.connect(server.wsUrl);
       ws.send({ type: 'start', config: pipelineConfig('x') });
@@ -202,11 +198,10 @@ describe('known bugs: a single control frame crashes the whole server', () => {
     });
   });
 
-  // session-socket.ts:236-238 — `await recorder.start()` is unguarded, and
   // SessionRecorder.start() rethrows a failed mkdir/open. With SESSION_DIR
-  // unusable (here: a regular file) the first `start_recording` exits Node
-  // instead of costing only the recording.
-  it.fails('a recorder that cannot open its files costs the recording, not the process', async () => {
+  // unusable (here: a regular file) `start_recording` costs only the
+  // recording: warned about, and the conversation carries on unrecorded.
+  it('a recorder that cannot open its files costs the recording, not the process', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'gw-int-badir-'));
     const notADir = join(parent, 'not-a-dir');
     writeFileSync(notADir, 'x');
@@ -216,7 +211,6 @@ describe('known bugs: a single control frame crashes the whole server', () => {
         ws.send({ type: 'start', config: realtimeConfig('x') });
         await ws.next('session_started');
         ws.send({ type: 'start_recording' });
-        // Correct behaviour would be a warn log and a conversation that carries on.
         await ws.seen('log', (l) => l.level === 'warn', 5_000);
         await expectStillServing(server, ws);
         await ws.close();
@@ -227,7 +221,7 @@ describe('known bugs: a single control frame crashes the whole server', () => {
   });
 });
 
-describe('known bugs: a pipeline turn cut off by the end of its conversation is never billed', () => {
+describe('a pipeline turn cut off by the end of its conversation is still billed', () => {
   let server: ServerHandle;
   beforeAll(async () => {
     server = await bootServer();
@@ -251,14 +245,11 @@ describe('known bugs: a pipeline turn cut off by the end of its conversation is 
     await ws.close();
   });
 
-  // PipelineSession.interrupt() (called by close()) aborts the LLM and then
-  // calls requestDrain(); with the LLM unsettled that defers emitUsage by
-  // LLM_SETTLE_GRACE_MS (750 ms, PipelineSession.ts:32). session-socket.ts
-  // finalize() builds and files the summary immediately after `await
-  // session.close()`, so the turn — which ran and produced audio — is missing
-  // from the summary and the record; 750 ms later onUsage finds no ledger and
-  // only logs "arrived after the conversation was closed out".
-  it.fails('end_conversation mid-answer bills the turn that was playing', async () => {
+  // With the LLM unsettled, interrupt() alone would defer the bill by
+  // LLM_SETTLE_GRACE_MS; PipelineSession.close() bills it at once, because
+  // session-socket.ts finalize() files the summary right after `await
+  // session.close()`.
+  it('end_conversation mid-answer bills the turn that was playing', async () => {
     const ws = await WsClient.connect(server.wsUrl);
     ws.send({ type: 'start', config: pipelineConfig(uniquePrompt('pipe-cut')) });
     await ws.next('session_started');
@@ -270,9 +261,9 @@ describe('known bugs: a pipeline turn cut off by the end of its conversation is 
     await ws.close();
   });
 
-  // Same root cause on the socket-close path: finish() persists before the
-  // drain timer fires, the ledger has 0 turns, so nothing is filed at all.
-  it.fails('a tab closed mid-answer still files the turn that was playing', async () => {
+  // The socket-close path: finish() persists right after close(), so the turn
+  // has to be on the ledger by then or nothing is filed at all.
+  it('a tab closed mid-answer still files the turn that was playing', async () => {
     const ws = await WsClient.connect(server.wsUrl);
     const prompt = uniquePrompt('pipe-vanish');
     ws.send({ type: 'start', config: pipelineConfig(prompt) });
@@ -284,11 +275,10 @@ describe('known bugs: a pipeline turn cut off by the end of its conversation is 
     expect(row.turnCount).toBe(1);
   });
 
-  // Worse on the replace path: `events` closes over the socket's `ledger`
-  // variable, so when the old session's deferred usage fires it is billed into
-  // the NEW conversation — here a realtime one, which acquires a pipeline turn
-  // with stt/llm/tts legs that it never ran.
-  it.fails('replacing a session mid-answer does not bill its turn to the next conversation', async () => {
+  // The replace path: `events` closes over the socket's `ledger` variable, so a
+  // usage report deferred past close() would be billed into the NEW
+  // conversation — here a realtime one, acquiring stt/llm/tts legs it never ran.
+  it('replacing a session mid-answer does not bill its turn to the next conversation', async () => {
     const ws = await WsClient.connect(server.wsUrl);
     ws.send({ type: 'start', config: pipelineConfig(uniquePrompt('pipe-replaced')) });
     await ws.next('session_started');
