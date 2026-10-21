@@ -200,15 +200,19 @@ describe('AWS Nova Sonic: per-region rates resolved from the environment', () =>
   });
 
   /*
-   * BUG (minor): NovaSonicProvider.ts:648 resolves the region with `||`, so an
-   * EMPTY AWS_REGION (e.g. `AWS_REGION=` left blank in .env) falls through to
-   * AWS_DEFAULT_REGION / us-east-1 and the session runs there. rates.ts:222
-   * uses `??`, so the same environment resolves the region to '' and the leg
-   * goes unpriced. The two disagree about where the session ran.
+   * Was a bug: NovaSonicProvider resolves the region with `||`, so an EMPTY
+   * AWS_REGION falls through to AWS_DEFAULT_REGION / us-east-1, while rates.ts
+   * used `??`, resolved '' and left the leg unpriced. rates.ts now uses `||` with
+   * the provider's default, so both agree on where the session ran.
    */
-  it.fails('an empty AWS_REGION falls through to AWS_DEFAULT_REGION, as the provider does', async () => {
+  it('an empty AWS_REGION falls through to AWS_DEFAULT_REGION, as the provider does', async () => {
     const r = await loadRates({ AWS_REGION: '', AWS_DEFAULT_REGION: 'ap-northeast-1' });
     expect(r.rateFor('aws-nova-sonic', NOVA)?.rate).toContain('(ap-northeast-1)');
+  });
+
+  it('an empty AWS_REGION and AWS_DEFAULT_REGION fall through to the provider default, us-east-1', async () => {
+    const r = await loadRates({ AWS_REGION: '', AWS_DEFAULT_REGION: '' });
+    expect(r.rateFor('aws-nova-sonic', NOVA)?.rate).toContain('(us-east-1)');
   });
 
   it('carries no cached-token tier: cached speech is billed at the full speech rate', async () => {
@@ -293,16 +297,14 @@ describe('rateFor', () => {
   });
 
   /*
-   * BUG (latent, minor): rates.ts:559 indexes plain object literals, so a model
-   * id equal to an Object.prototype member resolves to that member — a FUNCTION
-   * returned as a `Rate`. On a provider with a fallback (elevenlabs-tts) it
-   * also shadows the fallback the model should have been priced at. The
-   * factory validates model ids before a session starts, so it is unreachable
-   * from the UI today.
+   * Was a latent bug: rateFor indexed plain object literals, so a model id equal
+   * to an Object.prototype member resolved to that member, a FUNCTION returned
+   * as a `Rate`. Lookups are now own-key only (`Object.hasOwn`).
    */
-  it.fails('a model id equal to an Object.prototype member is not returned as a rate', async () => {
+  it('a model id equal to an Object.prototype member is not returned as a rate', async () => {
     const r = await loadRates();
     expect(r.rateFor('google-llm', 'toString')).toBeUndefined();
+    expect(r.rateFor('google-llm', '__proto__')).toBeUndefined();
   });
 });
 
@@ -337,11 +339,11 @@ describe('effective (dated step changes)', () => {
   });
 
   /*
-   * BUG (negligible): rates.ts:565 compares against `${until}T23:59:59Z`, so the
-   * last 999 ms of the `until` day already get the post-step rate. The doc says
-   * "Past this ISO date `then` applies"; 23:59:59.5 on the 31st is not past it.
+   * Was a bug: effective() compared against `${until}T23:59:59Z`, so the last
+   * 999 ms of the `until` day got the post-step rate. The whole `until` day now
+   * keeps the promo; the step applies from 00:00:00Z the next day.
    */
-  it.fails('the promo still applies in the last second of 2026-12-31', async () => {
+  it('the promo still applies in the last second of 2026-12-31', async () => {
     const r = await loadRates();
     expect(r.effective(r.rateFor('google-llm', 'gemini-3.8-flash')!, STEP_BOUNDARY + 500).input).toBe(0.75 / 1e6);
   });

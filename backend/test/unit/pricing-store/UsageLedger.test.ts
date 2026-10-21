@@ -353,19 +353,20 @@ describe('UsageLedger.summary — totals come from the per-turn rows', () => {
   });
 
   /*
-   * BUG: UsageLedger.ts:134 seeds a totals row from the first leg's cost, and
-   * :157 only accumulates `if (acc.cost && leg.cost)`. So when a leg's FIRST
-   * turn is unpriced (e.g. a realtime turn the vendor reported no usage for)
-   * and a later turn is priced, the totals row never gets a cost at all — the
-   * same two turns in the other order (test above) do. The session costUsd
-   * (summed from turns) then disagrees with the totals rows.
+   * Was a bug: a totals row seeded from an unpriced first turn had no cost, and
+   * later priced turns only accumulated onto an existing cost, so the row stayed
+   * costless and disagreed with the session costUsd. The first priced turn now
+   * seeds the row's cost, making the totals independent of turn order.
    */
-  it.fails('an unpriced turn followed by a priced one: the row still carries the priced cost', async () => {
+  it('an unpriced turn followed by a priced one: the row still carries the priced cost', async () => {
     const { UsageLedger } = await loadLedger();
     const l = new UsageLedger('s', 'pipeline', 'l', CONFIG);
     l.record(1, [llm({ unpricedReason: 'Vendor reported no usage' })]);
     l.record(2, [llm()]);
     const s = l.summary();
+    const row = s.totals[0];
+    expect(row.cost?.amountUsd).toBe(0.0008);
+    expect(row.unpricedReason).toBe('Vendor reported no usage');
     expect(s.costUsd).toBe(0.0008);
     expect(s.totals.reduce((a, t) => a + (t.cost?.amountUsd ?? 0), 0)).toBe(s.costUsd);
   });

@@ -59,15 +59,17 @@ describe('config.port', () => {
   });
 
   /*
-   * BUG (src/config.ts:4): `Number(process.env.PORT ?? 8787)` — `??` only
-   * catches undefined, so `PORT=` (empty, as compose `PORT=${PORT:-}` or a
-   * blanked .env line produce) is `Number('')` = 0, and `server.listen(0)`
-   * binds a RANDOM ephemeral port while logging "localhost:0". Every other
-   * string setting here treats empty as unset (`||`), and the numeric ones are
-   * sanitised; PORT is the one that is not.
+   * Was a bug: `Number(process.env.PORT ?? 8787)` turned `PORT=` (empty, as
+   * compose `PORT=${PORT:-}` or a blanked .env line produce) into 0, and
+   * `server.listen(0)` bound a RANDOM ephemeral port. An empty or junk PORT is
+   * now unset and falls back to 8787, like the other sanitised settings.
    */
-  it.fails('treats an empty PORT as unset, not as port 0 (BUG: yields 0)', async () => {
+  it('treats an empty PORT as unset, not as port 0', async () => {
     expect((await loadConfig({ PORT: '' })).config.port).toBe(8787);
+  });
+
+  it.each(['abc', '0', '-1', '80.5', '70000', ' '])('falls back to 8787 for an invalid PORT %j', async (raw) => {
+    expect((await loadConfig({ PORT: raw })).config.port).toBe(8787);
   });
 });
 
@@ -268,21 +270,18 @@ describe('redactSecrets', () => {
   });
 
   /*
-   * BUG (src/config.ts:82-87 runs before :89-93): the login secrets are replaced FIRST and with
-   * no floor, so a short password that happens to occur inside an API key
-   * breaks the key apart before the env pass looks for it. The env pass then
-   * cannot find the full key, and the rest of the key goes to the browser:
+   * Was a bug: the login secrets were replaced FIRST, so a short password inside
+   * an API key broke the key apart before the env pass looked for it, and 24 of
    *   AUTH_PASSWORD=pass  SARVAM_API_KEY=sk_live_pass_0123456789abcdef
-   *   redactSecrets('key=sk_live_pass_0123456789abcdef')
-   *   -> 'key=sk_live_«AUTH_PASSWORD redacted»_0123456789abcdef'
-   * 24 of the key's 29 characters leak. Replacing longest values first would
-   * close it.
+   * the key's 29 characters leaked. Every secret is now matched in one pass,
+   * longest first, so the key is scrubbed whole under its own label.
    */
-  it.fails('does not leak most of an API key that contains the (short) login password (BUG)', async () => {
+  it('does not leak most of an API key that contains the (short) login password', async () => {
     const { redactSecrets } = await loadConfig({ AUTH_PASSWORD: 'pass', AUTH_HMAC_SECRET: 'unrelated-secret' });
     vi.stubEnv('SARVAM_API_KEY', 'sk_live_pass_0123456789abcdef');
     const out = redactSecrets('key=sk_live_pass_0123456789abcdef');
     expect(out).not.toContain('0123456789abcdef');
+    expect(out).toBe('key=«SARVAM_API_KEY redacted»');
   });
 
   describe('termination (run in a child process — a hang cannot be interrupted in-process)', () => {
@@ -309,21 +308,24 @@ describe('redactSecrets', () => {
     });
 
     /*
-     * BUG (src/config.ts:87, and the same loop at :93): `while
-     * (out.includes(value)) out = out.replace(value, `«${key} redacted»`)`
-     * never terminates when `value` occurs inside its own replacement marker.
-     * Any login secret that is a substring of "«AUTH_PASSWORD redacted»" /
-     * "«AUTH_HMAC_SECRET redacted»" — "redacted", "SECRET", "HMAC", or any
-     * single letter of "redacted" — hangs the event loop (and grows the string
-     * until OOM) on the first error message that contains it, i.e. the whole
-     * server freezes. Repro:
-     *   AUTH_PASSWORD=redacted node --import tsx -e \
-     *     "import('./src/config.ts').then(m=>m.redactSecrets('redacted'))"   # never returns
+     * Was a bug: `while (out.includes(value)) out = out.replace(...)` never
+     * terminated when a secret occurred inside its own «… redacted» marker
+     * ("redacted", "SECRET", any single letter of "redacted"), freezing the
+     * server. Redaction is now a single regex pass over the input, so a marker
+     * it has written is never matched again.
      */
-    it.fails('terminates when a login secret occurs inside its own redaction marker (BUG: hangs)', () => {
+    it('terminates when a login secret occurs inside its own redaction marker', () => {
       const res = redactInChild({ AUTH_PASSWORD: 'redacted' }, 'the word redacted', 3_000);
       expect(res.signal).toBeNull();
       expect(res.status).toBe(0);
+      expect(JSON.parse(res.stdout)).toBe('the word «AUTH_PASSWORD redacted»');
+    });
+
+    it('terminates for a single-letter login secret, scrubbing each occurrence once', () => {
+      const res = redactInChild({ AUTH_PASSWORD: 'e' }, 'see', 3_000);
+      expect(res.signal).toBeNull();
+      expect(res.status).toBe(0);
+      expect(JSON.parse(res.stdout)).toBe('s«AUTH_PASSWORD redacted»«AUTH_PASSWORD redacted»');
     });
   });
 });

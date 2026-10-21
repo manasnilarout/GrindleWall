@@ -470,13 +470,12 @@ describe('SessionStore — SESSION_MAX_RECORDS pruning', () => {
   });
 
   /*
-   * BUG: prune() (SessionStore.ts:55) deletes `this.path(stale.recordId)`, where
-   * recordId is read from the file's CONTENTS (readIndexEntry, :196), and
-   * `path()` (:222) — unlike get/save/audioPath — never validates it. A record
-   * on disk whose JSON says `"recordId": "../victim"` makes pruning unlink
-   * `<SESSION_DIR>/../victim.json`, a file outside the store.
+   * Was a bug: prune() unlinked the path built from the recordId in the file's
+   * CONTENTS, unvalidated, so `"recordId": "../victim"` deleted
+   * `<SESSION_DIR>/../victim.json`. Pruning now works from the filename it read
+   * from the directory, and `path()` refuses any id the store would not generate.
    */
-  it.fails('pruning never deletes a file outside the store directory', async () => {
+  it('pruning never deletes a file outside the store directory', async () => {
     await mkdir(dir);
     const victim = join(base, 'victim.json');
     await writeFile(victim, '{"precious":true}', 'utf8');
@@ -487,16 +486,25 @@ describe('SessionStore — SESSION_MAX_RECORDS pruning', () => {
   });
 
   /*
-   * Same root cause: a file whose name and whose recordId disagree is never
-   * pruned, because prune unlinks the name derived from the contents. The cap
-   * is then silently exceeded for good.
+   * Same root cause, same fix: a file whose name and recordId disagree used to
+   * be skipped by prune (it unlinked the name derived from the contents), so the
+   * cap was silently exceeded. Pruning by filename removes it.
    */
-  it.fails('a record whose filename and recordId disagree is still pruned', async () => {
+  it('a record whose filename and recordId disagree is still pruned', async () => {
     await mkdir(dir);
     await writeFile(join(dir, 'copied.json'), JSON.stringify(summary('original', { startedAt: 1 })), 'utf8');
     const store = new SessionStore(dir, 1);
     await store.save(summary('good', { startedAt: 5 }));
     expect(await files()).toEqual(['good.json']);
+  });
+
+  it('list() reports the filename as the id, so every listed record can be fetched', async () => {
+    await mkdir(dir);
+    await writeFile(join(dir, 'copied.json'), JSON.stringify(summary('original', { startedAt: 1 })), 'utf8');
+    const store = new SessionStore(dir, 0);
+    const [entry] = await store.list();
+    expect(entry.recordId).toBe('copied');
+    expect(await store.get(entry.recordId)).toBeDefined();
   });
 });
 

@@ -154,7 +154,11 @@ function totalsByLeg(turns: TurnUsage[]): LegUsage[] {
       // A single 'local' turn makes the total an estimate, so it wins.
       if (leg.source === 'local') acc.source = 'local';
       if (leg.unpricedReason && !acc.unpricedReason) acc.unpricedReason = leg.unpricedReason;
-      if (acc.cost && leg.cost) {
+      // An unpriced first turn seeds the row with no cost; a later priced turn
+      // must still land on it, or the row's cost depends on turn order.
+      if (!acc.cost && leg.cost) {
+        acc.cost = { ...leg.cost };
+      } else if (acc.cost && leg.cost) {
         acc.cost.amount = round(acc.cost.amount + leg.cost.amount, 8);
         acc.cost.amountUsd = round(acc.cost.amountUsd + leg.cost.amountUsd, 8);
         acc.cost.amountInr = round(acc.cost.amountInr + leg.cost.amountInr, 6);
