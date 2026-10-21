@@ -67,11 +67,14 @@ export class CartesiaSttProvider implements SttProvider {
     let awaitingFlush = false;
     /** Accumulated is_final segments for the current utterance. */
     let segments = '';
-    const pending: Buffer[] = [];
+    /** Audio and a `finalize` requested during the handshake, in order. */
+    const pending: Array<Buffer | 'finalize'> = [];
 
     const sendControl = (cmd: 'finalize' | 'close') => {
-      if (closed || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(cmd); // raw text, deliberately not JSON
+      if (ws.readyState === WebSocket.OPEN) ws.send(cmd); // raw text, deliberately not JSON
+      // A finalize asked for mid-handshake is queued behind the audio it ends;
+      // dropping it would leave `awaitingFlush` set and swallow every later one.
+      else if (ws.readyState === WebSocket.CONNECTING && cmd === 'finalize') pending.push(cmd);
     };
 
     const endTurn = () => {
@@ -87,7 +90,10 @@ export class CartesiaSttProvider implements SttProvider {
         return;
       }
       ready = true;
-      for (const buf of pending) ws.send(buf, { binary: true });
+      for (const item of pending) {
+        if (item === 'finalize') ws.send(item);
+        else ws.send(item, { binary: true });
+      }
       pending.length = 0;
     });
 

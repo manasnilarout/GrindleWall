@@ -576,15 +576,14 @@ describe('GeminiLlmProvider — abort (barge-in)', () => {
   });
 
   /*
-   * BUG (GeminiLlmProvider.ts sseChunks, ~line 190, and run(), ~line 145): the
-   * abort signal is only checked at the top of the outer read loop, and the
-   * loop's normal exit is not distinguished from completion. So an abort issued
-   * from inside a callback — e.g. onDelta -> TTS pushText -> sync TTS error ->
-   * PipelineSession.finishTurn -> abortLlm — keeps delivering every remaining
-   * event already in the buffer, then reports usage and fires onDone as if the
-   * stream had completed. "abort() must be immediate."
+   * Was a bug: an abort issued from inside a callback — e.g. onDelta -> TTS
+   * pushText -> sync TTS error -> PipelineSession.finishTurn -> abortLlm — kept
+   * delivering the rest of the buffer, then reported usage and fired onDone.
+   * "abort() must be immediate": sseChunks re-checks the signal per event, run()
+   * stops after an onDelta that aborted, and an aborted loop exit reports
+   * nothing.
    */
-  it.fails('abort called from inside onDelta stops further deltas and fires no onDone', async () => {
+  it('abort called from inside onDelta stops further deltas and fires no onDone', async () => {
     http.handle((_q, res) => sse(res, sseBody([textFrame('a'), textFrame('b'), usageFrame({ promptTokenCount: 1, candidatesTokenCount: 1 })])));
     const calls: string[] = [];
     let handle!: { abort(): void };

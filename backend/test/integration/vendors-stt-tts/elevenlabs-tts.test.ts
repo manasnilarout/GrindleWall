@@ -238,11 +238,10 @@ describe('ElevenLabsTtsProvider: failures', () => {
     expect(rec.done).toBe(1);
   });
 
-  // LATENT BUG: the guard is `msg.error !== undefined` (ElevenLabsTtsProvider.ts:300),
-  // so a frame carrying an explicit `"error": null` is treated as a fatal error:
-  // its audio is dropped and the turn ends. The file's own rationale for keying on
-  // `error` ("inventing [an error] is not [recoverable]") argues against exactly this.
-  it.fails('a frame with "error": null is not an error, and its audio is kept', async () => {
+  // Was a latent bug: the guard was `msg.error !== undefined`, so an explicit
+  // `"error": null` was treated as fatal. The guard is now `msg.error != null`
+  // (ElevenLabsTtsProvider.ts ~:286): null counts as absent and the audio is kept.
+  it('a frame with "error": null is not an error, and its audio is kept', async () => {
     const rec = ttsRecorder();
     const stream = await provider.open(opts(), rec.events);
     const conn = await fake.nextConnection();

@@ -156,7 +156,8 @@ export class SarvamSttProvider implements SttProvider {
         closed = true;
         pending.length = 0;
         if (ws.readyState === WebSocket.OPEN) {
-          send({ event: 'end' });
+          // Direct, not via send(): `closed` is already set, and send() refuses.
+          ws.send(JSON.stringify({ event: 'end' }));
           ws.close();
         } else if (ws.readyState === WebSocket.CONNECTING) {
           ws.close();

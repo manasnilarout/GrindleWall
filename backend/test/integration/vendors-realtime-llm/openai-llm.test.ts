@@ -544,12 +544,12 @@ describe('OpenAiLlmProvider — abort (barge-in)', () => {
   });
 
   /*
-   * BUG — same defect as GeminiLlmProvider (OpenAiLlmProvider.ts sseChunks ~line
-   * 255, run() ~line 210): an abort issued synchronously from a callback keeps
-   * delivering the buffered events and then fires onUsage + onDone as though the
-   * response had completed.
+   * Was a bug (same as GeminiLlmProvider): an abort issued synchronously from a
+   * callback kept delivering the buffered events and then fired onUsage +
+   * onDone. sseChunks now re-checks the signal per event, and run() returns
+   * without reporting when the loop ended because of an abort.
    */
-  it.fails('abort called from inside onDelta stops further deltas and fires no onDone', async () => {
+  it('abort called from inside onDelta stops further deltas and fires no onDone', async () => {
     http.handle((_q, res) => sse(res, sseBody([delta('a'), delta('b'), completed({ input_tokens: 1, output_tokens: 1 })])));
     const calls: string[] = [];
     let handle!: { abort(): void };

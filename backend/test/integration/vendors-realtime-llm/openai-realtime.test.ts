@@ -669,14 +669,13 @@ describe('OpenAI Realtime — teardown', () => {
   });
 
   /*
-   * BUG (OpenAiRealtimeProvider.ts ~line 234-245, the ws 'close' handler): on
-   * an unexpected close it only flushes `awaitingUsage`; the ACTIVE turn is
-   * neither ended nor billed and `closed` stays false. The turn's turn_end /
-   * metrics / usage only appear if and when the caller later calls close(), and
-   * then labelled "session closed before…" rather than "socket closed before…".
-   * Nova's onStreamClosed ends the active turn for exactly this reason.
+   * Was a bug: an unexpected close only flushed `awaitingUsage`, leaving the
+   * ACTIVE turn open and unbilled until a later close() (mislabelled "session
+   * closed before…"). The ws 'close' handler now marks the session closed, ends
+   * the active turn and bills it as "socket closed before…", as Nova's
+   * onStreamClosed does.
    */
-  it.fails('an unexpected server close mid-answer ends and bills the in-flight turn at once', async () => {
+  it('an unexpected server close mid-answer ends and bills the in-flight turn at once', async () => {
     const { rec } = await open();
     await startTurn(rec, 'r1', 'msg1');
     fake.socket().close(1011, 'upstream gone');
@@ -688,16 +687,13 @@ describe('OpenAI Realtime — teardown', () => {
   });
 
   /*
-   * BUG (OpenAiRealtimeProvider.ts onMessage ~line 437, with close() ~line 362):
-   * close() does not detach the socket's handlers and onMessage has no `closed`
-   * guard (Nova's onEvent does). Frames already in flight when the session is
-   * closed are still processed: a speech_stopped opens a NEW turn (onTurnStart
-   * after close, never ended or billed) and audio deltas are emitted via
-   * onAudio after close() has resolved. Repro: server answers an append with
-   * speech_stopped + response.created + an audio delta; client calls
-   * pushAudio() then close() in the same tick.
+   * Was a bug: onMessage had no `closed` guard, so frames already in flight when
+   * close() ran opened a new turn and emitted audio afterwards. onMessage now
+   * ignores everything once the session is closed (as Nova's onEvent does).
+   * Repro: server answers an append with speech_stopped + response.created + an
+   * audio delta; client calls pushAudio() then close() in the same tick.
    */
-  it.fails('no session events are emitted after close() has resolved', async () => {
+  it('no session events are emitted after close() has resolved', async () => {
     fake.onMessage((msg, ws) => {
       if (msg.type === 'session.update') ws.send(JSON.stringify({ type: 'session.updated' }));
       if (msg.type === 'input_audio_buffer.append') {

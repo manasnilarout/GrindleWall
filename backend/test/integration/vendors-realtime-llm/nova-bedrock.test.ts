@@ -258,18 +258,15 @@ describe('Nova Sonic over the real SDK — responses', () => {
 
 describe('Nova Sonic over the real SDK — teardown', () => {
   /*
-   * BUG (NovaSonicProvider.ts BedrockTransport.endInput ~line 389 + close()
-   * ~line 815): `whenDrained` resolves when the EventQueue generator has been
-   * PULLED dry, not when the SDK has signed and written what it pulled. close()
-   * resolves ~4ms later, destroy() tears the HTTP/2 session down, and the
-   * teardown events are lost: in review runs NONE of contentEnd / promptEnd /
-   * sessionEnd reached the fake, while wrapping destroy() in a 300 ms delay
-   * delivered all three — which is what pins the cause on destroy(). That is the
-   * exact leak the whenDrained comment says it fixes ("frees GPU resources and
-   * memory"); the NovaTransport contract says endInput waits for queued events
-   * "to reach the wire". The WebSocket stand-in cannot see this.
+   * Was a bug: endInput() waited only on `whenDrained` (the EventQueue PULLED
+   * dry), not for the SDK to sign and write what it pulled, so destroy() tore
+   * the HTTP/2 session down and none of contentEnd / promptEnd / sessionEnd
+   * reached the fake. endInput() now also waits for the request stream's
+   * `finish` (bounded by TEARDOWN_DRAIN_MS), honouring the NovaTransport
+   * contract that queued events "reach the wire". The WebSocket stand-in
+   * cannot see this; neither fake is Bedrock.
    */
-  it.fails('close() gets contentEnd -> promptEnd -> sessionEnd onto the wire, then half-closes the request', async () => {
+  it('close() gets contentEnd -> promptEnd -> sessionEnd onto the wire, then half-closes the request', async () => {
     const { session, req } = await openOk();
     session.pushAudio(silence(20));
     await session.close();

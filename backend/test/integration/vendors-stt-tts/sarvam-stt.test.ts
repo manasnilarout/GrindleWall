@@ -280,10 +280,10 @@ describe('SarvamSttProvider: teardown', () => {
     expect(rec.errors).toEqual([]);
   });
 
-  // BUG: close() sets `closed = true` and THEN calls `send({event:'end'})`,
-  // whose first line is `if (closed || ...) return` — so the documented
-  // graceful `end` message never reaches the wire (SarvamSttProvider.ts:153-157).
-  it.fails('close() tells Sarvam {event:"end"} before closing the socket', async () => {
+  // Was a bug: close() set `closed` and then called send(), which refuses once
+  // closed, so `end` never reached the wire. close() now sends `end` directly
+  // before closing the socket.
+  it('close() tells Sarvam {event:"end"} before closing the socket', async () => {
     const stream = await provider.open(opts(), sttRecorder().events);
     const conn = await fake.nextConnection();
     stream.pushAudio(constPcm(48, 1));

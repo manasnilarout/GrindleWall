@@ -209,6 +209,8 @@ export class OpenAiLlmProvider implements LlmProvider {
         }
       }
 
+      // An abort ends the loop like completion does; it must not report as one.
+      if (controller.signal.aborted) return;
       report(events, usage);
       events.onDone(full);
     } catch (err) {
@@ -259,7 +261,9 @@ async function* sseChunks(body: ReadableStream<Uint8Array>, signal: AbortSignal)
       // Events are separated by a blank line; a single event may span lines and
       // carries an `event:` line the payload's own `type` makes redundant.
       let sep: number;
-      while ((sep = indexOfBoundary(buffer)) !== -1) {
+      // Re-checked per event: abort() may be called from inside a callback,
+      // and the rest of this buffer must not be delivered after it.
+      while (!signal.aborted && (sep = indexOfBoundary(buffer)) !== -1) {
         const raw = buffer.slice(0, sep);
         buffer = buffer.slice(sep).replace(/^(\r?\n){2}/, '');
         const data = raw

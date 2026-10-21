@@ -276,13 +276,11 @@ describe('CartesiaSttProvider: local VAD', () => {
     stream.close();
   });
 
-  // BUG: endTurn() sets `awaitingFlush = true` and then sendControl('finalize'),
-  // which is a no-op while the socket is CONNECTING (CartesiaSttProvider.ts:85-90).
-  // The finalize is neither sent nor queued, and because only `flush_done` clears
-  // `awaitingFlush`, every later finalize()/VAD end is swallowed too: the turn
-  // never gets its final. Repro: finalize() (or a VAD end on a burst of buffered
-  // audio) before the handshake completes.
-  it.fails('a finalize() requested during the handshake still reaches Cartesia once open', async () => {
+  // Was a bug: a finalize requested while the socket was CONNECTING was dropped,
+  // and since only `flush_done` clears `awaitingFlush`, every later finalize/VAD
+  // end was swallowed too. It is now queued behind the handshake audio and sent
+  // on open, in order.
+  it('a finalize() requested during the handshake still reaches Cartesia once open', async () => {
     const rec = sttRecorder();
     const stream = await provider.open(opts(), rec.events);
     stream.pushAudio(constPcm(10, 1));
@@ -314,11 +312,10 @@ describe('CartesiaSttProvider: teardown', () => {
     expect(rec.speechEnds).toBe(0);
   });
 
-  // BUG: same shape as Sarvam: close() sets `closed = true` before
-  // sendControl('close'), which returns early on `closed`
-  // (CartesiaSttProvider.ts:160-164), so the documented `close` control frame
-  // that asks Cartesia to finish and ack with `done` is never sent.
-  it.fails('close() sends the raw "close" control frame before closing', async () => {
+  // Was a bug (same shape as Sarvam): close() set `closed` before
+  // sendControl('close'), which then refused to send. close() now sends the raw
+  // `close` control frame before closing the socket.
+  it('close() sends the raw "close" control frame before closing', async () => {
     const stream = await provider.open(opts(), sttRecorder().events);
     const conn = await fake.nextConnection();
     stream.pushAudio(constPcm(10, 1));
