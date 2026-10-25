@@ -1,5 +1,5 @@
 /**
- * Asks Google and OpenAI which models actually exist, and checks the catalog
+ * Asks Google, OpenAI and Anthropic which models actually exist, and checks the catalog
  * against the answer.
  *
  *   npm run models
@@ -31,6 +31,8 @@ import { CATALOG } from '../src/providers/catalog.js';
 
 const GOOGLE = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000';
 const OPENAI = 'https://api.openai.com/v1/models';
+/** 1000 is the documented page maximum; the catalog asks about four ids. */
+const ANTHROPIC = 'https://api.anthropic.com/v1/models?limit=1000';
 
 interface Probe {
   ids: Set<string>;
@@ -70,6 +72,17 @@ async function openai(key: string): Promise<Probe> {
   return out;
 }
 
+async function anthropic(key: string): Promise<Probe> {
+  const res = await fetch(ANTHROPIC, { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } });
+  const body = (await res.json()) as { data?: Array<{ id?: string }>; error?: { message?: string } };
+  if (!res.ok || body.error) {
+    throw new Error(`HTTP ${res.status}: ${body.error?.message ?? 'unknown'}`);
+  }
+  const out = empty();
+  for (const m of body.data ?? []) if (m.id) out.ids.add(m.id);
+  return out;
+}
+
 /** Catalog ids carry this repo's `@variant` reasoning suffix; vendors do not. */
 const wireId = (modelId: string) => modelId.split('@')[0];
 
@@ -89,6 +102,12 @@ const VENDORS: Array<{ label: string; env: string; providers: string[]; fetch: (
     env: 'OPENAI_API_KEY',
     providers: ['openai-llm', 'openai-realtime'],
     fetch: openai,
+  },
+  {
+    label: 'Anthropic',
+    env: 'ANTHROPIC_API_KEY',
+    providers: ['anthropic-llm'],
+    fetch: anthropic,
   },
 ];
 

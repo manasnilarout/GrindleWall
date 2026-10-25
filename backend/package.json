@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "anthropic:llm:selftest": "tsx scripts/anthropic-llm-selftest.ts",
     "auth:selftest": "tsx scripts/auth-selftest.ts",
     "cartesia": "TTS=cartesia-tts TTS_MODEL=sonic-3.6 STT=cartesia-stt STT_MODEL=ink-2 LANG_CODE=en tsx scripts/roundtrip.ts",
     "cartesia:voices": "tsx scripts/cartesia-voices.ts",

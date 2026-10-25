@@ -300,12 +300,13 @@ cd backend  && npm run gemini:speech:selftest    # 80 checks — Gemini TTS + ST
 cd backend  && npm run elevenlabs:selftest       # 57 checks against a local fake
 cd backend  && npm run openai:realtime:selftest  # 130 checks against a local fake
 cd backend  && npm run openai:llm:selftest       # 55 checks against a local fake
+cd backend  && npm run anthropic:llm:selftest    # 56 checks against a local fake — the provider has never made a live call
 cd backend  && npm run nova:selftest             # 119 checks against a local fake — but see the Nova Sonic
                                                  # section: that fake stands in for an HTTP/2 stream, so it is
                                                  # further from the vendor than any other fake here
 cd backend  && npm run auth:selftest             # 30 checks on the login layer
 cd backend  && npm run nova:rates                # re-measures Nova Sonic's published rates (no key, bills nothing)
-cd backend  && npm run models                    # 10 checks against the vendors' free model listings (needs a key, bills nothing)
+cd backend  && npm run models                    # up to 12 checks against the vendors' free model listings (needs a key, bills nothing)
 cd backend  && npm run smoke                     # usage + summary over the real WS protocol
 cd backend  && npm run realtime:probe            # a realtime turn with real SPEECH in (needs a key, billable)
 cd frontend && npm run render-check              # 178 checks: actually renders every panel, and pins the rules
@@ -316,13 +317,13 @@ cd frontend && npm run render-check              # 178 checks: actually renders 
                                                  # and one more checks the synced voice-stack spec is byte-identical to it.
 ```
 
-892 backend checks plus 178 frontend render checks, none of which needs a key or a network — and 12
+948 backend checks plus 178 frontend render checks, none of which needs a key or a network — and 12
 further render checks when the backend happens to be up, since those read the live catalog (plus the one
 mirror check when a core checkout is reachable). (The
 102 this used to claim was the two figures added together, which the same sentence then described
 as needing no network.) Read the caveat in
 [The five late providers, and what contact with the vendor changed](#the-five-late-providers-and-what-contact-with-the-vendor-changed)
-before treating `gemini:speech`, `elevenlabs`, `openai:realtime` or `openai:llm` as evidence of
+before treating `gemini:speech`, `elevenlabs`, `openai:realtime`, `openai:llm` or `anthropic:llm` as evidence of
 anything about a vendor — they run against fakes. `models`, `smoke`, `roundtrip` and
 `realtime:probe` are the only checks here that touch a real API.
 
@@ -1198,6 +1199,74 @@ a script that injects a different region runs in one and is billed in another.
   is deliberately dropped rather than forwarded. A self-test check asserts no language reaches the
   wire under any spelling, because "add the language, every other provider takes one" is the
   obvious-looking change.
+
+## Anthropic Claude Haiku (LLM leg) — wired, and NOT yet verified
+
+Added 2026-10-25 as the third real LLM, after Gemini and OpenAI. **It has never completed a call**:
+this repo has no `ANTHROPIC_API_KEY`, so no request has reached Anthropic and no catalog id has been
+checked against its model listing. Everything below is read off Anthropic's own docs on 2026-10-25,
+and the 56 self-test checks run against a fake written from those same docs. Read it the way the
+Nova Sonic section above asks to be read.
+
+| | |
+|---|---|
+| Endpoint | `POST https://api.anthropic.com/v1/messages`, `"stream": true`, SSE |
+| Auth | `x-api-key` header + `anthropic-version: 2023-06-01` — never a query param |
+| Models | `claude-haiku-5-5@off` / `@low` / `@medium`, and `claude-haiku-4-5` (no variant) |
+| Speakable stream | `content_block_delta` with `delta.type: "text_delta"` only — `thinking_delta` / `signature_delta` never reach TTS |
+| Usage | input counts on `message_start`, cumulative counts on `message_delta` — billed `source: 'vendor'` |
+| Rate | Haiku 5.5 $0.10 in / $0.50 out / $0.01 cache read per 1M (prompts ≤100K); Haiku 4.5 $1 / $5 / $0.10 |
+
+**Why Haiku only.** It is the tier Anthropic positions for latency-sensitive, high-volume work, which
+is what a voice turn is. The catalog stub previously listed Opus 5 and Sonnet 5 too; they were removed
+rather than switched on unpriced and unverified alongside it.
+
+**Reasoning depth rides in the id**, as for Gemini and OpenAI. The Haiku 5.5 migration guide says
+thinking is **on by default** and effort defaults to `medium`, so a bare `claude-haiku-5-5` would
+think before every spoken reply. `@off` sends `thinking: {"type": "disabled"}`, which the guide
+documents as accepted at effort low/medium/high and a 400 at xhigh/max — the provider never pairs it
+with an effort, and xhigh/max are not in the catalog. `@low` / `@medium` send
+`output_config.effort` and leave thinking adaptive. Haiku 4.5 gets neither field: the guide says
+effort "errors on Claude Haiku 4.5".
+
+**Three things differ from the other two LLM legs and should not be "simplified" away:**
+
+- **`max_tokens` is required.** The provider sends 16,000 unless told otherwise. On Haiku 5.5
+  thinking counts toward that cap, and a response that spends it on thinking ends with no text, so
+  the cap is sized for thinking room, not for the length of a spoken answer.
+- **Temperature is never sent**, even though `PipelineSession` passes one. Per the migration guide,
+  Haiku 5.5 rejects any non-default `temperature` / `top_p` / `top_k` with a 400, and on API version
+  `2026-10-21` every model does.
+- **Cache counts are outside `input_tokens`.** Anthropic reports `input_tokens`,
+  `cache_read_input_tokens` and `cache_creation_input_tokens` as disjoint fields (the pricing page:
+  "A request's prompt length counts all of its input tokens, including cache reads and cache
+  writes"). `LlmUsage` requires the opposite — `inputTokens` INCLUDES `cachedInputTokens` — so the
+  provider sums them. Passing `input_tokens` through as the OpenAI leg does would drop every cache
+  read from the bill.
+
+**Known undercounts.** Cache writes bill at 1.25x input, which `Rate` cannot express; the provider
+sends no `cache_control`, so none should occur, and one that does is billed at 1x. Haiku 5.5's second
+rate card — 5x on every line past a 100,000-token prompt — is not modelled; a voice turn is nowhere
+near it.
+
+**Not routed through `ANTHROPIC_BASE_URL`.** Claude Code sets that variable itself, and `credentials()`
+hands every provider the whole environment, so honouring it would let a bench run silently go through
+a gateway and corrupt the latency it measures. The test override is `ANTHROPIC_LLM_BASE_URL`, and a
+self-test check pins that the other one is ignored. Raw `fetch` rather than `@anthropic-ai/sdk` for
+the related reason that the SDK retries 429/5xx on its own by default, which would put a hidden
+retry inside the measured TTFT.
+
+**To verify it** (needs `ANTHROPIC_API_KEY`):
+
+```bash
+cd backend
+npm run models   # free — checks all four catalog ids exist on the account
+# one real turn through the full protocol (needs npm run dev)
+STT=mock-stt LLM=anthropic-llm LLM_MODEL='claude-haiku-5-5@off' TTS=mock-tts \
+  node scripts/smoke.mjs pipeline
+```
+
+Until both have been run and their output written here with a date, no row above is measured.
 
 ## Adding a provider
 

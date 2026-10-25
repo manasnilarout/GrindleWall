@@ -56,7 +56,8 @@ Verification scripts, all in `backend/`:
 | `npm run nova:probe` | yes (AWS **and** a TTS key) | the six open Nova Sonic questions, asked of AWS directly. **Never run** — no AWS key here |
 | `npm run nova:rates` | no | re-measures Nova Sonic's published per-region rates from AWS's own price list |
 | `npm run openai:llm:selftest` | no | OpenAI Responses SSE + usage parsing against a local fake |
-| `npm run models` | yes (either) | asks Google/OpenAI which models exist and checks every catalog id against the answer — free listing endpoints, bills nothing |
+| `npm run anthropic:llm:selftest` | no | Anthropic Messages SSE + usage parsing against a local fake — the provider has never made a live call |
+| `npm run models` | yes (any) | asks Google/OpenAI/Anthropic which models exist and checks every catalog id against the answer — free listing endpoints, bills nothing |
 | `npm run roundtrip` | yes | any TTS → STT pair: synthesise, stream back at real time, print transcript + latency |
 | `npm run realtime:probe` | yes | a realtime turn driven by real SPEECH, asserting the vendor bills audio tokens as audio — `smoke` sends text and so never bills one |
 | `npm run sarvam` / `npm run cartesia` / `npm run elevenlabs` / `npm run gemini:speech` | yes | preset `roundtrip` invocations |
@@ -251,6 +252,20 @@ Four things about it differ structurally from every other provider here and shou
 Its rate is also the first that is **per region** (us-east-1 and ap-northeast-1 differ by 21%).
 `Rate` keys on provider and model, so the region is resolved once from the environment in
 `rates.ts`, and an unlisted region gets no rate at all rather than the us-east-1 numbers.
+
+### Anthropic Claude Haiku is wired but UNVERIFIED
+
+`anthropic-llm` (Haiku 5.5 `@off`/`@low`/`@medium`, Haiku 4.5) was added 2026-10-25 with no
+`ANTHROPIC_API_KEY` in the repo and has never completed a call; README's "Anthropic Claude Haiku"
+section is the record. Three things in `AnthropicLlmProvider` look simplifiable and are not:
+
+- **Cache counts are summed into `inputTokens`.** Anthropic reports cache reads/writes OUTSIDE
+  `input_tokens`; `LlmUsage` requires them inside. Passing `input_tokens` through drops cache reads
+  from the bill.
+- **Temperature is dropped.** Haiku 5.5 400s on any non-default sampling parameter.
+- **The base-URL override is `ANTHROPIC_LLM_BASE_URL`, not `ANTHROPIC_BASE_URL`.** Claude Code sets
+  the latter itself, and `credentials()` passes the whole environment, so honouring it would route a
+  measurement through a gateway.
 
 ### Adding a provider
 

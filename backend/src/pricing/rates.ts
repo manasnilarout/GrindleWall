@@ -88,6 +88,7 @@ const GEMINI_SRC = 'https://ai.google.dev/gemini-api/docs/pricing';
 const MURF_SRC = 'https://help.murf.ai/murf-api-plans-and-limits';
 const OPENAI_SRC = 'https://developers.openai.com/api/docs/pricing';
 const ELEVENLABS_SRC = 'https://elevenlabs.io/pricing';
+const ANTHROPIC_SRC = 'https://platform.claude.com/docs/en/about-claude/pricing';
 const CHECKED = '2026-09-05';
 
 const free = (unit: UsageUnit): Rate => ({
@@ -271,6 +272,27 @@ function openaiText(input: number, output: number, cachedInput: number): Rate {
   };
 }
 
+/**
+ * Anthropic text models: input / output / cache read, per 1M tokens, read
+ * 2026-10-25. Cache WRITES ($0.125 and $1.25 for the two models below, 1.25x
+ * input) have no slot in `Rate`; the provider sends no `cache_control`, so none
+ * should occur, and one that does is billed at the plain input rate.
+ */
+function anthropic(input: number, output: number, cachedInput: number, note: string): Rate {
+  return {
+    unit: 'tokens',
+    currency: 'USD',
+    input: input / M,
+    output: output / M,
+    cachedInput: cachedInput / M,
+    rate: `$${input} in / $${output} out per 1M tokens`,
+    source: ANTHROPIC_SRC,
+    checkedOn: '2026-10-25',
+    confidence: 'verified',
+    note: `Thinking tokens are billed at the output rate and are already inside outputTokens. ${note}`,
+  };
+}
+
 /** ElevenLabs TTS: USD per 1K characters, billed in dollars rather than credits. */
 function elevenlabs(perThousand: number): Rate {
   return {
@@ -368,6 +390,22 @@ export const RATES: Record<string, ProviderRates> = {
       'gpt-5.4-nano': openaiText(0.2, 1.25, 0.02),
       'gpt-4.1-mini': openaiText(0.4, 1.6, 0.1),
       'gpt-4o-mini': openaiText(0.15, 0.6, 0.075),
+    },
+  },
+
+  /**
+   * Haiku 5.5 has two rate cards chosen by prompt length — "Claude Haiku 5.5 is
+   * priced by prompt length: a request whose prompt is over 100,000 tokens pays
+   * higher prices" ($0.50 / $2.50 / $0.05 cache read). `Rate` keys on model, not
+   * prompt size, and a voice turn is nowhere near 100K, so the short-prompt card
+   * is the honest one; a long-document workload would be understated 5x, which
+   * the note says. US-only `inference_geo` (1.1x) is never sent, so not modelled.
+   */
+  'anthropic-llm': {
+    models: {
+      'claude-haiku-5-5': anthropic(0.1, 0.5, 0.01,
+        'Prompts up to 100K tokens; past that Anthropic charges 5x on every line, which this rate does not model.'),
+      'claude-haiku-4-5': anthropic(1, 5, 0.1, 'One rate card at every prompt length.'),
     },
   },
 

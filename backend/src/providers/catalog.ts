@@ -741,15 +741,30 @@ export const CATALOG: ProviderEntry[] = [
   },
   {
     id: 'anthropic-llm',
-    name: 'Anthropic',
+    name: 'Anthropic Claude',
     kind: 'llm',
-    implemented: false,
+    implemented: true,
     envKeys: ['ANTHROPIC_API_KEY'],
-    docs: 'https://docs.anthropic.com/en/api/messages',
+    docs: 'https://platform.claude.com/docs/en/build-with-claude/streaming',
+    // UNVERIFIED — wired 2026-10-25 with no ANTHROPIC_API_KEY in the repo, so no
+    // request has reached Anthropic and none of these ids has been checked
+    // against GET /v1/models. `npm run models` does that check (free); run it,
+    // and one `smoke.mjs pipeline` turn, before trusting any row here.
+    //
+    // Haiku only: it is the tier built for latency-sensitive work, which a voice
+    // loop is. Reasoning depth rides in the id as `@variant`, as for Gemini and
+    // OpenAI. Per the Haiku 5.5 migration guide thinking is ON by default and
+    // effort defaults to `medium`, so `@off` leads — the setting a spoken reply
+    // wants. `@off` sends `thinking: {type: "disabled"}`, documented as accepted
+    // at effort low/medium/high only; the provider never pairs it with xhigh/max,
+    // and those levels are absent here. No TTFT is quoted: nothing was measured.
     models: [
-      { id: 'claude-opus-5', name: 'Claude Opus 5' },
-      { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
-      { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', note: 'Cheapest/fastest — good default for a voice loop.' },
+      { id: 'claude-haiku-5-5@off', name: 'claude-haiku-5-5 (off)', note: 'Thinking disabled — the voice setting. $0.10 in / $0.50 out per 1M' },
+      { id: 'claude-haiku-5-5@low', name: 'claude-haiku-5-5 (low)', note: 'Adaptive thinking, low effort' },
+      { id: 'claude-haiku-5-5@medium', name: 'claude-haiku-5-5 (medium)', note: "Anthropic's default effort for this model" },
+      // Effort is not a Haiku 4.5 parameter and it thinks only when asked, so
+      // it carries no variant and the provider sends neither field.
+      { id: 'claude-haiku-4-5', name: 'claude-haiku-4-5', note: 'Previous generation · no thinking unless asked · 10x the 5.5 price' },
     ],
   },
   {

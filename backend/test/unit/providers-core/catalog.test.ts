@@ -202,7 +202,7 @@ describe('@variant model ids', () => {
 
   it('exist for the reasoning-depth and stream-type providers', () => {
     const providers = new Set(VARIANTS.map(([pid]) => pid));
-    expect([...providers].sort()).toEqual(['google-llm', 'openai-llm', 'sarvam-stt']);
+    expect([...providers].sort()).toEqual(['anthropic-llm', 'google-llm', 'openai-llm', 'sarvam-stt']);
   });
 
   it.each(VARIANTS.map(([pid, m]) => [`${pid}:${m.id}`, pid, m] as const))('%s splits into base@variant', (_l, pid, m) => {
@@ -214,6 +214,7 @@ describe('@variant model ids', () => {
     // The display name encodes the same split, so the UI and the wire agree.
     expect(m.name).toBe(`${base} (${variant})`);
     const allowed: Record<string, string[]> = {
+      'anthropic-llm': ['off', 'low', 'medium', 'high'],
       'google-llm': ['off', 'minimal', 'low', 'medium', 'high'],
       'openai-llm': ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
       'sarvam-stt': ['fast', 'balanced'],
