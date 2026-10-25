@@ -257,7 +257,7 @@ Its rate is also the first that is **per region** (us-east-1 and ap-northeast-1 
 
 `anthropic-llm` (Haiku 5.5 `@off`/`@low`/`@medium`, Haiku 4.5) was added 2026-10-25 with no
 `ANTHROPIC_API_KEY` in the repo and has never completed a call; README's "Anthropic Claude Haiku"
-section is the record. Three things in `AnthropicLlmProvider` look simplifiable and are not:
+section is the record. Five things in `AnthropicLlmProvider` look simplifiable and are not:
 
 - **Cache counts are summed into `inputTokens`.** Anthropic reports cache reads/writes OUTSIDE
   `input_tokens`; `LlmUsage` requires them inside. Passing `input_tokens` through drops cache reads
