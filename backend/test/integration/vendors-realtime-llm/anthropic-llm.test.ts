@@ -5,13 +5,16 @@
  * what Anthropic accepts — the fake answers however these tests script it, and
  * the provider has never completed a live call.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ServerResponse } from 'node:http';
 import { AnthropicLlmProvider } from '../../../src/providers/llm/AnthropicLlmProvider.js';
 import type { LlmMessage, LlmOptions, LlmUsage } from '../../../src/providers/types.js';
 import { priceLeg } from '../../../src/pricing/rates.js';
 import type { LegUsage } from '../../../src/shared/protocol.js';
 import { byteSlices, deadPort, flushIo, startHttp, waitFor, writeEach, type FakeHttp } from './helpers.js';
+import { PipelineSession } from '../../../src/pipeline/PipelineSession.js';
+import { Recorder, fakeStt, fakeTts } from '../../unit/providers-core/helpers.js';
+import type { StartConfig } from '../../../src/shared/protocol.js';
 
 const KEY = 'test-key-XYZ-anthropic';
 
@@ -120,6 +123,11 @@ describe('AnthropicLlmProvider — request shape', () => {
     expect(body.max_tokens).toBeGreaterThan(0);
   });
 
+  it('defaults max_tokens to 16000, which the API requires', async () => {
+    await run();
+    expect(http.requests[0].body.max_tokens).toBe(16000);
+  });
+
   it('a caller-supplied maxTokens wins', async () => {
     await run(undefined, undefined, { maxTokens: 321 });
     expect(http.requests[0].body.max_tokens).toBe(321);
@@ -182,7 +190,40 @@ describe('AnthropicLlmProvider — request shape', () => {
     expect('system' in http.requests[0].body).toBe(false);
   });
 
-  it('temperature is never sent, even when the caller asks', async () => {
+  it('bare Haiku 4.5 sends the model id and nothing reasoning-shaped', async () => {
+    await run('claude-haiku-4-5');
+    const body = http.requests[0].body;
+    expect(body.model).toBe('claude-haiku-4-5');
+    expect('thinking' in body).toBe(false);
+    expect('output_config' in body).toBe(false);
+  });
+
+  it("Haiku 4.5 gets the caller's temperature; no temperature when none was asked for", async () => {
+    await run('claude-haiku-4-5', undefined, { temperature: 0.3 });
+    await run('claude-haiku-4-5');
+    expect(http.requests[0].body.temperature).toBe(0.3);
+    expect('temperature' in http.requests[1].body).toBe(false);
+  });
+
+  it('empty or whitespace turns are dropped, and the turns left adjacent are joined', async () => {
+    await run(undefined, [
+      { role: 'system', content: 'Be brief.' },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: '' },
+      { role: 'user', content: 'second' },
+      { role: 'assistant', content: 'reply' },
+      { role: 'assistant', content: 'more' },
+      { role: 'user', content: '   ' },
+      { role: 'user', content: 'third' },
+    ]);
+    expect(http.requests[0].body.messages).toEqual([
+      { role: 'user', content: 'first\n\nsecond' },
+      { role: 'assistant', content: 'reply\n\nmore' },
+      { role: 'user', content: 'third' },
+    ]);
+  });
+
+  it('Haiku 5.5 never gets sampling parameters, even when the caller asks', async () => {
     await run(undefined, undefined, { temperature: 0.2 });
     const body = http.requests[0].body;
     expect('temperature' in body).toBe(false);
@@ -190,7 +231,22 @@ describe('AnthropicLlmProvider — request shape', () => {
     expect('top_k' in body).toBe(false);
   });
 
-  it("ANTHROPIC_BASE_URL (Claude Code's own variable) does not reroute the call", async () => {
+  it('with only ANTHROPIC_BASE_URL set, the call still goes to api.anthropic.com', async () => {
+    const seen: string[] = [];
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      seen.push(String(url));
+      return new Response(sseBody([start(), text('ok'), msgDelta(), STOP]), { status: 200 });
+    });
+    try {
+      await run(undefined, undefined, {}, { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: `http://127.0.0.1:${http.port}` });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(seen).toEqual(['https://api.anthropic.com/v1/messages']);
+    expect(http.requests).toHaveLength(0);
+  });
+
+  it("ANTHROPIC_BASE_URL does not outrank the test override either", async () => {
     const port = await deadPort();
     const r = await run(undefined, undefined, {}, {
       ANTHROPIC_API_KEY: KEY,
@@ -329,6 +385,12 @@ describe('AnthropicLlmProvider — usage', () => {
     expect(priced.cost!.currency).toBe('USD');
   });
 
+  it('thinking_tokens, where carried, is reported as a breakdown inside outputTokens', async () => {
+    const u = await usageFrom({ input_tokens: 10, output_tokens: 1 }, { output_tokens: 300, output_tokens_details: { thinking_tokens: 250 } });
+    expect(u.outputTokens).toBe(300);
+    expect(u.thinkingTokens).toBe(250);
+  });
+
   it('Haiku 4.5 prices at its own, 10x, rate', async () => {
     const leg = { leg: 'llm', providerId: 'anthropic-llm', modelId: 'claude-haiku-4-5', unit: 'tokens', inputUnits: 1_000_000, outputUnits: 0, source: 'vendor' } as LegUsage;
     expect(priceLeg(leg).cost!.amountUsd).toBeCloseTo(1, 8);
@@ -376,19 +438,51 @@ describe('AnthropicLlmProvider — failures', () => {
     expect(r.order.at(-1)).toBe('done');
   });
 
-  it('a max_tokens stop is reported, and its text and usage are kept', async () => {
+  it('a max_tokens stop is reported AFTER its usage, and its text is kept', async () => {
     http.handle((_q, res) => sse(res, sseBody([start(), text('cut'), msgDelta('max_tokens', { output_tokens: 40 }), STOP])));
     const r = await run();
-    expect(r.errors[0].message).toBe('Anthropic stopped early: max_tokens');
+    expect(r.errors.map((e) => e.message)).toEqual(['Anthropic stopped early: max_tokens']);
+    expect(r.order).toEqual(['delta', 'usage', 'error', 'done']);
     expect(r.full).toBe('cut');
     expect(r.usage[0].outputTokens).toBe(40);
+  });
+
+  it('a thinking-only max_tokens turn (no text at all) still bills its output, before the error', async () => {
+    http.handle((_q, res) =>
+      sse(res, sseBody([
+        start(),
+        '{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}',
+        msgDelta('max_tokens', { output_tokens: 16000 }),
+        STOP,
+      ])),
+    );
+    const r = await run('claude-haiku-5-5@low');
+    expect(r.order).toEqual(['usage', 'error', 'done']);
+    expect(r.usage[0].outputTokens).toBe(16000);
+    expect(r.full).toBe('');
+  });
+
+  it('a stop reason followed by an error frame raises exactly one error', async () => {
+    http.handle((_q, res) =>
+      sse(res, sseBody([start(), text('a'), msgDelta('max_tokens'), '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'])),
+    );
+    const r = await run();
+    expect(r.errors.map((e) => e.message)).toEqual(['Anthropic: Overloaded']);
+    expect(r.order).toEqual(['delta', 'usage', 'error', 'done']);
+  });
+
+  it('a repeated stop reason raises one error', async () => {
+    http.handle((_q, res) => sse(res, sseBody([start(), msgDelta('max_tokens'), msgDelta('max_tokens'), STOP])));
+    expect((await run()).errors).toHaveLength(1);
   });
 
   it('a refusal is reported with its category', async () => {
     http.handle((_q, res) =>
       sse(res, sseBody([start(), msgDelta('refusal', { output_tokens: 2 }, { stop_details: { type: 'refusal', category: 'cyber', explanation: null } }), STOP])),
     );
-    expect((await run()).errors[0].message).toBe('Anthropic declined the request (cyber)');
+    const r = await run();
+    expect(r.errors.map((e) => e.message)).toEqual(['Anthropic declined the request (cyber)']);
+    expect(r.order).toEqual(['usage', 'error', 'done']);
   });
 
   it('a connection dropped mid-stream reports one error and keeps the partial text', async () => {
@@ -460,5 +554,74 @@ describe('AnthropicLlmProvider — abort (barge-in)', () => {
     await waitFor(() => http.closedResponses === 1, 'response closed');
     await flushIo();
     expect(calls).toEqual(['delta:a']);
+  });
+});
+
+/*
+ * Through the real PipelineSession, with a TTS whose flush() finishes the turn
+ * synchronously (GeminiTtsProvider does, when nothing is buffered). Both bugs
+ * below were found by review, not by the provider-level tests above.
+ */
+describe('AnthropicLlmProvider — inside a pipeline', () => {
+  function build() {
+    const rec = new Recorder();
+    const s = fakeStt();
+    const t = fakeTts('fake-tts', { doneOnFlush: true });
+    const config: StartConfig = {
+      mode: 'pipeline',
+      systemPrompt: 'Be brief.',
+      turnDetection: 'server_vad',
+      sttProviderId: 'fake-stt',
+      llmProviderId: 'anthropic-llm',
+      ttsProviderId: 'fake-tts',
+    } as StartConfig;
+    const credentials = { ANTHROPIC_API_KEY: KEY, ANTHROPIC_LLM_BASE_URL: base };
+    const session = new PipelineSession('sess-a', { sessionId: 'sess-a', config, events: rec, credentials }, {
+      stt: s.provider,
+      sttModel: 'stt-m',
+      llm: new AnthropicLlmProvider(),
+      llmModel: 'claude-haiku-5-5@low',
+      tts: t.provider,
+      ttsModel: 'tts-m',
+    });
+    return { session, rec };
+  }
+  const llmLeg = (rec: Recorder, i: number) => rec.usage[i].legs.find((l) => l.leg === 'llm')!;
+
+  it('a thinking-only max_tokens turn is billed from the vendor counts, not an estimate', async () => {
+    http.handle((_q, res) =>
+      sse(res, sseBody([start({ input_tokens: 30, output_tokens: 1 }), msgDelta('max_tokens', { output_tokens: 16000 }), STOP])),
+    );
+    const { session, rec } = build();
+    await session.start();
+    session.sendText('first question');
+    await waitFor(() => rec.usage.length === 1, 'turn billed');
+    const leg = llmLeg(rec, 0);
+    expect(leg.source).toBe('vendor');
+    expect(leg.outputUnits).toBe(16000);
+    expect(leg.inputUnits).toBe(30);
+    await session.close();
+  });
+
+  it('a failed turn leaves no empty assistant message in the next request', async () => {
+    let n = 0;
+    http.handle((_q, res) => {
+      n += 1;
+      if (n === 1) {
+        res.writeHead(529, { 'content-type': 'application/json' });
+        res.end('{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}');
+        return;
+      }
+      sse(res, sseBody([start(), text('Hello.'), msgDelta(), STOP]));
+    });
+    const { session, rec } = build();
+    await session.start();
+    session.sendText('first question');
+    await waitFor(() => rec.usage.length === 1, 'turn 1 billed');
+    session.sendText('second question');
+    await waitFor(() => rec.usage.length === 2, 'turn 2 billed');
+    expect(http.requests[1].body.messages).toEqual([{ role: 'user', content: 'first question\n\nsecond question' }]);
+    expect(rec.errors.map((e) => e.message)).toEqual(['Anthropic 529: Overloaded']);
+    await session.close();
   });
 });

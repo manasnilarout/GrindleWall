@@ -11,8 +11,8 @@
  * person's question is always "is that still true?", and the answer should be
  * one command.
  *
- * BOTH ENDPOINTS ARE FREE. `GET /v1beta/models` and `GET /v1/models` are list
- * calls, not inference, so this bills nothing and can be run on a depleted
+ * ALL THREE ENDPOINTS ARE FREE. Google's `GET /v1beta/models` and OpenAI's and
+ * Anthropic's `GET /v1/models` are list calls, not inference, so this bills nothing and can be run on a depleted
  * account — which is exactly the situation it was written in. It deliberately
  * makes no billable call, so it proves that a model id EXISTS and nothing at
  * all about what a request to it would be accepted.
@@ -31,7 +31,12 @@ import { CATALOG } from '../src/providers/catalog.js';
 
 const GOOGLE = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000';
 const OPENAI = 'https://api.openai.com/v1/models';
-/** 1000 is the documented page maximum; the catalog asks about four ids. */
+/**
+ * One page is enough: the catalog asks about two wire ids, and every Claude
+ * model ever listed fits in the default page. `limit=1000` is the page maximum
+ * as far as this repo knows — unprobed, and harmless if wrong (a smaller cap
+ * still returns the first page).
+ */
 const ANTHROPIC = 'https://api.anthropic.com/v1/models?limit=1000';
 
 interface Probe {
@@ -79,7 +84,17 @@ async function anthropic(key: string): Promise<Probe> {
     throw new Error(`HTTP ${res.status}: ${body.error?.message ?? 'unknown'}`);
   }
   const out = empty();
-  for (const m of body.data ?? []) if (m.id) out.ids.add(m.id);
+  for (const m of body.data ?? []) {
+    if (!m.id) continue;
+    out.ids.add(m.id);
+    // Older models are listed under a dated snapshot id; the catalog uses the
+    // alias. The model table gives Haiku 4.5's as `claude-haiku-4-5-20251001`
+    // against the alias `claude-haiku-4-5` (Haiku 5.5 has no dated id), so the
+    // alias is derived rather than reported missing. Only an exact 8-digit date
+    // suffix is stripped, so `claude-haiku-4-5` never matches `claude-haiku-4`.
+    const alias = m.id.replace(/-\d{8}$/, '');
+    if (alias !== m.id) out.ids.add(alias);
+  }
   return out;
 }
 

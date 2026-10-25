@@ -274,8 +274,8 @@ function openaiText(input: number, output: number, cachedInput: number): Rate {
 
 /**
  * Anthropic text models: input / output / cache read, per 1M tokens, read
- * 2026-10-25. Cache WRITES ($0.125 and $1.25 for the two models below, 1.25x
- * input) have no slot in `Rate`; the provider sends no `cache_control`, so none
+ * 2026-10-25. Cache WRITES (1.25x input for the 5-minute TTL, 2x for 1-hour —
+ * $0.125 / $0.20 and $1.25 / $2 for the two models below) have no slot in `Rate`; the provider sends no `cache_control`, so none
  * should occur, and one that does is billed at the plain input rate.
  */
 function anthropic(input: number, output: number, cachedInput: number, note: string): Rate {

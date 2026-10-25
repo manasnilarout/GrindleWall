@@ -156,7 +156,8 @@ check('system excluded from messages', req.body.messages.length === 3, JSON.stri
 check('transcript order and roles preserved',
   req.body.messages.map((m: any) => `${m.role}:${m.content}`).join(',') === 'user:first,assistant:reply,user:second',
   JSON.stringify(req.body.messages));
-check('temperature never sent, even when asked', req.body.temperature === undefined, String(req.body.temperature));
+check('Haiku 5.5 never gets a temperature, even when asked', req.body.temperature === undefined, String(req.body.temperature));
+check('default max_tokens is 16000', req.body.max_tokens === 16000, String(req.body.max_tokens));
 
 /* 5. @variant mapping */
 check('@off disables thinking', JSON.stringify(req.body.thinking) === '{"type":"disabled"}', JSON.stringify(req.body.thinking));
@@ -183,6 +184,28 @@ await run('claude-haiku-4-5@low');
 check('Haiku 4.5 never gets an effort', requests[0].body.output_config === undefined, JSON.stringify(requests[0].body.output_config));
 check('Haiku 4.5 never gets a thinking key', requests[0].body.thinking === undefined, JSON.stringify(requests[0].body.thinking));
 check('Haiku 4.5 still strips the variant', requests[0].body.model === 'claude-haiku-4-5', requests[0].body.model);
+
+/* Haiku 4.5 accepts sampling parameters, so a caller's temperature goes through. */
+requests.length = 0;
+await run('claude-haiku-4-5', undefined, 0.3);
+check('Haiku 4.5 gets the caller\'s temperature', requests[0].body.temperature === 0.3, String(requests[0].body.temperature));
+check('bare Haiku 4.5 sends neither thinking nor effort',
+  requests[0].body.thinking === undefined && requests[0].body.output_config === undefined, JSON.stringify(requests[0].body));
+
+/* A failed or textless earlier turn is in the pipeline's history as an empty
+   assistant message. It must not reach the wire, and dropping it must not leave
+   two user turns adjacent. */
+requests.length = 0;
+await run('claude-haiku-5-5@off', [
+  { role: 'user', content: 'first' },
+  { role: 'assistant', content: '' },
+  { role: 'user', content: 'second' },
+  { role: 'assistant', content: '  ' },
+  { role: 'user', content: 'third' },
+]);
+check('empty assistant turns are dropped and the user turns joined',
+  JSON.stringify(requests[0].body.messages) === JSON.stringify([{ role: 'user', content: 'first\n\nsecond\n\nthird' }]),
+  JSON.stringify(requests[0].body.messages));
 
 /* 6. error envelope on non-2xx */
 scenario = (_q, res) => {
@@ -213,6 +236,37 @@ scenario = (_q, res) =>
   sse(res, [startFrame(), deltaFrame('refusal', { output_tokens: 3 }, { stop_details: { type: 'refusal', category: 'cyber', explanation: null } }), STOP]);
 r = await run('claude-haiku-5-5@off');
 check('reports a refusal with its category', r.errors.some((e) => e.includes('declined') && e.includes('cyber')), r.errors.join('; '));
+
+/* Usage must arrive BEFORE the stop error: the pipeline settles the LLM leg on
+   onError, and a turn closed before the counts land is billed from an estimate. */
+const ordered = (frames: string[]) =>
+  new Promise<string[]>((resolve) => {
+    scenario = (_q, res) => sse(res, frames);
+    const order: string[] = [];
+    new AnthropicLlmProvider().stream(
+      { model: 'claude-haiku-5-5@low', credentials: { ANTHROPIC_API_KEY: 'k', ANTHROPIC_LLM_BASE_URL: base } },
+      [{ role: 'user', content: 'hi' }],
+      {
+        onDelta: () => order.push('delta'),
+        onUsage: () => order.push('usage'),
+        onError: () => order.push('error'),
+        onDone: () => {
+          order.push('done');
+          resolve(order);
+        },
+      },
+    );
+  });
+let order = await ordered([startFrame(), '{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}',
+  deltaFrame('max_tokens', { output_tokens: 16000 }), STOP]);
+check('thinking-only max_tokens: usage, then error, then done', order.join(',') === 'usage,error,done', order.join(','));
+order = await ordered([startFrame(), deltaFrame('refusal', { output_tokens: 2 }), STOP]);
+check('refusal: usage, then error, then done', order.join(',') === 'usage,error,done', order.join(','));
+order = await ordered([startFrame(), textFrame('a'), deltaFrame('max_tokens', { output_tokens: 9 }),
+  '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}']);
+check('a stop reason then an error frame raises ONE error, after usage', order.join(',') === 'delta,usage,error,done', order.join(','));
+order = await ordered([startFrame(), textFrame('a'), deltaFrame('max_tokens'), deltaFrame('max_tokens'), STOP]);
+check('a repeated stop reason raises one error', order.filter((o) => o === 'error').length === 1, order.join(','));
 
 /* 9. abort (barge-in) must stop deltas immediately and stay silent */
 scenario = (_q, res) => {
@@ -250,7 +304,7 @@ r = await run('claude-haiku-4-5');
 check('reports vendor token counts', r.usage?.inputTokens === 120 && r.usage?.outputTokens === 30, JSON.stringify(r.usage));
 check('message_delta output count wins over message_start', r.usage?.outputTokens === 30, String(r.usage?.outputTokens));
 check('reports usage exactly once', r.usageCalls === 1, String(r.usageCalls));
-check('no thinking key — Anthropic publishes none', r.usage?.thinkingTokens === undefined, String(r.usage?.thinkingTokens));
+check('no thinking key when the vendor sends none', r.usage?.thinkingTokens === undefined, String(r.usage?.thinkingTokens));
 
 /* input_tokens 200 + cache read 800 + cache write 0 is a 1000-token prompt. */
 scenario = (_q, res) =>
@@ -268,6 +322,14 @@ check(
   (r.usage?.inputTokens ?? 0) >= (r.usage?.cachedInputTokens ?? 0),
   JSON.stringify(r.usage),
 );
+
+/* thinking_tokens, where the response carries it, is a breakdown inside output_tokens. */
+scenario = (_q, res) =>
+  sse(res, [startFrame(), textFrame('a'),
+    JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 300, output_tokens_details: { thinking_tokens: 250 } } }), STOP]);
+r = await run('claude-haiku-5-5@medium');
+check('thinking_tokens surfaced as thinkingTokens', r.usage?.thinkingTokens === 250, JSON.stringify(r.usage));
+check('outputTokens not inflated by thinking', r.usage?.outputTokens === 300, JSON.stringify(r.usage));
 
 /* A cache write is still prompt — it must be billed, not dropped. */
 scenario = (_q, res) =>

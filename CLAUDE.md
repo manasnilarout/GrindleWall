@@ -229,8 +229,8 @@ Key files:
 ### AWS Nova Sonic is wired but UNVERIFIED
 
 Added 2026-09-17 as the third IMPLEMENTED realtime provider (after the mock and OpenAI) and it has **never completed a call** — there
-are no AWS credentials in this repo. It is the only `implemented: true` provider whose request
-shape is entirely doc-derived, and README's "AWS Nova Sonic" section is the record of exactly
+are no AWS credentials in this repo. It was the first `implemented: true` provider whose request
+shape is entirely doc-derived (`anthropic-llm`, below, is the second), and README's "AWS Nova Sonic" section is the record of exactly
 what is established and what is not. Do not quote a Nova Sonic capability as measured, and do
 not let `nova:selftest`'s 119 green checks stand in for one: that fake is a WebSocket standing in
 for a SigV4-signed HTTP/2 stream, so it is even further from the vendor than the other fakes are.
@@ -262,10 +262,16 @@ section is the record. Three things in `AnthropicLlmProvider` look simplifiable 
 - **Cache counts are summed into `inputTokens`.** Anthropic reports cache reads/writes OUTSIDE
   `input_tokens`; `LlmUsage` requires them inside. Passing `input_tokens` through drops cache reads
   from the bill.
-- **Temperature is dropped.** Haiku 5.5 400s on any non-default sampling parameter.
-- **The base-URL override is `ANTHROPIC_LLM_BASE_URL`, not `ANTHROPIC_BASE_URL`.** Claude Code sets
-  the latter itself, and `credentials()` passes the whole environment, so honouring it would route a
-  measurement through a gateway.
+- **Haiku 5.5 never gets a temperature** (Haiku 4.5 does): on `2023-06-01` it 400s on any
+  temperature but 1 and any `top_k`.
+- **Empty messages are dropped, and the same-role turns that leaves are joined.** The pipeline records
+  a failed turn as an empty assistant message; sent as-is it would fail every later turn.
+- **Usage is reported BEFORE a `max_tokens` / `refusal` error.** The pipeline settles the LLM leg on
+  `onError`, so the reverse order bills the turn from an estimate when the TTS flush is synchronous.
+- **The base-URL override is `ANTHROPIC_LLM_BASE_URL`, not `ANTHROPIC_BASE_URL`.** The latter is set
+  for other tools (it was set in the Claude Code cloud session this was written in), and
+  `credentials()` passes the whole environment, so honouring it could route a measurement through a
+  proxy.
 
 ### Adding a provider
 
