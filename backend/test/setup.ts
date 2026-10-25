@@ -20,10 +20,10 @@ const VENDOR_KEYS = [
   'SARVAM_API_KEY',
   'CARTESIA_API_KEY',
   'MURF_API_KEY',
+  'ANTHROPIC_API_KEY',
   // Catalog entries not wired up yet; blanked so readiness cannot flip either.
   'DEEPGRAM_API_KEY',
   'ASSEMBLYAI_API_KEY',
-  'ANTHROPIC_API_KEY',
   'GROQ_API_KEY',
   'AUTH_PASSWORD',
   'AUTH_HMAC_SECRET',

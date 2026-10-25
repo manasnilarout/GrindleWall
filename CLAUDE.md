@@ -56,7 +56,8 @@ Verification scripts, all in `backend/`:
 | `npm run nova:probe` | yes (AWS **and** a TTS key) | the six open Nova Sonic questions, asked of AWS directly. **Never run** — no AWS key here |
 | `npm run nova:rates` | no | re-measures Nova Sonic's published per-region rates from AWS's own price list |
 | `npm run openai:llm:selftest` | no | OpenAI Responses SSE + usage parsing against a local fake |
-| `npm run models` | yes (either) | asks Google/OpenAI which models exist and checks every catalog id against the answer — free listing endpoints, bills nothing |
+| `npm run anthropic:llm:selftest` | no | Anthropic Messages SSE + usage parsing against a local fake — the provider has never made a live call |
+| `npm run models` | yes (any) | asks Google/OpenAI/Anthropic which models exist and checks every catalog id against the answer — free listing endpoints, bills nothing |
 | `npm run roundtrip` | yes | any TTS → STT pair: synthesise, stream back at real time, print transcript + latency |
 | `npm run realtime:probe` | yes | a realtime turn driven by real SPEECH, asserting the vendor bills audio tokens as audio — `smoke` sends text and so never bills one |
 | `npm run sarvam` / `npm run cartesia` / `npm run elevenlabs` / `npm run gemini:speech` | yes | preset `roundtrip` invocations |
@@ -228,8 +229,8 @@ Key files:
 ### AWS Nova Sonic is wired but UNVERIFIED
 
 Added 2026-09-17 as the third IMPLEMENTED realtime provider (after the mock and OpenAI) and it has **never completed a call** — there
-are no AWS credentials in this repo. It is the only `implemented: true` provider whose request
-shape is entirely doc-derived, and README's "AWS Nova Sonic" section is the record of exactly
+are no AWS credentials in this repo. It was the first `implemented: true` provider whose request
+shape is entirely doc-derived (`anthropic-llm`, below, is the second), and README's "AWS Nova Sonic" section is the record of exactly
 what is established and what is not. Do not quote a Nova Sonic capability as measured, and do
 not let `nova:selftest`'s 119 green checks stand in for one: that fake is a WebSocket standing in
 for a SigV4-signed HTTP/2 stream, so it is even further from the vendor than the other fakes are.
@@ -251,6 +252,26 @@ Four things about it differ structurally from every other provider here and shou
 Its rate is also the first that is **per region** (us-east-1 and ap-northeast-1 differ by 21%).
 `Rate` keys on provider and model, so the region is resolved once from the environment in
 `rates.ts`, and an unlisted region gets no rate at all rather than the us-east-1 numbers.
+
+### Anthropic Claude Haiku is wired but UNVERIFIED
+
+`anthropic-llm` (Haiku 5.5 `@off`/`@low`/`@medium`, Haiku 4.5) was added 2026-10-25 with no
+`ANTHROPIC_API_KEY` in the repo and has never completed a call; README's "Anthropic Claude Haiku"
+section is the record. Five things in `AnthropicLlmProvider` look simplifiable and are not:
+
+- **Cache counts are summed into `inputTokens`.** Anthropic reports cache reads/writes OUTSIDE
+  `input_tokens`; `LlmUsage` requires them inside. Passing `input_tokens` through drops cache reads
+  from the bill.
+- **Haiku 5.5 never gets a temperature** (Haiku 4.5 does): on `2023-06-01` it 400s on any
+  temperature but 1 and any `top_k`.
+- **Empty messages are dropped, and the same-role turns that leaves are joined.** The pipeline records
+  a failed turn as an empty assistant message; sent as-is it would fail every later turn.
+- **Usage is reported BEFORE a `max_tokens` / `refusal` error.** The pipeline settles the LLM leg on
+  `onError`, so the reverse order bills the turn from an estimate when the TTS flush is synchronous.
+- **The base-URL override is `ANTHROPIC_LLM_BASE_URL`, not `ANTHROPIC_BASE_URL`.** The latter is set
+  for other tools (it was set in the Claude Code cloud session this was written in), and
+  `credentials()` passes the whole environment, so honouring it could route a measurement through a
+  proxy.
 
 ### Adding a provider
 

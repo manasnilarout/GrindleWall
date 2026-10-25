@@ -44,7 +44,7 @@ jobs:
           set -e
           for s in auth:selftest gemini:selftest usage:selftest turn:selftest catalog:selftest \
                    murf:selftest recorder:selftest gemini:speech:selftest elevenlabs:selftest \
-                   openai:realtime:selftest nova:selftest openai:llm:selftest; do
+                   openai:realtime:selftest nova:selftest openai:llm:selftest anthropic:llm:selftest; do
             echo "::group::npm run $s"
             npm run -s "$s"
             echo "::endgroup::"
