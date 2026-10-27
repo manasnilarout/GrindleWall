@@ -80,7 +80,7 @@ describe('CANONICAL_PROVIDER_IDS', () => {
   it('maps bench ids to core vendor ids per leg', () => {
     expect(CANONICAL_PROVIDER_IDS).toEqual({
       stt: { 'sarvam-stt': 'sarvam', 'gemini-stt': 'gemini', 'cartesia-stt': 'cartesia', 'deepgram-stt': 'deepgram' },
-      llm: { 'openai-llm': 'openai', 'google-llm': 'google' },
+      llm: { 'openai-llm': 'openai', 'google-llm': 'google', 'anthropic-llm': 'anthropic' },
       tts: { 'sarvam-tts': 'sarvam', 'cartesia-tts': 'cartesia', 'elevenlabs-tts': 'elevenlabs', 'murf-tts': 'murf', 'gemini-tts': 'gemini' },
     });
   });
@@ -100,7 +100,7 @@ describe('mapLeg', () => {
   it('refuses a provider with no counterpart in core, naming what is exportable', () => {
     expect(mapLeg('llm', 'mock-llm', 'mock-chat')).toEqual({
       ok: false,
-      error: 'mock-llm has no MagickVoice LLM provider id (exportable: openai-llm, google-llm)',
+      error: 'mock-llm has no MagickVoice LLM provider id (exportable: openai-llm, google-llm, anthropic-llm)',
     });
   });
 
@@ -136,6 +136,34 @@ describe('mapLeg', () => {
     expect(mapLeg('llm', 'google-llm', 'gemini@ultra')).toEqual({
       ok: false,
       error: 'google-llm: unknown reasoning level "@ultra" (known: off, none, minimal, low, medium, high)',
+    });
+  });
+
+  it.each(['off', 'low', 'medium'])('turns a Claude @%s into a reasoning option', (level) => {
+    expect(mapLeg('llm', 'anthropic-llm', `claude-haiku-5-5@${level}`)).toEqual({
+      ok: true,
+      value: { provider: 'anthropic', model: 'claude-haiku-5-5', options: { reasoning: level } },
+    });
+  });
+
+  it('exports a Claude @none as off, the way the bench provider reads it', () => {
+    expect(mapLeg('llm', 'anthropic-llm', 'claude-haiku-5-5@none')).toEqual({
+      ok: true,
+      value: { provider: 'anthropic', model: 'claude-haiku-5-5', options: { reasoning: 'off' } },
+    });
+  });
+
+  it('exports a Claude model with no variant with no options', () => {
+    expect(mapLeg('llm', 'anthropic-llm', 'claude-haiku-4-5')).toEqual({
+      ok: true,
+      value: { provider: 'anthropic', model: 'claude-haiku-4-5', options: {} },
+    });
+  });
+
+  it.each(['minimal', 'high', 'ultra'])('refuses a Claude @%s that core does not take', (level) => {
+    expect(mapLeg('llm', 'anthropic-llm', `claude-haiku-5-5@${level}`)).toEqual({
+      ok: false,
+      error: `anthropic-llm: unknown Claude reasoning level "@${level}" (known: off, low, medium)`,
     });
   });
 
@@ -397,6 +425,7 @@ describe('export -> code -> decode, for every provider the export maps', () => {
     'sarvam-stt': 'saaras:v3-realtime@balanced',
     'google-llm': 'gemini-3.1-flash-lite@low',
     'openai-llm': 'gpt-5-mini@off',
+    'anthropic-llm': 'claude-haiku-5-5@low',
   };
   const modelOf = (id: string) => MODEL_OF[id] ?? `${id.split('-')[0]}-model.v1`;
 

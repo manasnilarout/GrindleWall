@@ -48,6 +48,7 @@ export const CANONICAL_PROVIDER_IDS: Readonly<Record<Leg, Readonly<Record<string
   llm: {
     'openai-llm': 'openai',
     'google-llm': 'google',
+    'anthropic-llm': 'anthropic',
   },
   tts: {
     'sarvam-tts': 'sarvam',
@@ -72,12 +73,26 @@ const VARIANT_RULES: Readonly<Record<string, VariantRule>> = {
     SARVAM_STREAM_TYPES.includes(v) ? { streamType: v } : `unknown Sarvam stream type "@${v}" (known: ${SARVAM_STREAM_TYPES.join(', ')})`,
   'google-llm': reasoningVariant,
   'openai-llm': reasoningVariant,
+  'anthropic-llm': anthropicReasoningVariant,
 };
 
 function reasoningVariant(v: string): Options | string {
   return (LLM_REASONING_LEVELS as readonly string[]).includes(v)
     ? { reasoning: v }
     : `unknown reasoning level "@${v}" (known: ${LLM_REASONING_LEVELS.join(', ')})`;
+}
+
+/**
+ * Core's `claude-haiku-5-5` takes only these, so anything else would export a
+ * stack core refuses. The bench provider reads `@none` as `@off`; so does this.
+ */
+const ANTHROPIC_REASONING_LEVELS = ['off', 'low', 'medium'];
+
+function anthropicReasoningVariant(v: string): Options | string {
+  const level = v === 'none' ? 'off' : v;
+  return ANTHROPIC_REASONING_LEVELS.includes(level)
+    ? { reasoning: level }
+    : `unknown Claude reasoning level "@${v}" (known: ${ANTHROPIC_REASONING_LEVELS.join(', ')})`;
 }
 
 export interface MappedLeg {
