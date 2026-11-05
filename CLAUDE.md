@@ -46,7 +46,7 @@ Verification scripts, all in `backend/`:
 | `npm run usage:selftest` | no | cost arithmetic, persistence, secret redaction — vs hand-computed vendor denominations |
 | `npm run turn:selftest` | no | turn attribution: silence, barge-in, overlapping turns, TTS failure, tails |
 | `npm run catalog:selftest` | no | every provider/model/language path the UI can click resolves to a non-empty selection — for the generated Murf/Cartesia tables, one the vendor was measured to take; for doc-derived entries, only one the docs describe |
-| `npm run murf:selftest` | no | Murf message handling against a local fake |
+| `npm run murf:selftest` | no | Murf handling against two local fakes — Gen2's WebSocket and Falcon's HTTP stream |
 | `npm run recorder:selftest` | no | the conversation recorder's timeline — writes real files and reads the bytes back |
 | `npm run gemini:speech:selftest` | no | Gemini TTS + Transcribe against local fakes |
 | `npm run elevenlabs:selftest` | no | ElevenLabs message handling against a local fake |
@@ -62,8 +62,8 @@ Verification scripts, all in `backend/`:
 | `npm run realtime:probe` | yes | a realtime turn driven by real SPEECH, asserting the vendor bills audio tokens as audio — `smoke` sends text and so never bills one |
 | `npm run sarvam` / `npm run cartesia` / `npm run elevenlabs` / `npm run gemini:speech` | yes | preset `roundtrip` invocations |
 | `npm run gemini:live [model\|all]` | yes | real TTFT per catalog model variant |
-| `npm run murf:probe` / `npm run murf:voices` | yes | re-measure Murf's request shape + buffering / regenerate its per-model voice catalog |
-| `npm run murf:http:probe` | yes | asks Murf's HTTP `/v1/speech/stream` (India host, where Falcon now goes) the questions its docs leave open — status, region, bytes, TTFB vs the global host |
+| `npm run murf:probe` / `npm run murf:voices` | yes | re-measure Murf's WebSocket request shape + buffering (the path Gen2 takes) / regenerate its per-model voice catalog |
+| `npm run murf:http:probe` | yes | asks Murf's HTTP `/v1/speech/stream` (India host, where Falcon now goes) the questions its docs leave open — status, region, bytes, cold/warm TTFB vs the global host, delivery speed, and the sentence segmentation's rendered duration and boundary gaps |
 | `npm run cartesia:voices` | yes | regenerate Cartesia's 934-voice library and re-measure which languages each Sonic model accepts |
 | `npm run sarvam:voices` | no (optional) | regenerate Bulbul v4 Flash's 222-persona table from Sarvam's Voices **doc page**, checked against the streaming spec's enums. We know of no voice-listing endpoint, so unlike the two above this is not vendor evidence; with `SARVAM_API_KEY` it also sends one bad speaker and diffs the live list Sarvam's docs say the 400 returns (never yet run) |
 
@@ -292,10 +292,14 @@ Streaming TTS vendors expose text-aggregation knobs (`max_buffer_delay_ms`,
 `min_buffer_size`). Setting the delay to `0` makes Cartesia's Sonic voice **every token as
 its own utterance** — 2.6× too much audio with mangled prosody — because this pipeline
 streams raw LLM tokens with no sentence aggregation upstream. Cartesia is pinned at
-`250ms`. Murf, measured the same way, does not have the fault — word-by-word costs 14-23%
-extra audio at every delay including `0`, and TTFB is flat across the range — so it is left
-at the vendor default with only a small `min_buffer_size`, there being nothing to buy. Do
-not lower either to chase TTFB without measuring rendered audio duration against a one-shot
+`250ms`. Murf's WebSocket, measured the same way, does not have the fault — word-by-word costs
+14-23% extra audio at every delay including `0`, and TTFB is flat across the range — so Gen2
+is left at the vendor default with only a small `min_buffer_size`, there being nothing to buy.
+Falcon now goes over Murf's HTTP endpoint, which takes one complete text per request, so it is
+the one provider here with sentence aggregation upstream (`segmentText` in
+`MurfTtsProvider.ts`: whole sentences, at least 20 and at most 500 characters). Its rendered
+duration against a one-shot reference is unmeasured — `murf:http:probe` section 7. Do not
+lower any of these to chase TTFB without measuring rendered audio duration against a one-shot
 reference.
 
 ### Murf: verified, and what the docs got wrong
@@ -303,11 +307,15 @@ reference.
 `MurfTtsProvider` was verified against the live API over the WebSocket (2026-09-05) — `falcon-2`
 ~186ms TTFB on `global.api.murf.ai`, the fastest TTS here; `gen2` ~1.75s. **Since 2026-11-05
 `falcon-2` goes to `POST https://in.api.murf.ai/v1/speech/stream` instead** (India region, HTTP,
-one request per finished sentence, never more than one in flight). That path is doc-derived and
-has **never completed a live call**: the ~186ms does not carry over, and its TTFB includes the
-LLM's time to finish a sentence. `npm run murf:http:probe` is the check; `MURF_HTTP_URL` points it
-at another region. `gen2` stays on the WebSocket it was verified on. Three things cost a live
-error each and are now fields on `MurfModelProfile` in that file:
+one request per completed segment of whole sentences, never more than one in flight). That path
+is doc-derived and has **never completed a live call**: the ~186ms does not carry over, its TTFB
+includes the LLM's time to finish a segment, and a segment boundary may be a silent gap if Murf
+delivers at ~1x real time. `npm run murf:http:probe` is the check; `MURF_HTTP_URL` points it at
+another region. Murf also documents `wss://in.api.murf.ai/v1/speech/stream-input` (same region,
+incremental text) — switching back is a host change on the Falcon profile. `gen2` stays on the
+WebSocket it was verified on, though Murf's docs now say Gen2 is decommissioned for streaming.
+Three things cost a live error each (on the WebSocket) and are now fields on `MurfModelProfile`
+in that file:
 
 - **Each model has its own voice catalogue** (Falcon 137, Gen2 163, 100 shared). The other
   model's voice is rejected outright, so Murf's voices and locales hang off `ModelEntry` in
@@ -323,6 +331,7 @@ the bare `Namrita` the docs use. Both resolve, both are resolved *per model*. Th
 stores qualified ids because those are checkable against a model's list; the Voice id field
 takes either.
 
-What the file used to warn about turned out not to matter: header and query auth, `voiceId`
-and `voice_id`, `falcon-2` / `FALCON` / `Falcon` are all accepted. `npm run murf:probe`
-re-measures all of it plus the buffering behaviour.
+What the file used to warn about turned out not to matter — on the WebSocket, 2026-09-05: header
+and query auth, `voiceId` and `voice_id`, `falcon-2` / `FALCON` / `Falcon` are all accepted.
+`npm run murf:probe` re-measures all of it plus the buffering behaviour. None of it has been
+re-checked on the HTTP endpoint.

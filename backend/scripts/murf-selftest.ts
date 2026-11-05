@@ -239,7 +239,7 @@ check('every catalog voice id is locale-prefixed (the docs\' bare names are not)
 check('each model brings its own locales',
   languagesFor('murf-tts', 'falcon-2').length > 20 && languagesFor('murf-tts', 'gen2').length > 20);
 
-/* 11. Falcon over HTTP POST /v1/speech/stream: one request per sentence, in order */
+/* 11. Falcon over HTTP POST /v1/speech/stream: one request per completed segment, in order */
 {
   const bodies: Array<Record<string, unknown>> = [];
   let headers: http.IncomingHttpHeaders = {};
@@ -287,15 +287,15 @@ check('each model brings its own locales',
       onError: (e) => errors.push(e.message),
     },
   );
-  for (const w of ['Hello ', 'there. ', 'It costs ', '3.5 dollars! ', 'Bye']) stream.pushText(w);
+  for (const w of ['Hello there, ', 'my friend. ', 'Dr. Smith ', 'costs 3.5 dollars! ', 'Bye']) stream.pushText(w);
   stream.flush();
   await Promise.race([done, new Promise((res) => setTimeout(res, 3000))]);
   stream.close();
   srv.closeAllConnections();
   srv.close();
 
-  check('http: one request per sentence, remainder on flush',
-    JSON.stringify(bodies.map((b) => b.text)) === JSON.stringify(['Hello there.', 'It costs 3.5 dollars!', 'Bye']),
+  check('http: a request per completed segment (abbreviation and decimal kept whole), remainder on flush',
+    JSON.stringify(bodies.map((b) => b.text)) === JSON.stringify(['Hello there, my friend.', 'Dr. Smith costs 3.5 dollars!', 'Bye']),
     JSON.stringify(bodies.map((b) => b.text)));
   check('http: never more than one request in flight', maxInFlight === 1, `${maxInFlight}`);
   check('http: api-key header', headers['api-key'] === 'test-key');
@@ -310,7 +310,7 @@ check('each model brings its own locales',
   check('http: no odd-length chunk emitted', oddChunks === 0, `${oddChunks}`);
   check('http: one done, no errors', doneCalls === 1 && errors.length === 0, `${doneCalls} ${errors.join('; ')}`);
   check('http: billed for the characters actually sent',
-    stream.billableCharacters?.() === 'Hello there.It costs 3.5 dollars!Bye'.length, `${stream.billableCharacters?.()}`);
+    stream.billableCharacters?.() === 'Hello there, my friend.Dr. Smith costs 3.5 dollars!Bye'.length, `${stream.billableCharacters?.()}`);
 }
 
 let failed = 0;

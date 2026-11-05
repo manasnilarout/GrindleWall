@@ -36,14 +36,28 @@ import { MURF_FALCON_LOCALES, MURF_GEN2_LOCALES } from '../murf-catalog.js';
  *     segments below are sent strictly one at a time.
  *   · The request takes ONE complete `text`. There is no way to feed LLM tokens
  *     into a request already in flight, which is what the WebSocket did. So
- *     `pushText` accumulates and each complete SENTENCE goes out as its own
- *     request, in order; `flush()` sends whatever is left. TTFB therefore
- *     includes the time the LLM takes to finish its first sentence — read it as
- *     first-sentence-ready → first audio, not as the vendor's own TTFB, and do
- *     not put it beside a token-streaming vendor's number without saying so.
- *     Sentence-sized requests are the coarse end of the buffering trap described
- *     in CLAUDE.md, not the per-token end, but rendered duration against a
- *     one-shot reference has not been measured for this path.
+ *     `pushText` accumulates and `segmentText()` decides what goes out: all text
+ *     up to the last sentence end (Latin `.!?` followed by a space, CJK `。！？`
+ *     and Devanagari `।` with or without one, or a line break), provided that is
+ *     at least MIN_SEGMENT_CHARS — so "Dr.", "e.g.", "1." and a lone "Sure!" are
+ *     never their own synthesis — and never more than MAX_SEGMENT_CHARS, under
+ *     the 3,000 per request Murf's FAQ allows. Segments go one at a time, in
+ *     order; `flush()` sends the rest. TTFB therefore includes the time the LLM
+ *     takes to finish its first segment — read it as first-segment-ready → first
+ *     audio, not as the vendor's own TTFB, and do not put it beside a
+ *     token-streaming vendor's number without saying so. Rendered duration
+ *     against a one-shot reference, and the silence at each segment boundary if
+ *     Murf delivers at ~1x real time, are what `murf:http:probe` section 7
+ *     measures; neither has been measured yet.
+ *   · Murf also documents `wss://in.api.murf.ai/v1/speech/stream-input` — the same
+ *     India region on the WebSocket this file used to send Falcon over, which
+ *     takes text incrementally. The HTTP endpoint is used because it is the one
+ *     asked for; switching back is a host change on FALCON's transport.
+ *   · fetch keeps the connection to the host alive, so only the first request
+ *     to it pays DNS+TCP+TLS; later segments, and turns that start while the
+ *     connection is still alive, do not. The WebSocket providers handshake every
+ *     turn. Gemini TTS has the same property. Compare first-turn numbers with
+ *     first-turn numbers.
  *   · `format: "PCM"` is a documented value on this endpoint. The docs describe
  *     headerless little-endian 16-bit for PCM only on the WebSocket page; the
  *     HTTP guide's PCM example plays it as 16-bit mono at 24 kHz. A RIFF header
@@ -52,6 +66,10 @@ import { MURF_FALCON_LOCALES, MURF_GEN2_LOCALES } from '../murf-catalog.js';
  *   · `locale` replaces the deprecated `multiNativeLocale`. `model` is sent as
  *     `falcon-2.1`, the one value the reference lists; it says the older
  *     `falcon-2` / `FALCON` spellings "are still accepted and use Falcon 2.1".
+ *   · A refused request (non-2xx, or a 2xx carrying JSON) is surfaced with
+ *     Murf's own text and `Retry-After`, ends the turn, and is not billed. It is
+ *     not retried: a retry inside the measured window would hide the failure in
+ *     the latency number.
  *
  * ---------------------------------------------------------------------------
  * GEN2 ON THE WEBSOCKET — MEASURED AGAINST THE LIVE API (2026-09-05)
@@ -74,8 +92,8 @@ import { MURF_FALCON_LOCALES, MURF_GEN2_LOCALES } from '../murf-catalog.js';
  * decommissioned for streaming". That has not been re-measured; Gen2 is left on
  * the transport it was verified on until `npm run murf:probe` says otherwise.
  *
- * Measured TTFB on the WebSocket: falcon-2 ~86-99ms on the global host, gen2
- * ~1.1s on the US one.
+ * Measured TTFB on the WebSocket: falcon-2 ~186ms cold (open + synthesise) and
+ * ~86-99ms socket-warm on the global host; gen2 ~1.1-1.75s on the US one.
  */
 
 /**
@@ -84,7 +102,12 @@ import { MURF_FALCON_LOCALES, MURF_GEN2_LOCALES } from '../murf-catalog.js';
  * pick another of Murf's regional hosts without a code change).
  */
 const IN_HTTP_URL = 'https://in.api.murf.ai/v1/speech/stream';
-/** Where Gen2 lives. The global WebSocket host refuses it (1008). */
+/**
+ * Where Gen2 lives. The global WebSocket host refuses it (1008). Murf's
+ * stream-input reference (read 2026-11-05) now says the endpoint "serves the
+ * Falcon model only" and that `api.murf.ai` is "a legacy alias that always
+ * resolves to us-east" — not re-measured, so Gen2 may no longer work here at all.
+ */
 const US_WS_BASE = 'wss://api.murf.ai/v1/speech/stream-input';
 const DEFAULT_MODEL = 'falcon-2';
 
@@ -217,25 +240,111 @@ export class MurfTtsProvider implements TtsProvider {
 // ===========================================================================
 
 /**
- * A sentence ends at terminal punctuation followed by whitespace. Requiring the
- * whitespace keeps `3.5` and `murf.ai` whole; the LLM's next token supplies it,
- * and `flush()` sends whatever is left without one.
+ * A segment is never cut shorter than this. "Dr.", "e.g." and a lone "Sure!"
+ * would otherwise each go out as their own synthesis, with their own prosody —
+ * word-sized requests, the per-token end of the buffering trap rather than the
+ * sentence-sized end this path is meant to sit at. A short first sentence waits
+ * for the next one instead; `flush()` sends anything shorter that is left.
  */
-const SENTENCE_END = /[.!?।॥。！？…]+["'”’)\]]*\s+/g;
+export const MIN_SEGMENT_CHARS = 20;
+
+/** Han, kana and Hangul carry a word or more per character, so each counts double toward the minimum. */
+const WIDE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+const weight = (s: string) => s.length + (s.match(WIDE)?.length ?? 0);
 
 /**
- * Ceiling on one request — a wedge-breaker, not a latency budget. A sentence
- * takes seconds to render, never this long; without it a stalled response would
- * hold the turn (and one of the region's concurrency slots) open forever.
+ * Past this, a segment with no sentence end is cut at a clause or word boundary.
+ * Murf's FAQ: "The API supports up to 3,000 characters per request. For longer
+ * text, split it into multiple requests." (read 2026-11-05). Kept well under that
+ * so one run-on reply cannot hold a request open for minutes of audio either.
  */
-const HTTP_REQUEST_TIMEOUT_MS = 30_000;
+export const MAX_SEGMENT_CHARS = 500;
 
-/** The longest prefix of `buf` that ends on a sentence boundary, or 0. */
-function sentencePrefixLength(buf: string): number {
-  let end = 0;
-  for (const m of buf.matchAll(SENTENCE_END)) end = m.index! + m[0].length;
-  return end;
+/** Latin terminators: a sentence ends only where whitespace follows. Keeps `3.5` and `murf.ai` whole. */
+const LATIN_END = /([.!?…]+)["'”’)\]]*\s+/g;
+/** CJK and Indic terminators end a sentence with or without a following space. */
+const SCRIPT_END = /[。！？।॥]+["'”’)\]」』）]*\s*/g;
+/** Line breaks end a segment: list items, headings. */
+const LINE_END = /\n+/g;
+/** Where to cut a run-on that has no sentence end. */
+const CLAUSE_END = /[,;:—–，、；：]\s*/g;
+
+/** A single `.` after one of these is an abbreviation, not a sentence end. */
+const TITLES = new Set(['mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'st', 'vs', 'no', 'fig', 'approx']);
+
+function isAbbreviation(before: string, terminator: string): boolean {
+  if (terminator !== '.') return false;
+  const word = /([^\s("'“‘]+)$/.exec(before)?.[1] ?? '';
+  return (
+    /^[a-z](?:\.[a-z])*$/i.test(word) || // p.m, U.S, e.g, a single initial
+    /^\d+$/.test(word) || // a list number, "1."
+    TITLES.has(word.toLowerCase())
+  );
 }
+
+/** Every index at which a segment may end, ascending. */
+function boundaries(text: string): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(LATIN_END)) {
+    if (!isAbbreviation(text.slice(0, m.index), m[1])) out.push(m.index! + m[0].length);
+  }
+  for (const m of text.matchAll(SCRIPT_END)) out.push(m.index! + m[0].length);
+  for (const m of text.matchAll(LINE_END)) out.push(m.index! + m[0].length);
+  return out.sort((a, b) => a - b);
+}
+
+/** Splits a piece longer than the cap at its last clause end, else its last space, else hard. */
+function capLength(text: string): string[] {
+  const out: string[] = [];
+  let rest = text;
+  while (rest.length > MAX_SEGMENT_CHARS) {
+    const window = rest.slice(0, MAX_SEGMENT_CHARS);
+    let cut = 0;
+    for (const m of window.matchAll(CLAUSE_END)) cut = m.index! + m[0].length;
+    if (cut < MIN_SEGMENT_CHARS) cut = window.lastIndexOf(' ') + 1;
+    if (cut < MIN_SEGMENT_CHARS) cut = MAX_SEGMENT_CHARS;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
+/**
+ * Splits buffered LLM text into the requests to send now, and the rest to keep.
+ *
+ * Not final: everything up to the LAST boundary goes, as one or more requests —
+ * provided it is at least MIN_SEGMENT_CHARS. Text without a boundary is held
+ * until it passes MAX_SEGMENT_CHARS. Final (`flush()`): everything goes.
+ * Every returned segment is trimmed, non-empty and at most MAX_SEGMENT_CHARS.
+ */
+export function segmentText(buffer: string, final: boolean): { segments: string[]; rest: string } {
+  let cut = final ? buffer.length : 0;
+  if (!final) {
+    const ends = boundaries(buffer).filter((i) => weight(buffer.slice(0, i).trim()) >= MIN_SEGMENT_CHARS);
+    if (ends.length) cut = ends[ends.length - 1];
+    else if (buffer.length > MAX_SEGMENT_CHARS) {
+      // A run-on: send whole capped pieces, keep the tail to join what comes next.
+      const pieces = capLength(buffer);
+      const tail = pieces.pop()!;
+      cut = buffer.length - tail.length;
+    }
+  }
+  const segments = capLength(buffer.slice(0, cut))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return { segments, rest: buffer.slice(cut) };
+}
+
+/**
+ * Time allowed for the response HEADERS, and then between any two body chunks.
+ * Wedge-breakers, not latency budgets. Neither bounds the whole response, which
+ * legitimately lasts as long as Murf takes to stream a segment's audio; without
+ * them a stalled request would hold the turn — and one of the region's two
+ * concurrency slots — open forever.
+ */
+const HEADERS_TIMEOUT_MS = 15_000;
+const IDLE_TIMEOUT_MS = 10_000;
 
 /** Murf's documented error bodies are `any`; the 429 one is `{error, message}`. */
 function errorDetail(body: string): string {
@@ -251,6 +360,24 @@ function errorDetail(body: string): string {
   return body.trim().slice(0, 300);
 }
 
+/**
+ * Whether `head` holds a complete WAV header, or is clearly not WAV. The first
+ * bytes are held until it does, so a header longer than 44 bytes (a LIST chunk)
+ * that straddles two network chunks is still stripped rather than played.
+ */
+function headerSettled(head: Buffer): boolean {
+  if (head.length < 12) return false;
+  if (head.toString('ascii', 0, 4) !== 'RIFF' || head.toString('ascii', 8, 12) !== 'WAVE') return true;
+  let off = 12;
+  while (off + 8 <= head.length) {
+    if (head.toString('ascii', off, off + 4) === 'data') return true;
+    off += 8 + head.readUInt32LE(off + 4) + (head.readUInt32LE(off + 4) % 2);
+  }
+  return head.length >= 4096; // malformed; stop holding audio back
+}
+
+class MurfHttpError extends Error {}
+
 function openHttp(r: Resolved, defaultUrl: string, opts: TtsOptions, events: TtsEvents): TtsStream {
   // Overridable so the request/response handling can be tested against a local fake.
   const url = opts.credentials.MURF_HTTP_URL || defaultUrl;
@@ -260,7 +387,11 @@ function openHttp(r: Resolved, defaultUrl: string, opts: TtsOptions, events: Tts
   let flushed = false;
   let cancelled = false;
   let done = false;
-  /** Characters actually put in a request — what Murf was asked to synthesise. */
+  /**
+   * Characters in requests Murf accepted (2xx) or that were cut off by a barge-in
+   * after being sent — what Murf was asked to synthesise. A refused request
+   * (4xx/5xx/429) or one that never reached Murf is taken back out.
+   */
   let sentCharacters = 0;
   const queue: string[] = [];
   let running = false;
@@ -278,7 +409,7 @@ function openHttp(r: Resolved, defaultUrl: string, opts: TtsOptions, events: Tts
     controller.abort();
   };
 
-  const request = async (text: string) => {
+  const request = async (text: string): Promise<void> => {
     const body: Record<string, unknown> = {
       text,
       voiceId: r.voice,
@@ -292,46 +423,87 @@ function openHttp(r: Resolved, defaultUrl: string, opts: TtsOptions, events: Tts
       ...(r.locale ? { locale: r.locale } : {}),
     };
 
-    const res = await fetch(url, {
-      method: 'POST',
-      // Key goes in the header, never the URL.
-      headers: { 'content-type': 'application/json', 'api-key': r.key },
-      body: JSON.stringify(body),
-      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS)]),
-    });
-
-    if (!res.ok || !res.body) {
-      const detail = errorDetail(await res.text().catch(() => ''));
-      throw new Error(`Murf TTS HTTP ${res.status}: ${detail || res.statusText}`);
-    }
-
-    // A RIFF header, if one arrives despite format=PCM, needs its whole 44 bytes
-    // before it can be recognised; and a 16-bit sample can straddle two chunks.
-    let head: Buffer | null = Buffer.alloc(0);
-    let carry = Buffer.alloc(0);
-    const emit = (bytes: Buffer) => {
-      const joined = carry.length ? Buffer.concat([carry, bytes]) : bytes;
-      const even = joined.length - (joined.length % 2);
-      carry = Buffer.from(joined.subarray(even));
-      if (even === 0 || done || cancelled) return;
-      // No-op at 24 kHz; a guard in case the vendor ignores the request.
-      events.onAudio(resamplePcm16(joined.subarray(0, even), r.profile.requestSampleRate, opts.sampleRate));
+    // One controller per request: aborted by barge-in (via the stream's) or by a timer.
+    const req = new AbortController();
+    const onCancel = () => req.abort();
+    controller.signal.addEventListener('abort', onCancel);
+    let timedOut: string | null = null;
+    let timer: NodeJS.Timeout | undefined;
+    const arm = (ms: number, what: string) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timedOut = `${what} within ${ms}ms`;
+        req.abort();
+      }, ms);
     };
 
-    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-      if (done || cancelled) return;
-      const buf = Buffer.from(chunk);
-      if (head) {
-        head = Buffer.concat([head, buf]);
-        if (head.length < 44) continue;
-        const pcm = stripWavHeader(head);
-        head = null;
-        emit(pcm);
-      } else {
-        emit(buf);
+    try {
+      arm(HEADERS_TIMEOUT_MS, 'no response headers');
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          // Key goes in the header, never the URL.
+          headers: { 'content-type': 'application/json', 'api-key': r.key },
+          body: JSON.stringify(body),
+          signal: req.signal,
+        });
+      } catch (err) {
+        // Never reached Murf, or never answered. A barge-in that aborts a request
+        // already on the wire is the exception: Murf had the text, so it stays billed.
+        if (!controller.signal.aborted) sentCharacters -= text.length;
+        throw err;
       }
+
+      const type = res.headers.get('content-type') ?? '';
+      if (!res.ok || !res.body || type.includes('json')) {
+        sentCharacters -= text.length; // refused: nothing was synthesised
+        const detail = errorDetail(await res.text().catch(() => ''));
+        const retry = res.headers.get('retry-after');
+        throw new MurfHttpError(
+          `Murf TTS HTTP ${res.status}: ${detail || (res.ok ? 'response carried no audio' : res.statusText)}` +
+            (retry ? ` (Retry-After: ${retry}s)` : ''),
+        );
+      }
+
+      // A RIFF header, if one arrives despite format=PCM, must be whole before it
+      // can be stripped; and a 16-bit sample can straddle two chunks.
+      let head: Buffer | null = Buffer.alloc(0);
+      let carry = Buffer.alloc(0);
+      const emit = (bytes: Buffer) => {
+        const joined = carry.length ? Buffer.concat([carry, bytes]) : bytes;
+        const even = joined.length - (joined.length % 2);
+        carry = Buffer.from(joined.subarray(even));
+        if (even === 0 || done || cancelled) return;
+        // No-op at 24 kHz; a guard in case the vendor ignores the request.
+        events.onAudio(resamplePcm16(joined.subarray(0, even), r.profile.requestSampleRate, opts.sampleRate));
+      };
+
+      arm(IDLE_TIMEOUT_MS, 'no audio');
+      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+        if (done || cancelled) return;
+        arm(IDLE_TIMEOUT_MS, 'no further audio');
+        const buf = Buffer.from(chunk);
+        if (head) {
+          head = Buffer.concat([head, buf]);
+          if (!headerSettled(head)) continue;
+          const pcm = stripWavHeader(head);
+          head = null;
+          emit(pcm);
+        } else {
+          emit(buf);
+        }
+      }
+      if (head && head.length) emit(stripWavHeader(head));
+      // A trailing odd byte belongs to no sample; it is dropped, never carried
+      // into the next segment's audio.
+    } catch (err) {
+      if (timedOut) throw new MurfHttpError(`Murf TTS HTTP: ${timedOut}`);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      controller.signal.removeEventListener('abort', onCancel);
     }
-    if (head && head.length) emit(stripWavHeader(head));
   };
 
   /** One request at a time: order is the transcript's order, and one concurrency slot is enough. */
@@ -346,13 +518,12 @@ function openHttp(r: Resolved, defaultUrl: string, opts: TtsOptions, events: Tts
           await request(text);
         } catch (err) {
           if (cancelled || done) return;
-          const e = err as Error;
+          const e = err as Error & { cause?: { code?: string; message?: string } };
+          const cause = e.cause?.code ?? e.cause?.message;
           fail(
-            e.name === 'TimeoutError'
-              ? new Error(`Murf TTS HTTP: no complete response within ${HTTP_REQUEST_TIMEOUT_MS}ms`)
-              : e.message.startsWith('Murf TTS')
-                ? e
-                : new Error(`Murf TTS HTTP: ${e.message}`),
+            e instanceof MurfHttpError
+              ? e
+              : new Error(`Murf TTS HTTP: ${e.message}${cause ? ` (${cause})` : ''}`),
           );
           return;
         }
@@ -363,26 +534,24 @@ function openHttp(r: Resolved, defaultUrl: string, opts: TtsOptions, events: Tts
     }
   };
 
-  const enqueue = (text: string) => {
-    const t = text.trim();
-    if (t) queue.push(t);
+  const take = (final: boolean) => {
+    const { segments, rest } = segmentText(buffered, final);
+    buffered = rest;
+    if (!segments.length) return false;
+    queue.push(...segments);
+    return true;
   };
 
   return {
     pushText(text) {
       if (cancelled || flushed || done || !text) return;
       buffered += text;
-      const cut = sentencePrefixLength(buffered);
-      if (cut === 0) return;
-      enqueue(buffered.slice(0, cut));
-      buffered = buffered.slice(cut);
-      void pump();
+      if (take(false)) void pump();
     },
     flush() {
       if (cancelled || flushed || done) return;
       flushed = true;
-      enqueue(buffered);
-      buffered = '';
+      take(true);
       void pump();
     },
     cancel() {
@@ -400,8 +569,9 @@ function openHttp(r: Resolved, defaultUrl: string, opts: TtsOptions, events: Tts
       controller.abort();
     },
     /**
-     * Only text that went out in a request. Text still buffered or queued when a
-     * barge-in lands was never sent, so Murf was never asked to synthesise it.
+     * Only text Murf was actually asked to synthesise. Text still buffered or
+     * queued when a barge-in lands was never sent; a request Murf refused
+     * synthesised nothing.
      */
     billableCharacters: () => sentCharacters,
   };

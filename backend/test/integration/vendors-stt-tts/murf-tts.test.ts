@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { once } from 'node:events';
-import { MurfTtsProvider } from '../../../src/providers/tts/MurfTtsProvider.js';
+import {
+  MAX_SEGMENT_CHARS,
+  MIN_SEGMENT_CHARS,
+  MurfTtsProvider,
+  segmentText,
+} from '../../../src/providers/tts/MurfTtsProvider.js';
 import type { TtsOptions } from '../../../src/providers/types.js';
 import { WAIT_MS, startFakeWs, type FakeConn, type FakeWsServer } from './helpers/fake-ws.js';
 import { dialClosed, dialOpen, dials, redirectTo } from './helpers/ws-redirect.js';
@@ -218,64 +223,122 @@ describe('MurfTtsProvider (falcon, HTTP): routing and request', () => {
   });
 });
 
-describe('MurfTtsProvider (falcon, HTTP): sentence segmentation', () => {
-  it('open() and pushText send nothing until a sentence is complete', async () => {
+/** Feeds `text` through segmentText a few characters at a time, the way LLM tokens arrive. */
+function streamed(text: string, step = 3): string[] {
+  let buf = '';
+  const out: string[] = [];
+  for (let i = 0; i < text.length; i += step) {
+    buf += text.slice(i, i + step);
+    const r = segmentText(buf, false);
+    out.push(...r.segments);
+    buf = r.rest;
+  }
+  return [...out, ...segmentText(buf, true).segments];
+}
+
+describe('segmentText (what each HTTP request carries)', () => {
+  it.each([
+    ['decimals and domains stay whole', 'It costs 3.5 dollars on murf.ai and that is fine.', ['It costs 3.5 dollars on murf.ai and that is fine.']],
+    [
+      'titles and dotted abbreviations are not sentence ends',
+      'Dr. Smith will see you at 3 p.m. today. Please arrive early.',
+      ['Dr. Smith will see you at 3 p.m. today.', 'Please arrive early.'],
+    ],
+    [
+      'U.S. and e.g. do not split; a short sentence waits for the next',
+      'The U.S. economy grew. Analysts e.g. Goldman expected less. Sure! Okay.',
+      ['The U.S. economy grew.', 'Analysts e.g. Goldman expected less.', 'Sure! Okay.'],
+    ],
+    [
+      'a list number always starts its segment, never ends the one before',
+      'Here are the steps you need:\n1. Open the app now\n2. Tap settings\n3. Choose voice',
+      ['Here are the steps you need:', '1. Open the app now\n2. Tap settings', '3. Choose voice'],
+    ],
+    ['a short opener is not its own request', 'Sure! How can I help you today with your refund?', ['Sure! How can I help you today with your refund?']],
+    ['closing quotes stay with their sentence', 'He said "yes, of course." She agreed with him.', ['He said "yes, of course."', 'She agreed with him.']],
+    ['Chinese needs no space after 。', '你好。今天天气很好。我们去公园吧。明天见！', ['你好。今天天气很好。我们去公园吧。', '明天见！']],
+    ['Devanagari danda ends a sentence', 'नमस्ते। आप कैसे हैं? मैं ठीक हूँ।', ['नमस्ते। आप कैसे हैं?', 'मैं ठीक हूँ।']],
+  ])('%s', (_name, text, expected) => {
+    expect(streamed(text)).toEqual(expected);
+  });
+
+  it('a run-on with no sentence end is cut at the cap, at a word boundary, before flush', () => {
+    const text = 'word '.repeat(150);
+    let buf = '';
+    const sent: string[] = [];
+    for (const w of text.match(/\S+\s*/g)!) {
+      buf += w;
+      const r = segmentText(buf, false);
+      sent.push(...r.segments);
+      buf = r.rest;
+    }
+    expect(sent.length).toBeGreaterThan(0); // something went out before flush
+    expect(sent.every((s) => s.length <= MAX_SEGMENT_CHARS && !s.endsWith('wor'))).toBe(true);
+  });
+
+  it('prefers a clause end inside the cap', () => {
+    const long = `${'a '.repeat(150)}then, ${'b '.repeat(200)}`;
+    const { segments } = segmentText(long, true);
+    expect(segments[0].endsWith('then,')).toBe(true);
+    expect(segments.every((s) => s.length <= MAX_SEGMENT_CHARS)).toBe(true);
+    expect(segments.join(' ').replace(/\s+/g, ' ')).toBe(long.trim().replace(/\s+/g, ' '));
+  });
+
+  it('flush sends everything, however short; nothing short goes before it', () => {
+    expect(segmentText('Hi. ', false)).toEqual({ segments: [], rest: 'Hi. ' });
+    expect(segmentText('Hi. ', true)).toEqual({ segments: ['Hi.'], rest: '' });
+    expect(segmentText('   ', true).segments).toEqual([]);
+    expect('Hi.'.length).toBeLessThan(MIN_SEGMENT_CHARS);
+  });
+
+  it('no text is lost or reordered across any segmentation', () => {
+    const text = 'Dr. Who? Yes. 你好。今天很好。 Item one\n2. Item two, then more. Done';
+    expect(streamed(text, 1).join(' ').replace(/\s+/g, '')).toBe(text.replace(/\s+/g, ''));
+  });
+});
+
+describe('MurfTtsProvider (falcon, HTTP): request scheduling', () => {
+  it('open() and pushText send nothing until a long-enough sentence is complete', async () => {
     const rec = ttsRecorder();
     const stream = await provider.open(fopts(), rec.events);
     stream.pushText('Hello ');
-    stream.pushText('there');
+    stream.pushText('there, my friend');
     await tick();
     expect(requests).toHaveLength(0);
     stream.pushText('. How');
     const r = await nextRequest();
-    expect(r.body.text).toBe('Hello there.');
+    expect(r.body.text).toBe('Hello there, my friend.');
     stream.flush();
     expect((await nextRequest(2)).body.text).toBe('How');
     await rec.waitDone();
     expect(rec.done).toBe(1);
   });
 
-  it('sends one request per sentence, strictly one at a time, in order', async () => {
+  it('a request per completed segment, strictly one in flight, audio in order', async () => {
     const held: Req[] = [];
     handler = (r) => held.push(r);
     const rec = ttsRecorder();
     const stream = await provider.open(fopts(), rec.events);
-    stream.pushText('One. Two! Three? ');
-    stream.pushText('Four');
-    stream.flush();
+    stream.pushText('The first sentence is here. ');
     await nextRequest(1);
+    stream.pushText('The second sentence follows it. ');
+    stream.pushText('Tail');
+    stream.flush();
     await tick();
     expect(requests).toHaveLength(1); // the next waits for this one's audio to finish
-    expect(requests[0].body.text).toBe('One. Two! Three?');
+    expect(requests[0].body.text).toBe('The first sentence is here.');
     audioResponse(held[0], constPcm(10, 1));
-    expect((await nextRequest(2)).body.text).toBe('Four');
+    expect((await nextRequest(2)).body.text).toBe('The second sentence follows it.');
+    await tick();
+    expect(requests).toHaveLength(2);
+    audioResponse(held[1], constPcm(10, 2));
+    expect((await nextRequest(3)).body.text).toBe('Tail');
     await tick();
     expect(rec.done).toBe(0);
-    audioResponse(held[1], constPcm(10, 2));
+    audioResponse(held[2], constPcm(10, 3));
     await rec.waitDone();
-    expect(rec.audio.map((b) => b.readInt16LE(0))).toEqual([1, 2]);
-  });
-
-  it('keeps decimals, domains and unspaced punctuation whole', async () => {
-    const rec = ttsRecorder();
-    const stream = await provider.open(fopts(), rec.events);
-    stream.pushText('It costs 3.5 dollars on murf.ai');
-    await tick();
-    expect(requests).toHaveLength(0);
-    stream.flush();
-    expect((await nextRequest()).body.text).toBe('It costs 3.5 dollars on murf.ai');
-    await rec.waitDone();
-  });
-
-  it('closing quotes stay with their sentence; Devanagari danda ends one', async () => {
-    const rec = ttsRecorder();
-    const stream = await provider.open(fopts(), rec.events);
-    stream.pushText('He said "yes." नमस्ते। Bye');
-    stream.flush();
-    const r = await nextRequest();
-    expect(r.body.text).toBe('He said "yes." नमस्ते।');
-    expect((await nextRequest(2)).body.text).toBe('Bye');
-    await rec.waitDone();
+    expect(rec.audio.map((b) => b.readInt16LE(0))).toEqual([1, 2, 3]);
+    expect(rec.done).toBe(1);
   });
 
   it('flush with no text ends the turn without a request; text after flush is dropped', async () => {
@@ -284,7 +347,7 @@ describe('MurfTtsProvider (falcon, HTTP): sentence segmentation', () => {
     stream.pushText('   ');
     stream.flush();
     stream.flush();
-    stream.pushText('late. ');
+    stream.pushText('A sentence that came too late. ');
     await rec.waitDone();
     await tick();
     expect(requests).toHaveLength(0);
@@ -367,35 +430,67 @@ describe('MurfTtsProvider (falcon, HTTP): audio down', () => {
   });
 });
 
+const FIRST = 'The first sentence is here.';
+const SECOND = 'The second sentence follows it.';
+
 describe('MurfTtsProvider (falcon, HTTP): failures', () => {
   it.each([
-    [400, '{"message":"Invalid voice_id: en-US-imani"}', 'Murf TTS HTTP 400: Invalid voice_id: en-US-imani'],
+    [400, '{"message":"Invalid voice_id: en-US-imani"}', {}, 'Murf TTS HTTP 400: Invalid voice_id: en-US-imani'],
     [
       429,
       '{"error_code":429,"error":"concurrency_limit_exceeded","region":"ap-south-1","limit":2,"message":"Too many"}',
-      'Murf TTS HTTP 429: Too many',
+      { 'retry-after': '1' },
+      'Murf TTS HTTP 429: Too many (Retry-After: 1s)',
     ],
-    [403, '{"error":"Invalid or expired api-key"}', 'Murf TTS HTTP 403: Invalid or expired api-key'],
-    [500, 'upstream exploded', 'Murf TTS HTTP 500: upstream exploded'],
-    [503, '', 'Murf TTS HTTP 503: Service Unavailable'],
-  ])('HTTP %i is surfaced with the vendor text and ends the turn once', async (status, body, message) => {
-    handler = (r) => {
-      r.res.writeHead(status);
-      r.res.end(body);
-    };
+    [403, '{"error":"Invalid or expired api-key"}', {}, 'Murf TTS HTTP 403: Invalid or expired api-key'],
+    [500, 'upstream exploded', {}, 'Murf TTS HTTP 500: upstream exploded'],
+    [503, '', {}, 'Murf TTS HTTP 503: Service Unavailable'],
+  ])('HTTP %i: surfaced with the vendor text, ends the turn once, stops the queued segment, bills nothing', async (status, body, headers, message) => {
+    const held: Req[] = [];
+    handler = (r) => held.push(r);
     const rec = ttsRecorder();
     const stream = await provider.open(fopts(), rec.events);
-    stream.pushText('One. Two. ');
-    stream.flush();
+    stream.pushText(`${FIRST} `);
+    await nextRequest(1);
+    stream.pushText(`${SECOND} `);
+    stream.flush(); // SECOND is now queued behind FIRST
+    held[0].res.writeHead(status, headers);
+    held[0].res.end(body);
     await rec.waitDone();
     await tick();
     expect(rec.errors).toEqual([message]);
     expect(rec.done).toBe(1);
-    expect(requests).toHaveLength(1); // a failed sentence stops the rest
+    expect(requests).toHaveLength(1);
+    expect(stream.billableCharacters?.()).toBe(0);
     expect(leaksKey(rec.errors)).toBe(false);
   });
 
-  it('an unreachable host: error + done, never the key', async () => {
+  it('a 200 carrying a JSON body is an error, not audio', async () => {
+    handler = (r) => {
+      r.res.writeHead(200, { 'content-type': 'application/json' });
+      r.res.end('{"message":"Locale not supported"}');
+    };
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('Hi.');
+    stream.flush();
+    await rec.waitDone();
+    expect(rec.audio).toHaveLength(0);
+    expect(rec.errors).toEqual(['Murf TTS HTTP 200: Locale not supported']);
+  });
+
+  it('a 200 with an empty body ends the turn quietly', async () => {
+    handler = (r) => audioResponse(r);
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('Hi.');
+    stream.flush();
+    await rec.waitDone();
+    expect(rec.audio).toHaveLength(0);
+    expect(rec.errors).toEqual([]);
+  });
+
+  it('an unreachable host: error naming the cause + done, never the key, nothing billed', async () => {
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));
     const rec = ttsRecorder();
@@ -403,11 +498,44 @@ describe('MurfTtsProvider (falcon, HTTP): failures', () => {
     stream.pushText('Hi.');
     stream.flush();
     await rec.waitDone();
-    expect(rec.errors[0]).toMatch(/^Murf TTS HTTP: /);
+    expect(rec.errors[0]).toMatch(/^Murf TTS HTTP: .*\(ECONNREFUSED\)$/);
     expect(leaksKey(rec.errors)).toBe(false);
+    expect(stream.billableCharacters?.()).toBe(0);
     server = http.createServer();
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
+  });
+
+  it('times out when no headers arrive, and when audio stops mid-body', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      handler = () => {}; // never answers
+      const rec = ttsRecorder();
+      const stream = await provider.open(fopts(), rec.events);
+      stream.pushText('Hi.');
+      stream.flush();
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.waitFor(() => expect(rec.errors).toEqual(['Murf TTS HTTP: no response headers within 15000ms']));
+      expect(stream.billableCharacters?.()).toBe(0);
+
+      handler = (r) => {
+        r.res.writeHead(200);
+        r.res.write(constPcm(240, 1)); // ...and then nothing
+      };
+      const rec2 = ttsRecorder();
+      const stream2 = await provider.open(fopts(), rec2.events);
+      stream2.pushText('Hi.');
+      stream2.flush();
+      await vi.waitFor(() => expect(rec2.audio).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(rec2.errors).toEqual([]); // the idle timer restarted on the chunk
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => expect(rec2.errors).toEqual(['Murf TTS HTTP: no further audio within 10000ms']));
+      expect(rec2.done).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -421,9 +549,10 @@ describe('MurfTtsProvider (falcon, HTTP): barge-in and billing', () => {
     };
     const rec = ttsRecorder();
     const stream = await provider.open(fopts(), rec.events);
-    stream.pushText('First sentence here. Second one. ');
-    stream.pushText('Third');
+    stream.pushText(`${FIRST} `);
     await rec.waitAudio();
+    stream.pushText(`${SECOND} `); // queued behind FIRST
+    stream.pushText('A buffered tail');
     stream.cancel();
     held.res.write(constPcm(240, 2));
     await tick();
@@ -431,8 +560,20 @@ describe('MurfTtsProvider (falcon, HTTP): barge-in and billing', () => {
     expect(rec.done).toBe(0);
     expect(rec.errors).toEqual([]);
     expect(requests).toHaveLength(1);
-    // Billed for the request that went out, not for what was still buffered.
-    expect(stream.billableCharacters?.()).toBe('First sentence here. Second one.'.length);
+    // Billed for the request that went out, not for what was queued or buffered.
+    expect(stream.billableCharacters?.()).toBe(FIRST.length);
+  });
+
+  it('cancel() before the response headers still bills the text Murf received', async () => {
+    handler = () => {}; // never answers
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText(`${FIRST} `);
+    await nextRequest(1);
+    stream.cancel();
+    await tick();
+    expect(rec.errors).toEqual([]);
+    expect(stream.billableCharacters?.()).toBe(FIRST.length);
   });
 
   it('cancel() inside the first audio callback drops everything after it', async () => {
@@ -462,7 +603,7 @@ describe('MurfTtsProvider (falcon, HTTP): barge-in and billing', () => {
   it('cancel() before any sentence completes sends nothing and bills nothing', async () => {
     const rec = ttsRecorder();
     const stream = await provider.open(fopts(), rec.events);
-    stream.pushText('Half a sente');
+    stream.pushText('Short. Half a sente');
     stream.cancel();
     stream.flush();
     await tick();

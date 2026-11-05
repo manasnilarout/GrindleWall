@@ -1013,9 +1013,9 @@ export const CATALOG: ProviderEntry[] = [
     kind: 'tts',
     implemented: true,
     envKeys: ['MURF_API_KEY'],
-    docs: 'https://murf.ai/api/docs/text-to-speech-models/falcon-2',
+    docs: 'https://murf.ai/api/docs/text-to-speech-models/falcon-2-1',
     // Two transports. falcon-2 goes to POST https://in.api.murf.ai/v1/speech/stream
-    // (India region, HTTP, one request per sentence) — moved there 2026-11-05 from
+    // (India region, HTTP, whole-sentence segments) — moved there 2026-11-05 from
     // the docs alone and NEVER RUN LIVE; `npm run murf:http:probe` is the check.
     // gen2 stays on wss://api.murf.ai/v1/speech/stream-input, verified 2026-09-05.
     // Measured on the WebSocket that day:
@@ -1028,7 +1028,7 @@ export const CATALOG: ProviderEntry[] = [
       {
         id: 'falcon-2',
         name: 'falcon-2',
-        note: 'HTTP stream via in.api.murf.ai (India) · one request per sentence · unmeasured — the ~186ms on file was the old WebSocket path',
+        note: 'HTTP stream via in.api.murf.ai (India) · sent in whole-sentence segments · unmeasured — the ~186ms on file was the old WebSocket path',
         voices: MURF_FALCON_VOICES,
         languages: MURF_FALCON_LOCALES,
       },
