@@ -1,5 +1,9 @@
 /**
- * Re-measures Murf's request shape and its text-buffering behaviour.
+ * Re-measures Murf's WebSocket (`/v1/speech/stream-input`) request shape and its
+ * text-buffering behaviour. Since 2026-11-05 the provider sends only Gen2 over
+ * the WebSocket — Falcon goes to HTTP `/v1/speech/stream`, which
+ * `npm run murf:http:probe` covers — so the Falcon rows here describe the path
+ * Falcon used to take, not the one it takes now.
  *
  * The shape ambiguities are settled (2026-09-05): `api-key` header, `voiceId`,
  * `falcon-2`/`gen2` in the query string, and each model on its own host — Gen2
@@ -153,10 +157,11 @@ for (const bufferDelay of [0, 100, 250, null]) {
   console.log(line(label, await attempt({ ...winner, mode: 'words', bufferDelay })));
 }
 
-console.log('\n--- MurfModelProfile in src/providers/tts/MurfTtsProvider.ts ---');
-console.log(`  voiceKey   = '${winner.voiceKey}'`);
+console.log('\n--- for a WebSocket profile in src/providers/tts/MurfTtsProvider.ts ---');
 console.log(`  wireModel  = '${winner.model}'`);
-console.log(`  wsBase     = '${hostFor(winner.model)}'`);
-console.log(`  auth       = ${winner.auth}`);
+console.log(`  transport  = { kind: 'ws', base: '${hostFor(winner.model)}' }`);
+console.log(`  voice_config key '${winner.voiceKey}' (the provider sends voiceId), auth by ${winner.auth}`);
+console.log('  Falcon is sent over HTTP since 2026-11-05: these results apply to it only if it is moved back.');
+console.log('  For the HTTP path, run npm run murf:http:probe.');
 console.log('\nPick the smallest buffer delay whose rendered audio matches the one-shot reference.');
 process.exit(0);

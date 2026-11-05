@@ -19,6 +19,7 @@
     "gemini:speech:selftest": "tsx scripts/gemini-speech-selftest.ts",
     "models": "tsx scripts/list-models.ts",
     "murf:probe": "tsx scripts/murf-probe.ts",
+    "murf:http:probe": "tsx scripts/murf-http-probe.ts",
     "murf:selftest": "tsx scripts/murf-selftest.ts",
     "murf:voices": "tsx scripts/murf-voices.ts",
     "nova:probe": "tsx scripts/nova-sonic-probe.ts",

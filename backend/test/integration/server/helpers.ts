@@ -73,6 +73,7 @@ function baseEnv(): Record<string, string> {
     'GEMINI_BASE_URL',
     'GEMINI_WS_BASE',
     'MURF_WS_BASE',
+    'MURF_HTTP_URL',
     'ELEVENLABS_WS_BASE',
     'USD_PER_INR',
     'CARTESIA_USD_PER_CREDIT',

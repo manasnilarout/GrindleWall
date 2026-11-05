@@ -1013,19 +1013,22 @@ export const CATALOG: ProviderEntry[] = [
     kind: 'tts',
     implemented: true,
     envKeys: ['MURF_API_KEY'],
-    docs: 'https://murf.ai/api/docs/text-to-speech-models/falcon-2',
-    // Verified against the live API on 2026-09-05. Two things the docs do not say
-    // and one they say wrongly, all measured:
+    docs: 'https://murf.ai/api/docs/text-to-speech-models/falcon-2-1',
+    // Two transports. falcon-2 goes to POST https://in.api.murf.ai/v1/speech/stream
+    // (India region, HTTP, whole-sentence segments) — moved there 2026-11-05 from
+    // the docs alone and NEVER RUN LIVE; `npm run murf:http:probe` is the check.
+    // gen2 stays on wss://api.murf.ai/v1/speech/stream-input, verified 2026-09-05.
+    // Measured on the WebSocket that day:
     //   · each model has its own voice catalogue, so the voices hang off the model
     //   · Gen2 is not served by the global websocket host at all — the provider
     //     sends it to api.murf.ai, and it is ~12x slower from here
-    //   · the docs' `voiceId: "Namrita"` sample is not a valid streaming voice id;
-    //     every real one is locale-prefixed (`en-US-natalie`)
+    //   · voice ids are published locale-prefixed (`en-US-natalie`); the bare
+    //     display name the docs use (`Namrita`) also resolves, per model
     models: [
       {
         id: 'falcon-2',
         name: 'falcon-2',
-        note: '~186ms TTFB measured through the full open+synthesise path — the fastest TTS in this bench',
+        note: 'HTTP stream via in.api.murf.ai (India) · sent in whole-sentence segments · unmeasured — the ~186ms on file was the old WebSocket path',
         voices: MURF_FALCON_VOICES,
         languages: MURF_FALCON_LOCALES,
       },

@@ -26,7 +26,7 @@ cd frontend && npm install
 
 `-n` leaves an existing `.env` alone. Mock providers are registered permanently,
 so the app and the no-key selftests run with empty vendor keys. Do not invent
-keys. Live probes (`roundtrip`, `realtime:probe`, `models`, `murf:probe`,
+keys. Live probes (`roundtrip`, `realtime:probe`, `models`, `murf:probe`, `murf:http:probe`,
 `cartesia:voices`, `gemini:live`, `elevenlabs:buffer`) need the matching secret
 from the environment; skip them when the key is absent rather than stubbing a
 fake as a live result.
@@ -68,7 +68,7 @@ cd frontend && npm run sync-protocol    # copy backend protocol.ts → frontend
 | `npm run usage:selftest` | cost arithmetic, persistence, secret redaction |
 | `npm run turn:selftest` | turn attribution: silence, barge-in, overlapping turns, TTS failure, tails |
 | `npm run catalog:selftest` | every UI-clickable provider/model/language path resolves |
-| `npm run murf:selftest` | Murf message handling against a local fake |
+| `npm run murf:selftest` | Murf handling against two local fakes — Gen2's WebSocket and Falcon's HTTP stream |
 | `npm run recorder:selftest` | conversation recorder timeline — writes files, reads bytes back |
 | `npm run gemini:speech:selftest` | Gemini TTS + Transcribe against local fakes |
 | `npm run elevenlabs:selftest` | ElevenLabs message handling against a local fake |
@@ -88,7 +88,8 @@ that agrees with our hypotheses by construction. Live checks are `roundtrip`,
 | `npm run realtime:probe` | realtime turn driven by real speech; asserts audio tokens billed as audio |
 | `npm run sarvam` / `npm run cartesia` / `npm run elevenlabs` / `npm run gemini:speech` | preset `roundtrip` invocations |
 | `npm run gemini:live [model\|all]` | real TTFT per catalog model variant |
-| `npm run murf:probe` / `npm run murf:voices` | re-measure Murf request shape + buffering / regenerate per-model voices |
+| `npm run murf:probe` / `npm run murf:voices` | re-measure Murf's WebSocket request shape + buffering (Gen2's path) / regenerate per-model voices |
+| `npm run murf:http:probe` | Murf's HTTP `/v1/speech/stream` on the India host, where Falcon goes: acceptance, region, bytes, cold/warm TTFB, delivery speed, segmentation duration and gaps. Doc-derived path, never yet run |
 | `npm run cartesia:voices` | regenerate Cartesia's voice library and per-model language sets |
 | `npm run sarvam:voices` | regenerate Bulbul v4 Flash's persona table from Sarvam's Voices doc page (doc-derived; keyed cross-check with `SARVAM_API_KEY`) |
 | `npm run elevenlabs:buffer` | re-measure rendered audio duration per `chunk_length_schedule` / `auto_mode` |
