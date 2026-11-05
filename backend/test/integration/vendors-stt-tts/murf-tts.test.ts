@@ -1,25 +1,496 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import http from 'node:http';
+import { once } from 'node:events';
 import { MurfTtsProvider } from '../../../src/providers/tts/MurfTtsProvider.js';
 import type { TtsOptions } from '../../../src/providers/types.js';
-import { startFakeWs, type FakeConn, type FakeWsServer } from './helpers/fake-ws.js';
+import { WAIT_MS, startFakeWs, type FakeConn, type FakeWsServer } from './helpers/fake-ws.js';
 import { dialClosed, dialOpen, dials, redirectTo } from './helpers/ws-redirect.js';
 import { FAKE_KEY, constPcm, leaksKey, rampPcm, ttsRecorder, wav } from './helpers/recorders.js';
 
 vi.mock('ws', async () => (await import('./helpers/ws-redirect.js')).redirectingWsModule());
 
 /*
- * Murf's per-model hosts are constants; `MURF_WS_BASE` overrides them all at
- * once. Host selection is therefore tested through the `ws` mock's redirect
- * (no override set), and the override itself is tested separately.
+ * Murf has two transports, chosen per model:
+ *
+ *   falcon  POST /v1/speech/stream on in.api.murf.ai — tested against a local
+ *           node:http fake through `credentials.MURF_HTTP_URL`, and the default
+ *           URL through a stubbed `fetch`.
+ *   gen2    wss://api.murf.ai/v1/speech/stream-input — tested through the `ws`
+ *           mock's redirect (no override set), and MURF_WS_BASE separately.
+ *
+ * None of this is vendor evidence. The HTTP shape in particular is doc-derived
+ * and has never completed a live call; see the provider header.
  */
 
-let fake: FakeWsServer;
 const provider = new MurfTtsProvider();
-const GLOBAL = 'wss://global.api.murf.ai/v1/speech/stream-input';
+const IN_HTTP = 'https://in.api.murf.ai/v1/speech/stream';
 const US = 'wss://api.murf.ai/v1/speech/stream-input';
 
-const opts = (o: Partial<TtsOptions> = {}): TtsOptions => ({
+// ---------------------------------------------------------------------------
+// HTTP fake (Falcon)
+// ---------------------------------------------------------------------------
+
+interface Req {
+  method: string;
+  url: string;
+  headers: http.IncomingHttpHeaders;
+  body: any;
+  res: http.ServerResponse;
+}
+
+let server: http.Server;
+let httpUrl: string;
+let requests: Req[];
+let handler: (r: Req) => void;
+let reqWaiters: Array<() => void>;
+
+const fopts = (o: Partial<TtsOptions> = {}): TtsOptions => ({
   model: 'falcon-2',
+  sampleRate: 24000,
+  credentials: { MURF_API_KEY: FAKE_KEY, MURF_HTTP_URL: httpUrl },
+  ...o,
+});
+
+function nextRequest(n = requests.length + 1): Promise<Req> {
+  return new Promise<Req>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`request ${n} never arrived`)), WAIT_MS);
+    const check = () => {
+      if (requests.length >= n) {
+        clearTimeout(timer);
+        resolve(requests[n - 1]);
+        return true;
+      }
+      return false;
+    };
+    if (!check()) reqWaiters.push(() => void check());
+  });
+}
+
+const audioResponse = (r: Req, ...chunks: Buffer[]) => {
+  r.res.writeHead(200, { 'content-type': 'application/octet-stream' });
+  for (const c of chunks) r.res.write(c);
+  r.res.end();
+};
+
+const tick = () => new Promise((res) => setTimeout(res, 30));
+
+beforeEach(async () => {
+  requests = [];
+  reqWaiters = [];
+  handler = (r) => audioResponse(r, constPcm(240, 7));
+  server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      let body: any;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString());
+      } catch {
+        body = undefined;
+      }
+      const r = { method: req.method ?? '', url: req.url ?? '', headers: req.headers, body, res };
+      requests.push(r);
+      for (const w of reqWaiters.splice(0)) w();
+      handler(r);
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  httpUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1/speech/stream`;
+});
+
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  server.closeAllConnections();
+  await new Promise<void>((r) => server.close(() => r()));
+});
+
+describe('MurfTtsProvider (falcon, HTTP): routing and request', () => {
+  it('refuses to open without a key', async () => {
+    await expect(provider.open(fopts({ credentials: {} }), ttsRecorder().events)).rejects.toThrow(
+      'MURF_API_KEY is not set',
+    );
+  });
+
+  it('POSTs to the India regional endpoint by default', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(constPcm(10, 1), { status: 200 });
+    });
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts({ credentials: { MURF_API_KEY: FAKE_KEY } }), rec.events);
+    stream.pushText('Hello.');
+    stream.flush();
+    await rec.waitDone();
+    expect(calls.map((c) => c.url)).toEqual([IN_HTTP]);
+    expect(calls[0].init.method).toBe('POST');
+    expect(dials()).toHaveLength(0);
+  });
+
+  it.each(['falcon-2', 'falcon-2.1', 'falcon', 'FALCON-2', '  Falcon  ', 'something-new', ''])(
+    'model %j goes over HTTP as model=falcon-2.1',
+    async (model) => {
+      const rec = ttsRecorder();
+      const stream = await provider.open(fopts({ model }), rec.events);
+      stream.pushText('Hi.');
+      stream.flush();
+      const r = await nextRequest();
+      expect(r.method).toBe('POST');
+      expect(r.url).toBe('/v1/speech/stream');
+      expect(r.body.model).toBe('falcon-2.1');
+      await rec.waitDone();
+      expect(dials()).toHaveLength(0);
+    },
+  );
+
+  it('the body is the documented shape; the key travels in the api-key header and never in the URL', async () => {
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts({ voice: 'en-IN-aarav', language: 'en-IN' }), rec.events);
+    stream.pushText('Hello there.');
+    stream.flush();
+    const r = await nextRequest();
+    expect(r.headers['api-key']).toBe(FAKE_KEY);
+    expect(r.headers['content-type']).toBe('application/json');
+    expect(r.url).not.toContain(FAKE_KEY);
+    expect(r.body).toEqual({
+      text: 'Hello there.',
+      voiceId: 'en-IN-aarav',
+      model: 'falcon-2.1',
+      format: 'PCM',
+      sampleRate: 24000,
+      channelType: 'MONO',
+      rate: 0,
+      pitch: 0,
+      style: 'Conversational',
+      locale: 'en-IN',
+    });
+    await rec.waitDone();
+  });
+
+  it('defaults to en-US-natalie; a whitespace-only voice falls back to it', async () => {
+    for (const voice of [undefined, '   ']) {
+      const rec = ttsRecorder();
+      const stream = await provider.open(fopts({ voice }), rec.events);
+      stream.pushText('Hi.');
+      stream.flush();
+      const r = await nextRequest();
+      expect(r.body.voiceId).toBe('en-US-natalie');
+      expect(r.body.style).toBe('Conversational');
+      await rec.waitDone();
+    }
+  });
+
+  it.each([
+    ['Namrita', 'Namrita'],
+    ['  ab12cd34-0000-4444-8888-ffffffffffff ', 'ab12cd34-0000-4444-8888-ffffffffffff'],
+  ])('a non-library voice id %j is trimmed, forwarded, and gets no assumed style', async (voice, sent) => {
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts({ voice }), rec.events);
+    stream.pushText('Hi.');
+    stream.flush();
+    const r = await nextRequest();
+    expect(r.body.voiceId).toBe(sent);
+    expect(r.body).not.toHaveProperty('style');
+    await rec.waitDone();
+  });
+
+  it.each([
+    ['en-US', 'en-US'],
+    ['en', 'en-US'],
+    ['hi', 'hi-IN'],
+    ['EN', 'en-US'],
+    ['as-IN', 'as-IN'],
+    ['fi', undefined], // Gen2-only language
+    ['xx-YY', undefined],
+    ['', undefined],
+    [undefined, undefined],
+  ])('language %j -> locale %j (the deprecated multiNativeLocale is never sent)', async (language, locale) => {
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts({ language }), rec.events);
+    stream.pushText('Hi.');
+    stream.flush();
+    const r = await nextRequest();
+    if (locale === undefined) expect(r.body).not.toHaveProperty('locale');
+    else expect(r.body.locale).toBe(locale);
+    expect(r.body).not.toHaveProperty('multiNativeLocale');
+    await rec.waitDone();
+  });
+});
+
+describe('MurfTtsProvider (falcon, HTTP): sentence segmentation', () => {
+  it('open() and pushText send nothing until a sentence is complete', async () => {
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('Hello ');
+    stream.pushText('there');
+    await tick();
+    expect(requests).toHaveLength(0);
+    stream.pushText('. How');
+    const r = await nextRequest();
+    expect(r.body.text).toBe('Hello there.');
+    stream.flush();
+    expect((await nextRequest(2)).body.text).toBe('How');
+    await rec.waitDone();
+    expect(rec.done).toBe(1);
+  });
+
+  it('sends one request per sentence, strictly one at a time, in order', async () => {
+    const held: Req[] = [];
+    handler = (r) => held.push(r);
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('One. Two! Three? ');
+    stream.pushText('Four');
+    stream.flush();
+    await nextRequest(1);
+    await tick();
+    expect(requests).toHaveLength(1); // the next waits for this one's audio to finish
+    expect(requests[0].body.text).toBe('One. Two! Three?');
+    audioResponse(held[0], constPcm(10, 1));
+    expect((await nextRequest(2)).body.text).toBe('Four');
+    await tick();
+    expect(rec.done).toBe(0);
+    audioResponse(held[1], constPcm(10, 2));
+    await rec.waitDone();
+    expect(rec.audio.map((b) => b.readInt16LE(0))).toEqual([1, 2]);
+  });
+
+  it('keeps decimals, domains and unspaced punctuation whole', async () => {
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('It costs 3.5 dollars on murf.ai');
+    await tick();
+    expect(requests).toHaveLength(0);
+    stream.flush();
+    expect((await nextRequest()).body.text).toBe('It costs 3.5 dollars on murf.ai');
+    await rec.waitDone();
+  });
+
+  it('closing quotes stay with their sentence; Devanagari danda ends one', async () => {
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('He said "yes." नमस्ते। Bye');
+    stream.flush();
+    const r = await nextRequest();
+    expect(r.body.text).toBe('He said "yes." नमस्ते।');
+    expect((await nextRequest(2)).body.text).toBe('Bye');
+    await rec.waitDone();
+  });
+
+  it('flush with no text ends the turn without a request; text after flush is dropped', async () => {
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('   ');
+    stream.flush();
+    stream.flush();
+    stream.pushText('late. ');
+    await rec.waitDone();
+    await tick();
+    expect(requests).toHaveLength(0);
+    expect(rec.done).toBe(1);
+    expect(stream.billableCharacters?.()).toBe(0);
+  });
+});
+
+describe('MurfTtsProvider (falcon, HTTP): audio down', () => {
+  it('emits the first chunk while the response is still streaming', async () => {
+    let held!: Req;
+    handler = (r) => {
+      held = r;
+      r.res.writeHead(200);
+      r.res.write(rampPcm(240));
+    };
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('Hi. ');
+    stream.flush();
+    await rec.waitAudio();
+    expect(rec.audio[0].equals(rampPcm(240))).toBe(true);
+    expect(rec.done).toBe(0);
+    held.res.end(rampPcm(10, 3));
+    await rec.waitDone();
+    expect(Buffer.concat(rec.audio).equals(Buffer.concat([rampPcm(240), rampPcm(10, 3)]))).toBe(true);
+  });
+
+  it('a sample split across HTTP chunks is reassembled, not dropped or shifted', async () => {
+    const pcm = rampPcm(100, 1000);
+    handler = (r) => {
+      r.res.writeHead(200);
+      r.res.write(pcm.subarray(0, 51));
+      setTimeout(() => r.res.end(pcm.subarray(51)), 20);
+    };
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('Hi.');
+    stream.flush();
+    await rec.waitDone();
+    expect(Buffer.concat(rec.audio).equals(pcm)).toBe(true);
+    expect(rec.audio.every((b) => b.length % 2 === 0)).toBe(true);
+  });
+
+  it('strips a RIFF header even when it arrives split across chunks', async () => {
+    const pcm = rampPcm(200);
+    const body = wav(pcm);
+    handler = (r) => {
+      r.res.writeHead(200);
+      r.res.write(body.subarray(0, 20));
+      setTimeout(() => r.res.end(body.subarray(20)), 20);
+    };
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('Hi.');
+    stream.flush();
+    await rec.waitDone();
+    expect(Buffer.concat(rec.audio).equals(pcm)).toBe(true);
+  });
+
+  it('a response shorter than a WAV header is still emitted', async () => {
+    handler = (r) => audioResponse(r, constPcm(5, 9));
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('Hi.');
+    stream.flush();
+    await rec.waitDone();
+    expect(Buffer.concat(rec.audio).equals(constPcm(5, 9))).toBe(true);
+  });
+
+  it('resamples the requested 24 kHz to opts.sampleRate', async () => {
+    handler = (r) => audioResponse(r, constPcm(480, 222));
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts({ sampleRate: 16000 }), rec.events);
+    stream.pushText('Hi.');
+    stream.flush();
+    await rec.waitDone();
+    expect(rec.bytes).toBe(640);
+    expect(rec.audio[0].readInt16LE(0)).toBe(222);
+  });
+});
+
+describe('MurfTtsProvider (falcon, HTTP): failures', () => {
+  it.each([
+    [400, '{"message":"Invalid voice_id: en-US-imani"}', 'Murf TTS HTTP 400: Invalid voice_id: en-US-imani'],
+    [
+      429,
+      '{"error_code":429,"error":"concurrency_limit_exceeded","region":"ap-south-1","limit":2,"message":"Too many"}',
+      'Murf TTS HTTP 429: Too many',
+    ],
+    [403, '{"error":"Invalid or expired api-key"}', 'Murf TTS HTTP 403: Invalid or expired api-key'],
+    [500, 'upstream exploded', 'Murf TTS HTTP 500: upstream exploded'],
+    [503, '', 'Murf TTS HTTP 503: Service Unavailable'],
+  ])('HTTP %i is surfaced with the vendor text and ends the turn once', async (status, body, message) => {
+    handler = (r) => {
+      r.res.writeHead(status);
+      r.res.end(body);
+    };
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('One. Two. ');
+    stream.flush();
+    await rec.waitDone();
+    await tick();
+    expect(rec.errors).toEqual([message]);
+    expect(rec.done).toBe(1);
+    expect(requests).toHaveLength(1); // a failed sentence stops the rest
+    expect(leaksKey(rec.errors)).toBe(false);
+  });
+
+  it('an unreachable host: error + done, never the key', async () => {
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('Hi.');
+    stream.flush();
+    await rec.waitDone();
+    expect(rec.errors[0]).toMatch(/^Murf TTS HTTP: /);
+    expect(leaksKey(rec.errors)).toBe(false);
+    server = http.createServer();
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+  });
+});
+
+describe('MurfTtsProvider (falcon, HTTP): barge-in and billing', () => {
+  it('cancel() mid-response stops audio, sends nothing queued, raises no done or error', async () => {
+    let held!: Req;
+    handler = (r) => {
+      held = r;
+      r.res.writeHead(200);
+      r.res.write(constPcm(240, 1));
+    };
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('First sentence here. Second one. ');
+    stream.pushText('Third');
+    await rec.waitAudio();
+    stream.cancel();
+    held.res.write(constPcm(240, 2));
+    await tick();
+    expect(rec.audio).toHaveLength(1);
+    expect(rec.done).toBe(0);
+    expect(rec.errors).toEqual([]);
+    expect(requests).toHaveLength(1);
+    // Billed for the request that went out, not for what was still buffered.
+    expect(stream.billableCharacters?.()).toBe('First sentence here. Second one.'.length);
+  });
+
+  it('cancel() inside the first audio callback drops everything after it', async () => {
+    handler = (r) => {
+      r.res.writeHead(200);
+      r.res.write(constPcm(240, 1));
+      setTimeout(() => r.res.end(constPcm(240, 2)), 20);
+    };
+    const rec = ttsRecorder();
+    let stream!: Awaited<ReturnType<typeof provider.open>>;
+    stream = await provider.open(fopts(), {
+      ...rec.events,
+      onAudio: (c) => {
+        rec.events.onAudio(c);
+        stream.cancel();
+      },
+    });
+    stream.pushText('Hi.');
+    stream.flush();
+    await rec.waitAudio();
+    await tick();
+    expect(rec.audio).toHaveLength(1);
+    expect(rec.done).toBe(0);
+    expect(rec.errors).toEqual([]);
+  });
+
+  it('cancel() before any sentence completes sends nothing and bills nothing', async () => {
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.pushText('Half a sente');
+    stream.cancel();
+    stream.flush();
+    await tick();
+    expect(requests).toHaveLength(0);
+    expect(stream.billableCharacters?.()).toBe(0);
+    expect(rec.done).toBe(0);
+  });
+
+  it('close(), close(), cancel() is safe and silent', async () => {
+    const rec = ttsRecorder();
+    const stream = await provider.open(fopts(), rec.events);
+    stream.close();
+    stream.close();
+    stream.cancel();
+    await tick();
+    expect(rec.done).toBe(0);
+    expect(rec.errors).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WebSocket fake (Gen2)
+// ---------------------------------------------------------------------------
+
+let fake: FakeWsServer;
+
+const opts = (o: Partial<TtsOptions> = {}): TtsOptions => ({
+  model: 'gen2',
   sampleRate: 24000,
   credentials: { MURF_API_KEY: FAKE_KEY },
   ...o,
@@ -39,22 +510,11 @@ afterEach(async () => {
   await fake.close();
 });
 
-describe('MurfTtsProvider: hosts and query', () => {
-  it('refuses to open without a key', async () => {
-    await expect(provider.open(opts({ credentials: {} }), ttsRecorder().events)).rejects.toThrow(
-      'MURF_API_KEY is not set',
-    );
-  });
-
+describe('MurfTtsProvider (gen2, WebSocket): host and query', () => {
   it.each([
-    ['falcon-2', GLOBAL, 'falcon-2'],
-    ['falcon', GLOBAL, 'falcon-2'],
-    ['FALCON-2', GLOBAL, 'falcon-2'],
-    ['  Falcon  ', GLOBAL, 'falcon-2'],
     ['gen2', US, 'gen2'],
     ['GEN2', US, 'gen2'],
-    ['something-new', GLOBAL, 'falcon-2'],
-    ['', GLOBAL, 'falcon-2'],
+    ['  Gen2 ', US, 'gen2'],
   ])('model %j dials %s with model=%s', async (model, host, wire) => {
     const stream = await provider.open(opts({ model }), ttsRecorder().events);
     const conn = await fake.nextConnection();
@@ -76,7 +536,7 @@ describe('MurfTtsProvider: hosts and query', () => {
     stream.close();
   });
 
-  it('MURF_WS_BASE overrides the host for every model (the seam the self-test uses)', async () => {
+  it('MURF_WS_BASE overrides the WebSocket host (the seam the self-test uses)', async () => {
     const base = `${fake.base}/v1/speech/stream-input`;
     const stream = await provider.open(
       opts({ model: 'gen2', credentials: { MURF_API_KEY: FAKE_KEY, MURF_WS_BASE: base } }),
@@ -96,7 +556,7 @@ describe('MurfTtsProvider: hosts and query', () => {
   });
 });
 
-describe('MurfTtsProvider: voice_config', () => {
+describe('MurfTtsProvider (gen2, WebSocket): voice_config', () => {
   it('goes first, with voiceId, the default style for a library voice, neutral prosody, context_id and min_buffer_size 5', async () => {
     const stream = await provider.open(opts({ voice: 'en-IN-aarav', language: 'en-IN' }), ttsRecorder().events);
     stream.pushText('hello ');
@@ -121,15 +581,13 @@ describe('MurfTtsProvider: voice_config', () => {
     stream.close();
   });
 
-  it('defaults to en-US-natalie on both models', async () => {
-    for (const model of ['falcon-2', 'gen2']) {
-      const stream = await provider.open(opts({ model }), ttsRecorder().events);
-      const conn = await fake.nextConnection();
-      const cfg = await voiceConfig(conn);
-      expect(cfg.voice_config.voiceId).toBe('en-US-natalie');
-      expect(cfg.voice_config.style).toBe('Conversational');
-      stream.close();
-    }
+  it('defaults to en-US-natalie', async () => {
+    const stream = await provider.open(opts(), ttsRecorder().events);
+    const conn = await fake.nextConnection();
+    const cfg = await voiceConfig(conn);
+    expect(cfg.voice_config.voiceId).toBe('en-US-natalie');
+    expect(cfg.voice_config.style).toBe('Conversational');
+    stream.close();
   });
 
   it.each([
@@ -152,20 +610,16 @@ describe('MurfTtsProvider: voice_config', () => {
   });
 
   it.each([
-    // [model, language, expected multi_native_locale]
-    ['falcon-2', 'en-US', 'en-US'],
-    ['falcon-2', 'en', 'en-US'], // bare code widened to the model's first locale for it
-    ['falcon-2', 'hi', 'hi-IN'],
-    ['falcon-2', 'EN', 'en-US'],
-    ['falcon-2', 'as-IN', 'as-IN'], // Falcon-only locale
-    ['gen2', 'as-IN', undefined], // ...which Gen2 does not publish: dropped, not sent to be refused
-    ['gen2', 'fi', 'fi-FI'], // Gen2-only language
-    ['falcon-2', 'fi', undefined],
-    ['falcon-2', 'xx-YY', undefined],
-    ['falcon-2', '', undefined],
-    ['falcon-2', undefined, undefined],
-  ])('%s + language %j -> multi_native_locale %j', async (model, language, locale) => {
-    const stream = await provider.open(opts({ model, language }), ttsRecorder().events);
+    // [language, expected multi_native_locale]
+    ['en-US', 'en-US'],
+    ['en', 'en-US'], // bare code widened to the model's first locale for it
+    ['as-IN', undefined], // Falcon-only locale Gen2 does not publish: dropped, not sent to be refused
+    ['fi', 'fi-FI'], // Gen2-only language
+    ['xx-YY', undefined],
+    ['', undefined],
+    [undefined, undefined],
+  ])('gen2 + language %j -> multi_native_locale %j', async (language, locale) => {
+    const stream = await provider.open(opts({ language }), ttsRecorder().events);
     const conn = await fake.nextConnection();
     const cfg = await voiceConfig(conn);
     if (locale === undefined) expect(cfg.voice_config).not.toHaveProperty('multi_native_locale');
@@ -174,7 +628,7 @@ describe('MurfTtsProvider: voice_config', () => {
   });
 });
 
-describe('MurfTtsProvider: text queueing', () => {
+describe('MurfTtsProvider (gen2, WebSocket): text queueing', () => {
   it('text and the closing end:true frame queued during the handshake go out after voice_config, in order, on one context', async () => {
     const stream = await provider.open(opts(), ttsRecorder().events);
     stream.pushText('Hello ');
@@ -209,7 +663,7 @@ describe('MurfTtsProvider: text queueing', () => {
   });
 });
 
-describe('MurfTtsProvider: audio down', () => {
+describe('MurfTtsProvider (gen2, WebSocket): audio down', () => {
   it('first frame is emitted before the turn ends; final:true (carrying audio) ends it once', async () => {
     const rec = ttsRecorder();
     const stream = await provider.open(opts(), rec.events);
@@ -268,7 +722,7 @@ describe('MurfTtsProvider: audio down', () => {
   });
 });
 
-describe('MurfTtsProvider: failures', () => {
+describe('MurfTtsProvider (gen2, WebSocket): failures', () => {
   it.each([
     [{ error: 'INVALID_VOICE: no such voice' }, 'Murf TTS error: INVALID_VOICE: no such voice'],
     [{ error: { message: 'Voice not available for model' } }, 'Murf TTS error: Voice not available for model'],
@@ -337,7 +791,7 @@ describe('MurfTtsProvider: failures', () => {
   });
 });
 
-describe('MurfTtsProvider: barge-in and teardown', () => {
+describe('MurfTtsProvider (gen2, WebSocket): barge-in and teardown', () => {
   it('cancel() inside the first audio callback drops everything after it, with no done and no error', async () => {
     const rec = ttsRecorder();
     let stream!: Awaited<ReturnType<typeof provider.open>>;

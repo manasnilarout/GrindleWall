@@ -296,7 +296,7 @@ cd backend  && npm run turn:selftest             # 36 checks on turn attribution
 cd backend  && npm run usage:selftest            # 141 checks on arithmetic, persistence, redaction, per-leg latency medians and the index row
 cd backend  && npm run catalog:selftest          # 127 checks — every provider/model/language path the UI can click
 cd backend  && npm run gemini:selftest           # 37 checks incl. token-usage parsing
-cd backend  && npm run murf:selftest             # 40 checks against a local fake
+cd backend  && npm run murf:selftest             # 47 checks against local fakes
 cd backend  && npm run recorder:selftest         # 40 checks on the conversation recorder's timeline, against real files
 cd backend  && npm run gemini:speech:selftest    # 80 checks — Gemini TTS + STT against local fakes
 cd backend  && npm run elevenlabs:selftest       # 57 checks against a local fake
@@ -670,25 +670,59 @@ TTS=cartesia-tts TTS_MODEL=sonic-3.6 STT=sarvam-stt STT_MODEL='saaras:v3-realtim
 
 **Murf is TTS only** — there is no Murf STT, so pair it with Saaras or Ink on the input leg.
 Verified end to end against the live API on 2026-09-05 (`murf-tts -> sarvam-stt` round trip,
-91% word overlap on both models).
+91% word overlap on both models) — **over the WebSocket**. On 2026-11-05 Falcon was moved to
+Murf's India-region HTTP endpoint, and that path has **not** completed a live call yet.
 
-| Model | Host | Measured TTFB | Voices |
+| Model | Endpoint now used | TTFB | Voices |
 |---|---|---|---|
-| `falcon-2` | `wss://global.api.murf.ai/v1/speech/stream-input` | **~186ms** (~90ms socket-warm) | 137 |
-| `gen2` | `wss://api.murf.ai/v1/speech/stream-input` | ~1.75s | 163 |
+| `falcon-2` | `POST https://in.api.murf.ai/v1/speech/stream` | **unmeasured** | 137 |
+| `gen2` | `wss://api.murf.ai/v1/speech/stream-input` | ~1.75s (measured 2026-09-05) | 163 |
 
-Falcon 2 is the fastest TTS in this bench. Gen2 is here for comparison only.
+The ~186ms (~90ms socket-warm) that made Falcon the fastest TTS here was measured on
+`wss://global.api.murf.ai/v1/speech/stream-input` on 2026-09-05, and belongs to that path only.
+Gen2 is here for comparison only.
 
 ```bash
 echo 'MURF_API_KEY=your_key' >> backend/.env
 cd backend
-npm run murf:selftest   # 40 checks, no key needed — message handling + catalog invariants
-npm run murf:probe      # re-measures the request shape and the buffering behaviour
-npm run murf:voices     # regenerates src/providers/murf-catalog.ts from the live API
+npm run murf:selftest     # 47 checks, no key needed — both transports + catalog invariants
+npm run murf:http:probe   # the open questions about the HTTP path, asked of Murf (bills a little)
+npm run murf:probe        # re-measures the WebSocket request shape and the buffering behaviour
+npm run murf:voices       # regenerates src/providers/murf-catalog.ts from the live API
 ```
 
 Requested as raw `PCM`, `MONO`, 24 kHz — the bench's canonical format, so no resampling.
 A RIFF header is stripped if one shows up anyway (`stripWavHeader`, shared with Sarvam).
+
+### Falcon over HTTP: what the docs say, and what that costs the measurement
+
+Everything in this subsection is from Murf's docs as read on 2026-11-05
+(`api-reference/text-to-speech/stream`, `text-to-speech/streaming`, `text-to-speech/data-residency`,
+`resources/rate-limits`). None of it has been checked against the vendor; `npm run murf:http:probe`
+asks each question directly and should be run before any of it is quoted as measured.
+
+- **One complete `text` per request.** `/v1/speech/stream` streams audio *out* but takes no
+  incremental text *in*, unlike `stream-input`. So the provider buffers LLM tokens and sends
+  each finished **sentence** as its own request, strictly one at a time, with the remainder on
+  `flush()`. Falcon's TTFB on this path therefore includes the LLM's time to finish its first
+  sentence; it is not comparable to a token-streaming vendor's TTFB, nor to the WebSocket figure
+  above. Rendered duration against a one-shot reference has not been measured for
+  sentence-sized requests (see *Buffering* below for why that matters).
+- **Regions.** The docs list 11 regional hosts plus `global.api.murf.ai`, and say *"Data residency
+  is only available for the Falcon 2.1 TTS model"* — so only Falcon goes to `in.api.murf.ai`.
+  `credentials.MURF_HTTP_URL` (env `MURF_HTTP_URL`) points it at any other host without a code change.
+- **Concurrency.** Default 2 in-flight requests on a regional host (5 on US-East); *"each in-flight
+  request uses one slot until its audio finishes"*. Sending sentences one at a time keeps a turn
+  to one slot; two simultaneous sessions on one key would hit Murf's documented `429`.
+- **Body.** `text`, `voiceId`, `model: "falcon-2.1"` (the docs: *"The earlier identifiers falcon-2,
+  falcon2 and FALCON are still accepted and use Falcon 2.1"*), `format: "PCM"`, `sampleRate: 24000`,
+  `channelType: "MONO"`, `style`, `rate`, `pitch`, and `locale` — which replaces the deprecated
+  `multiNativeLocale`. The catalog id stays `falcon-2` so saved sessions and rates still match.
+- **Bytes.** The docs describe PCM as *"headerless little-endian 16-bit samples"* only on the
+  WebSocket page. On HTTP the provider assumes the same, strips a RIFF header if one arrives,
+  and carries an odd byte across HTTP chunk boundaries.
+- **Gen2.** Murf's streaming guide now says *"The Gen2 model has been decommissioned for
+  streaming"*. That has not been re-measured, so Gen2 stays on the WebSocket it was verified on.
 
 ### The three things the docs get wrong
 
@@ -710,8 +744,9 @@ new model does not offer. The lists themselves are generated: `npm run murf:voic
 `src/providers/murf-catalog.ts` from `GET /v1/speech/voices?model=FALCON|GEN2`.
 
 **2. Gen2 is not on the global host.** It closes with `1008 Gen2 Model is not available in
-global.api.murf.ai`. Each model therefore carries its own `wsBase`. Falcon answers on both
-hosts, but the global one is ~3x faster from here, so the profile pins it there.
+global.api.murf.ai`. Each model therefore carries its own transport and host. Falcon answered on
+both WebSocket hosts, the global one ~3x faster from here; it has since moved to the India HTTP
+endpoint (above).
 
 **3. A voice id has two accepted spellings, and only one of them is checkable.** The API
 returns qualified ids — `hi-IN-namrita` — but both endpoints also resolve the bare display
@@ -771,9 +806,10 @@ reference rather than the worst — Murf aggregates sensibly on its own. TTFB is
 the range, so there is nothing to buy by tuning it: the provider leaves the delay at the
 vendor default and sets only a small `min_buffer_size`. Re-check with stage 3 of `murf:probe`.
 
-### What the 40 self-test checks do and do not prove
+### What the 47 self-test checks do and do not prove
 
-They run the real provider against a local fake speaking Murf's dialect, covering base64
+They run the real provider against local fakes speaking Murf's WebSocket and HTTP dialects,
+covering sentence segmentation, one request in flight, odd-byte chunk reassembly, base64
 decoding, the `final` flag, `voice_config` ordering, `end` flags, one shared `context_id`,
 header-not-URL auth, RIFF stripping, error surfacing, barge-in, text queued before the socket
 opens, the per-model wire shape, and the catalog invariants that keep one model's voice off
@@ -889,8 +925,9 @@ accumulates on `pushText` and issues a single request on `flush()`.
 
 The consequence matters more than the mechanism: **its time-to-first-byte includes the entire
 LLM generation**, because nothing can be sent until the LLM is finished. Cartesia's ~174ms and
-Murf's ~186ms are time to the first frame of a stream that started while the model was still
-writing. Putting Gemini's number in the same column would be comparing two different quantities.
+Murf's ~186ms (its 2026-09-05 WebSocket path) are time to the first frame of a stream that
+started while the model was still writing. Murf's Falcon now sits between the two: on its HTTP
+path each request waits for one finished sentence, not the whole reply. Putting Gemini's number in the same column would be comparing two different quantities.
 Read it as end-of-LLM → first-audio.
 
 Only `gemini-3.1-flash-tts-preview` streams the audio back, which is the one thing keeping its

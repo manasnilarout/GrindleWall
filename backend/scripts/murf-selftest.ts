@@ -1,15 +1,18 @@
 /**
- * Verifies MurfTtsProvider's message handling against a local fake that speaks
- * Murf's WebSocket dialect. Needs no API key and no network.
+ * Verifies MurfTtsProvider's message handling against local fakes: one speaking
+ * Murf's WebSocket dialect (Gen2), one speaking its HTTP `/v1/speech/stream`
+ * (Falcon). Needs no API key and no network.
  *
  * This covers what a fake CAN prove — framing, base64 decoding, the `final`
- * flag, error surfacing, queueing before the socket opens, WAV-header stripping
- * and barge-in. It CANNOT prove Murf accepts our request shape; that is what
- * `npm run murf:probe` is for.
+ * flag, error surfacing, queueing before the socket opens, sentence segmentation,
+ * chunk reassembly, WAV-header stripping and barge-in. It CANNOT prove Murf
+ * accepts our request shape; that is what `npm run murf:probe` (WebSocket) and
+ * `npm run murf:http:probe` (HTTP) are for.
  *
  *   npx tsx scripts/murf-selftest.ts
  */
 import { WebSocketServer } from 'ws';
+import http from 'node:http';
 import { once } from 'node:events';
 import { MurfTtsProvider } from '../src/providers/tts/MurfTtsProvider.js';
 import { languagesFor, voicesFor } from '../src/providers/catalog.js';
@@ -41,7 +44,13 @@ wss.on('connection', (ws, req) => {
 await once(wss, 'listening');
 const base = `ws://127.0.0.1:${(wss.address() as { port: number }).port}/v1/speech/stream-input`;
 
-const credentials = { MURF_API_KEY: 'test-key', MURF_WS_BASE: base };
+// MURF_HTTP_URL points at a port nothing listens on until section 11 starts its
+// own fake, so a Falcon request can never fall through to the real vendor.
+const credentials: Record<string, string> = {
+  MURF_API_KEY: 'test-key',
+  MURF_WS_BASE: base,
+  MURF_HTTP_URL: 'http://127.0.0.1:9/v1/speech/stream',
+};
 const provider = new MurfTtsProvider();
 
 interface RunResult { bytes: number; chunks: number; errors: string[]; doneCalls: number }
@@ -61,7 +70,7 @@ async function run(
 
   const stream = await provider.open(
     {
-      model: opts.model ?? 'falcon-2',
+      model: opts.model ?? 'gen2',
       voice: opts.voice,
       language: opts.language,
       sampleRate: CANONICAL_SAMPLE_RATE,
@@ -108,7 +117,7 @@ check('api key absent from URL', !lastUrl.includes('test-key'), lastUrl);
 check('format=PCM requested', lastUrl.includes('format=PCM'), lastUrl);
 check('sample_rate=24000 requested', lastUrl.includes('sample_rate=24000'), lastUrl);
 check('channel_type=MONO requested', lastUrl.includes('channel_type=MONO'));
-check('model in query string', lastUrl.includes('model=falcon-2'));
+check('model in query string', lastUrl.includes('model=gen2'));
 
 /* 3. voice_config must precede any text */
 const first = received[0];
@@ -140,10 +149,8 @@ check('typed voice id trimmed and forwarded', vc3.voiceId === 'ab12cd34-0000-444
 check('no style assumed for a non-library voice id', !('style' in vc3), JSON.stringify(vc3));
 check('locale still sent for a typed voice id', vc3.multi_native_locale === 'en-US');
 
-/* 5c. the model picked in the UI is the model asked for on the wire */
-await run(['hi '], { model: 'gen2' });
-check('gen2 selection reaches the query string', lastUrl.includes('model=gen2'), lastUrl);
-check('gen2 still asks for 24kHz PCM', lastUrl.includes('sample_rate=24000'), lastUrl);
+/* 5c. the default voice */
+await run(['hi ']);
 const vc4 = (received[0]?.voice_config ?? {}) as Record<string, unknown>;
 check('gen2 falls back to the default voice', vc4.voiceId === 'en-US-natalie', JSON.stringify(vc4));
 
@@ -179,7 +186,7 @@ handler = (send, msg) => {
   let after = 0;
   let errs = 0;
   const stream = await provider.open(
-    { model: 'falcon-2', sampleRate: CANONICAL_SAMPLE_RATE, credentials },
+    { model: 'gen2', sampleRate: CANONICAL_SAMPLE_RATE, credentials },
     { onAudio: () => (after += 1), onDone: () => {}, onError: () => (errs += 1) },
   );
   stream.pushText('hello ');
@@ -202,7 +209,7 @@ handler = (send, msg) => {
   let resolveDone!: () => void;
   const done = new Promise<void>((res) => (resolveDone = res));
   const stream = await provider.open(
-    { model: 'falcon-2', sampleRate: CANONICAL_SAMPLE_RATE, credentials },
+    { model: 'gen2', sampleRate: CANONICAL_SAMPLE_RATE, credentials },
     { onAudio: (c) => (bytes += c.length), onDone: () => resolveDone(), onError: () => {} },
   );
   // Synchronously, before the handshake can possibly have finished.
@@ -231,6 +238,80 @@ check('every catalog voice id is locale-prefixed (the docs\' bare names are not)
   [...falconIds, ...gen2Ids].filter((id) => !/^[a-z]{2}-[a-z]{2,6}-/i.test(id)).slice(0, 5).join(', '));
 check('each model brings its own locales',
   languagesFor('murf-tts', 'falcon-2').length > 20 && languagesFor('murf-tts', 'gen2').length > 20);
+
+/* 11. Falcon over HTTP POST /v1/speech/stream: one request per sentence, in order */
+{
+  const bodies: Array<Record<string, unknown>> = [];
+  let headers: http.IncomingHttpHeaders = {};
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const pcm = tone(200);
+  const srv = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      headers = req.headers;
+      bodies.push(JSON.parse(Buffer.concat(chunks).toString()));
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      res.writeHead(200);
+      // Split on an odd byte so a sample straddles two chunks.
+      res.write(pcm.subarray(0, 101));
+      setTimeout(() => {
+        inFlight -= 1;
+        res.end(pcm.subarray(101));
+      }, 30);
+    });
+  });
+  await new Promise<void>((res) => srv.listen(0, '127.0.0.1', () => res()));
+  const url = `http://127.0.0.1:${(srv.address() as { port: number }).port}/v1/speech/stream`;
+  const httpCreds = { MURF_API_KEY: 'test-key', MURF_HTTP_URL: url };
+
+  let bytes = 0;
+  let oddChunks = 0;
+  let doneCalls = 0;
+  const errors: string[] = [];
+  let resolveDone!: () => void;
+  const done = new Promise<void>((res) => (resolveDone = res));
+  const stream = await provider.open(
+    { model: 'falcon-2', voice: 'en-IN-aarav', language: 'en', sampleRate: CANONICAL_SAMPLE_RATE, credentials: httpCreds },
+    {
+      onAudio: (c) => {
+        bytes += c.length;
+        if (c.length % 2) oddChunks += 1;
+      },
+      onDone: () => {
+        doneCalls += 1;
+        resolveDone();
+      },
+      onError: (e) => errors.push(e.message),
+    },
+  );
+  for (const w of ['Hello ', 'there. ', 'It costs ', '3.5 dollars! ', 'Bye']) stream.pushText(w);
+  stream.flush();
+  await Promise.race([done, new Promise((res) => setTimeout(res, 3000))]);
+  stream.close();
+  srv.closeAllConnections();
+  srv.close();
+
+  check('http: one request per sentence, remainder on flush',
+    JSON.stringify(bodies.map((b) => b.text)) === JSON.stringify(['Hello there.', 'It costs 3.5 dollars!', 'Bye']),
+    JSON.stringify(bodies.map((b) => b.text)));
+  check('http: never more than one request in flight', maxInFlight === 1, `${maxInFlight}`);
+  check('http: api-key header', headers['api-key'] === 'test-key');
+  const b0 = bodies[0] ?? {};
+  check('http: documented body fields',
+    b0.voiceId === 'en-IN-aarav' && b0.model === 'falcon-2.1' && b0.format === 'PCM' &&
+      b0.sampleRate === 24000 && b0.channelType === 'MONO' && b0.style === 'Conversational',
+    JSON.stringify(b0));
+  check('http: bare language widened to a locale, sent as `locale`', b0.locale === 'en-US' && !('multiNativeLocale' in b0),
+    JSON.stringify(b0));
+  check('http: every byte of every response delivered', bytes === pcm.length * 3, `${bytes} vs ${pcm.length * 3}`);
+  check('http: no odd-length chunk emitted', oddChunks === 0, `${oddChunks}`);
+  check('http: one done, no errors', doneCalls === 1 && errors.length === 0, `${doneCalls} ${errors.join('; ')}`);
+  check('http: billed for the characters actually sent',
+    stream.billableCharacters?.() === 'Hello there.It costs 3.5 dollars!Bye'.length, `${stream.billableCharacters?.()}`);
+}
 
 let failed = 0;
 for (const [n, ok, d] of results) {
