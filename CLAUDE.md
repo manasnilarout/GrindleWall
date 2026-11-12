@@ -100,7 +100,9 @@ a mock model id).
 
 Production is an OCI Always Free ARM VM (`ap-hyderabad-1`) owned by Terraform in
 `deploy/terraform/`. `terraform apply` re-resolves `git_ref` to a commit and redeploys,
-so only pushed commits ship. State is local and holds every vendor key; never commit it.
+so only pushed commits ship. State is in the private OCI bucket `grindelwald-tfstate`
+(`backend.hcl`, gitignored) and holds every vendor key. SSH access for each machine that
+applies comes from the committed `deploy/terraform/authorized_keys`.
 The public hostname is `grindelwald.magickvoice.app` (`PUBLIC_DOMAIN`, rendered into
 `nginx.https.conf`); its A record, on Cloudflare and DNS only, is the one manual step. `deployment-guide.md`
 documents the same stack done by hand.

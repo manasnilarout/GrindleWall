@@ -1,0 +1,5 @@
+# Public SSH keys allowed into the VM, one per line. Every machine that runs
+# `terraform apply` must have its key here: the deploy step connects with it.
+# Committed (public keys are not secret) so all machines agree on the list;
+# a key removed from here loses access on the next apply.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwuAfSvzttqVN46CHVuApVIzYOvtfrQj0gsFSwfFAei laptop

@@ -1,0 +1,13 @@
+# cp backend.hcl.example backend.hcl   (gitignored; the repo is public)
+# then: terraform init -backend-config=backend.hcl
+#
+# Where the shared Terraform state lives: the bucket ./bootstrap created.
+
+bucket    = "grindelwald-tfstate"
+namespace = "replace-me" # `oci os ns get --query data --raw-output`
+region    = "ap-hyderabad-1"
+
+# Which ~/.oci/config profile, and how it authenticates. Use the same values
+# as oci_config_profile / oci_auth in terraform.tfvars.
+config_file_profile = "DEFAULT"
+auth                = "ApiKey" # or "SecurityToken" after `oci session authenticate`
