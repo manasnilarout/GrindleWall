@@ -16,6 +16,7 @@ data "oci_core_images" "ubuntu" {
 resource "oci_core_instance" "app" {
   compartment_id      = var.compartment_ocid
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
+  fault_domain        = var.fault_domain
   display_name        = var.name
   shape               = var.instance_shape
 
@@ -54,8 +55,9 @@ resource "oci_core_instance" "app" {
     ignore_changes = [source_details[0].source_id]
 
     precondition {
-      condition     = length(data.oci_core_images.ubuntu.images) > 0
-      error_message = "No Canonical Ubuntu 24.04 image is available for ${var.instance_shape} in this region."
+      # The provider returns null, not [], when nothing matches.
+      condition     = try(length(data.oci_core_images.ubuntu.images), 0) > 0
+      error_message = "No Canonical Ubuntu 24.04 image found for ${var.instance_shape} in compartment ${var.compartment_ocid}. Check the compartment OCID and that the region in ~/.oci/config is your home region."
     }
   }
 }

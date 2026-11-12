@@ -15,6 +15,13 @@ variable "region" {
 variable "compartment_ocid" {
   description = "Compartment for every resource. The tenancy OCID means the root compartment."
   type        = string
+
+  # An identity-domain OCID (ocid1.domain...) is easy to copy by mistake from
+  # the console, and OCI does not reject it: lookups just come back empty.
+  validation {
+    condition     = can(regex("^ocid1\\.(tenancy|compartment)\\.", var.compartment_ocid))
+    error_message = "compartment_ocid must be a tenancy (ocid1.tenancy...) or compartment (ocid1.compartment...) OCID. For the root compartment use the tenancy= line in ~/.oci/config; an identity domain OCID (ocid1.domain...) will not work."
+  }
 }
 
 variable "name" {
@@ -41,6 +48,17 @@ variable "instance_memory_gbs" {
   description = "Memory for a Flex shape. Always Free allows 24 GB of A1 memory in total across the tenancy."
   type        = number
   default     = 12
+}
+
+variable "fault_domain" {
+  description = "Pin the VM to one fault domain (FAULT-DOMAIN-1, -2 or -3). Null lets OCI choose. A1 capacity sometimes differs between them, so trying each is a way round `Out of host capacity`."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.fault_domain == null || can(regex("^FAULT-DOMAIN-[1-3]$", var.fault_domain))
+    error_message = "fault_domain must be null, FAULT-DOMAIN-1, FAULT-DOMAIN-2 or FAULT-DOMAIN-3."
+  }
 }
 
 variable "boot_volume_gbs" {
