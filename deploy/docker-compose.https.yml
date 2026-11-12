@@ -1,4 +1,4 @@
-# TLS overlay for grindelwald.magickvoice.com. Layers on docker-compose.yml —
+# TLS overlay for the hostname in PUBLIC_DOMAIN (deploy/.env). Layers on docker-compose.yml —
 # it is not standalone:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
@@ -8,7 +8,7 @@
 # allowed origin at the public URL.
 #
 # Two things must be true before this will start:
-#   - DNS for grindelwald.magickvoice.com points at this host, with ports 80
+#   - PUBLIC_DOMAIN is set in .env, and DNS for it points at this host, with ports 80
 #     and 443 reachable from the internet. ACME HTTP-01 validates on port 80,
 #     so this file publishes it whatever HTTP_PORT says.
 #   - a certificate already exists in the `letsencrypt` volume. nginx will
@@ -21,7 +21,7 @@ services:
       # Same-origin through nginx does not use CORS at all; this only matters
       # if something calls the API from another origin. A CORS_ORIGINS left in
       # .env overrides this — check it is not still http://localhost:8080.
-      CORS_ORIGINS: ${CORS_ORIGINS:-https://grindelwald.magickvoice.com}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in deploy/.env}}
 
   frontend:
     ports:
@@ -32,11 +32,15 @@ services:
       # both host ports when it is not.
       - "80:80"
       - "443:443"
+    environment:
+      # nginx.https.conf is a template: the image's entrypoint renders it with
+      # envsubst. The filter keeps nginx's own $variables out of the render.
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in deploy/.env}
+      NGINX_ENVSUBST_FILTER: ^PUBLIC_DOMAIN$$
     volumes:
-      # Read-only, so the image's 10-listen-on-ipv6-by-default.sh logs that it
-      # cannot edit this file on startup. Harmless: that script only strips
-      # `listen [::]` on hosts without IPv6, and it says so as info, not error.
-      - ./nginx.https.conf:/etc/nginx/conf.d/default.conf:ro
+      # Rendered into /etc/nginx/conf.d/default.conf at startup, over the
+      # image's plain-HTTP nginx.conf.
+      - ./nginx.https.conf:/etc/nginx/templates/default.conf.template:ro
       - letsencrypt:/etc/letsencrypt:ro
       - certbot-webroot:/var/www/certbot:ro
     healthcheck:

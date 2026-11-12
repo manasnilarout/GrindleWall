@@ -17,3 +17,7 @@ deployment-guide.md
 README.md
 AGENTS.md
 CLAUDE.md
+# Terraform state and tfvars hold secrets; never send them to a build.
+deploy/terraform
+**/*.tfstate*
+**/*.tfvars

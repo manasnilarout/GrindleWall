@@ -1,0 +1,28 @@
+# cp terraform.tfvars.example terraform.tfvars   (gitignored; it holds secrets)
+
+# Root compartment = the tenancy OCID (`tenancy=` in ~/.oci/config).
+compartment_ocid = "ocid1.tenancy.oc1..replace-me"
+
+# UI login, username admin@magickvoice.com. 12+ chars, no single quotes.
+auth_password = "replace-me-with-something-long"
+
+# Only the keys you want live; a missing one just shows that provider as not
+# ready. Any other deploy/.env.example setting can go here too.
+app_env = {
+  OPENAI_API_KEY        = ""
+  GOOGLE_API_KEY        = ""
+  ANTHROPIC_API_KEY     = ""
+  ELEVENLABS_API_KEY    = ""
+  SARVAM_API_KEY        = ""
+  CARTESIA_API_KEY      = ""
+  MURF_API_KEY          = ""
+  # AWS_ACCESS_KEY_ID     = ""
+  # AWS_SECRET_ACCESS_KEY = ""
+  # AWS_REGION            = "us-east-1"
+  # SESSION_MAX_RECORDS   = "500"
+}
+
+# git_ref           = "main"                 # branch, tag or commit
+# ssh_allowed_cidrs = ["203.0.113.7/32"]     # default is anywhere, key-only
+# instance_ocpus      = 2                    # Always Free: 4 OCPU / 24 GB A1 total
+# instance_memory_gbs = 12
