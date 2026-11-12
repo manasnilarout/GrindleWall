@@ -46,7 +46,7 @@ Both persist conversations on a volume at `/data/sessions` (JSON + stereo WAV).
 **Microphone access needs a secure context.** Browsers allow `getUserMedia` on
 `http://localhost` and on **HTTPS**. A public HTTP URL will load the UI and
 accept typed turns, but **Start mic** will fail. Any non-localhost host needs
-TLS — [HTTPS on a VM](#https-on-a-vm-grindelwaldmagickvoicecom) does it in
+TLS — [HTTPS on a VM](#https-on-a-vm-grindelwaldmagickvoiceapp) does it in
 nginx with a Let's Encrypt certificate; a load balancer or Caddy in front
 works just as well.
 
@@ -113,7 +113,8 @@ bake keys into an image.** Pass them at run time:
 | `AUTH_SESSION_HOURS` | `3` (capped at 24) | How long a UI session lasts after login. |
 | `STATIC_DIR` | unset / `/app/ui` in the all-in-one image | Directory of the Vite build. When set, Express serves the UI. |
 | `SESSION_DIR` | `/data/sessions` | JSON records + stereo WAVs. Mount a volume here. |
-| `CORS_ORIGINS` | `http://localhost:8080` under Compose, `https://grindelwald.magickvoice.com` under the TLS overlay, `http://localhost:5173` in the process itself | Comma-separated allowed origins. Both container defaults come from Compose pinning them, not from the backend — a raw `docker run --env-file` gets the process default. Same-origin through the proxy does not use CORS at all; a value left in `.env` wins over every default. |
+| `PUBLIC_DOMAIN` | unset | Public hostname for the TLS overlay (`grindelwald.magickvoice.app`). Required by `docker-compose.https.yml`, unused otherwise. |
+| `CORS_ORIGINS` | `http://localhost:8080` under Compose, `https://$PUBLIC_DOMAIN` under the TLS overlay, `http://localhost:5173` in the process itself | Comma-separated allowed origins. Both container defaults come from Compose pinning them, not from the backend — a raw `docker run --env-file` gets the process default. Same-origin through the proxy does not use CORS at all; a value left in `.env` wins over every default. |
 | `HTTP_PORT` | `8080` | Host port Compose publishes. Compose-only. Set it to `80` on a public host: the first certificate is issued while only the base stack is running, and that is what publishes port 80 for ACME. The TLS overlay then publishes 80 and 443 itself. |
 | `SESSION_AUDIO` | on (`0` disables) | Record each conversation to a stereo WAV. |
 | `SESSION_AUDIO_MAX_MINUTES` | `60` | Cap on one recording. Stereo PCM16 @ 24 kHz is ~5.8 MB per recorded minute. |
@@ -199,7 +200,7 @@ The frontend image proxies to the hostname `backend` on port 8787. That is the
 Compose service name. On a custom network, either keep that name or change the
 `upstream` in `deploy/nginx.conf` and rebuild.
 
-## HTTPS on a VM (grindelwald.magickvoice.com)
+## HTTPS on a VM (grindelwald.magickvoice.app)
 
 The containers speak HTTP by default. `deploy/docker-compose.https.yml` is an
 overlay that puts TLS on nginx itself, with a Let's Encrypt certificate
@@ -209,13 +210,18 @@ keeps working exactly as before:
 
 | File | Role |
 |---|---|
-| `deploy/nginx.https.conf` | Port 443 serves the app; port 80 answers the ACME challenge and redirects everything else to HTTPS. Mounted over `/etc/nginx/conf.d/default.conf`. |
+| `deploy/nginx.https.conf` | Port 443 serves the app; port 80 answers the ACME challenge and redirects everything else to HTTPS. A template: the overlay mounts it into `/etc/nginx/templates/`, and nginx's entrypoint renders it over `/etc/nginx/conf.d/default.conf` with `PUBLIC_DOMAIN` filled in. |
 | `deploy/docker-compose.https.yml` | Publishes 80 and 443, mounts the certificate volume, adds the `certbot` service, points `CORS_ORIGINS` at the HTTPS URL. |
 
-The hostname is written into `nginx.https.conf` — `server_name` and the two
-certificate paths — and as the `CORS_ORIGINS` default in the overlay. To
-serve a different name, change it in both and issue the certificate for that
-name.
+The hostname comes from **`PUBLIC_DOMAIN`** in `deploy/.env`. It is rendered into
+`nginx.https.conf`'s `server_name` and certificate paths, and it is the overlay's
+`CORS_ORIGINS` default. The overlay refuses to start without it. To serve a
+different name, change `PUBLIC_DOMAIN` and issue a certificate for that name.
+
+`magickvoice.app` is on a `.app` TLD, which is on the browsers' built-in HSTS
+preload list. Browsers will **never** load `http://grindelwald.magickvoice.app`,
+even on a first visit, so the site is only usable in a browser once TLS is up.
+curl and Let's Encrypt are not affected, so every plain-HTTP check below still works.
 
 ### 1. Point the domain at the VM
 
@@ -227,9 +233,10 @@ Type: A     Name: grindelwald     Value: 203.0.113.42     TTL: 300
 ```
 
 Most panels append the zone, so the Name field is the label `grindelwald`,
-not the full `grindelwald.magickvoice.com`. If the provider proxies traffic
+not the full `grindelwald.magickvoice.app`. If the provider proxies traffic
 (Cloudflare's orange cloud), turn that **off** — a proxy terminates TLS
-itself, which makes this whole section moot.
+itself, which makes this whole section moot. magickvoice.app's DNS is on
+Cloudflare, so set the record to **DNS only** (grey cloud).
 
 Do **not** add an `AAAA` record unless you have configured Docker to publish
 on IPv6. Docker's default `ports:` publishing is IPv4-only, and Let's Encrypt
@@ -240,7 +247,7 @@ Wait for it to resolve before going further; a stale record fails the order.
 From your laptop, not the VM:
 
 ```bash
-host grindelwald.magickvoice.com     # or: dig +short …  (needs bind9-dnsutils)
+host grindelwald.magickvoice.app     # or: dig +short …  (needs bind9-dnsutils)
 ```
 
 Open **80 and 443** inbound in the VM's firewall / security group. 80 is not
@@ -261,6 +268,7 @@ Now edit `deploy/.env`: paste the vendor keys you want live, and set
 
 ```
 HTTP_PORT=80
+PUBLIC_DOMAIN=grindelwald.magickvoice.app
 ```
 
 `HTTP_PORT=80` matters right now because the certificate is issued while only
@@ -280,7 +288,7 @@ VM's own public IP back to itself, so an on-VM curl can fail on a perfectly
 good setup:
 
 ```bash
-curl -fsS http://grindelwald.magickvoice.com/api/health
+curl -fsS http://grindelwald.magickvoice.app/api/health
 ```
 
 That is the exact path ACME is about to take. If it fails, fix it now:
@@ -305,9 +313,9 @@ the firewall is open and the container is the problem:
 ```bash
 # a fast "Connection refused" is the container; a slow timeout is the firewall
 curl -sS -m 8 -o /dev/null -w 'port 80:   %{time_total}s\n' \
-  http://grindelwald.magickvoice.com/
+  http://grindelwald.magickvoice.app/
 curl -sS -m 8 -o /dev/null -w 'port 9999: %{time_total}s\n' \
-  http://grindelwald.magickvoice.com:9999/
+  http://grindelwald.magickvoice.app:9999/
 ```
 
 ### 3. Issue the certificate
@@ -319,7 +327,7 @@ running nginx already serves at `/.well-known/acme-challenge/`:
 docker compose -f docker-compose.yml -f docker-compose.https.yml \
   run --rm --entrypoint certbot certbot \
   certonly --webroot -w /var/www/certbot \
-  -d grindelwald.magickvoice.com \
+  -d grindelwald.magickvoice.app \
   --email ops@magickvoice.com --agree-tos --no-eff-email
 ```
 
@@ -342,10 +350,10 @@ instead (certbot suggests `-v`; that adds one line, `-vv` is what reaches
 debug level) and you get the traceback and the raw ACME error on stdout.
 
 The result lands in the `grindelwald_letsencrypt` volume as
-`/etc/letsencrypt/live/grindelwald.magickvoice.com/{fullchain,privkey}.pem` —
+`/etc/letsencrypt/live/grindelwald.magickvoice.app/{fullchain,privkey}.pem` —
 the paths `nginx.https.conf` names. That directory is named after the **first**
 `-d`, so if you ever issue for several names, keep this one first (or pass
-`--cert-name grindelwald.magickvoice.com`) or nginx will be pointing at a
+`--cert-name grindelwald.magickvoice.app`) or nginx will be pointing at a
 path that no longer exists.
 
 ### 4. Switch nginx to TLS
@@ -361,12 +369,12 @@ expiry, which is the cadence Let's Encrypt asks for.
 Verify — again from your laptop:
 
 ```bash
-curl -fsS  https://grindelwald.magickvoice.com/api/health
-curl -sSI  http://grindelwald.magickvoice.com/ | head -1   # 301
+curl -fsS  https://grindelwald.magickvoice.app/api/health
+curl -sSI  http://grindelwald.magickvoice.app/ | head -1   # 301
 
 # what is actually being served, and until when
-openssl s_client -connect grindelwald.magickvoice.com:443 \
-  -servername grindelwald.magickvoice.com </dev/null 2>/dev/null \
+openssl s_client -connect grindelwald.magickvoice.app:443 \
+  -servername grindelwald.magickvoice.app </dev/null 2>/dev/null \
   | openssl x509 -noout -issuer -dates
 ```
 
@@ -379,7 +387,7 @@ docker compose -f docker-compose.yml -f docker-compose.https.yml \
   run --rm --entrypoint certbot certbot renew --dry-run
 ```
 
-Then open <https://grindelwald.magickvoice.com> and click **Start mic** — the
+Then open <https://grindelwald.magickvoice.app> and click **Start mic** — the
 whole point of the certificate is that `getUserMedia` is now allowed. The
 client picks `wss:` from `location.protocol`, so the session socket upgrades
 with no config change.
@@ -428,12 +436,12 @@ is unchanged and anything in front works. **Caddy** on the same VM, with
 automatic Let's Encrypt and WebSocket forwarding by default:
 
 ```caddyfile
-grindelwald.magickvoice.com {
+grindelwald.magickvoice.app {
     reverse_proxy 127.0.0.1:8080
 }
 ```
 
-Then set `CORS_ORIGINS=https://grindelwald.magickvoice.com` in `deploy/.env`.
+Then set `CORS_ORIGINS=https://grindelwald.magickvoice.app` in `deploy/.env`.
 
 A host nginx should mirror the `/ws/` block in `deploy/nginx.conf`: `Upgrade`
 / `Connection` headers, `proxy_buffering off`, and a long
@@ -531,10 +539,18 @@ Set the Dockerfile path to `deploy/Dockerfile` and the context to the repo
 root. Map the platform `PORT`. Attach a persistent disk at `/data/sessions`.
 Paste keys into the service environment UI.
 
+### Oracle Cloud (OCI) Always Free VM, with Terraform
+
+This is the production deployment. `deploy/terraform/` automates everything in
+[HTTPS on a VM](#https-on-a-vm-grindelwaldmagickvoiceapp): the network, an ARM
+A1.Flex VM, a reserved IP, Docker, the checkout, `.env`, and the certificate.
+The only manual step is the DNS A record, and you do it once. See
+[`deploy/terraform/README.md`](deploy/terraform/README.md).
+
 ### A generic Linux VM
 
 Install Docker, clone the repo, and follow
-[HTTPS on a VM](#https-on-a-vm-grindelwaldmagickvoicecom) — that section is
+[HTTPS on a VM](#https-on-a-vm-grindelwaldmagickvoiceapp) — that section is
 written for exactly this case and ends with nginx terminating TLS itself.
 Open 80 and 443 only; do not publish port 8787 to the internet.
 
@@ -555,20 +571,20 @@ Open 80 and 443 only; do not publish port 8787 to the internet.
 
 ```bash
 # process is up
-curl -fsS https://grindelwald.magickvoice.com/api/health
+curl -fsS https://grindelwald.magickvoice.app/api/health
 
 # UI is the Vite build, not a 404
-curl -fsS -o /dev/null -w '%{http_code}\n' https://grindelwald.magickvoice.com/
+curl -fsS -o /dev/null -w '%{http_code}\n' https://grindelwald.magickvoice.app/
 
 # catalog is JSON and lists mock providers as ready
-curl -fsS https://grindelwald.magickvoice.com/api/catalog | grep -E '"id": ?"mock-'
+curl -fsS https://grindelwald.magickvoice.app/api/catalog | grep -E '"id": ?"mock-'
 
 # WebSocket upgrade, without wscat. Expect "101 Switching Protocols"; curl
 # then holds the upgraded socket until -m fires, which is not a failure.
 curl -sS -m 5 -i --http1.1 \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
   -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-  https://grindelwald.magickvoice.com/ws/session | head -1
+  https://grindelwald.magickvoice.app/ws/session | head -1
 ```
 
 On a TLS deployment, four more — all from off the VM. The ACME line is the one
@@ -578,17 +594,17 @@ perfectly healthy today.
 
 ```bash
 # 80 redirects — but not the ACME challenge, which must stay on 80
-curl -sSI -m 8 http://grindelwald.magickvoice.com/ | head -1                  # 301
+curl -sSI -m 8 http://grindelwald.magickvoice.app/ | head -1                  # 301
 curl -sS  -m 8 -o /dev/null -w '%{http_code}\n' \
-  http://grindelwald.magickvoice.com/.well-known/acme-challenge/probe         # 404
+  http://grindelwald.magickvoice.app/.well-known/acme-challenge/probe         # 404
 
 # HSTS over TLS, and never over plain HTTP
-curl -sSI -m 8 https://grindelwald.magickvoice.com/ | grep -i strict-transport
-curl -sSI -m 8 http://grindelwald.magickvoice.com/  | grep -ci strict-transport   # 0
+curl -sSI -m 8 https://grindelwald.magickvoice.app/ | grep -i strict-transport
+curl -sSI -m 8 http://grindelwald.magickvoice.app/  | grep -ci strict-transport   # 0
 
 # what is served, by whom, until when
-openssl s_client -connect grindelwald.magickvoice.com:443 \
-  -servername grindelwald.magickvoice.com </dev/null 2>/dev/null \
+openssl s_client -connect grindelwald.magickvoice.app:443 \
+  -servername grindelwald.magickvoice.app </dev/null 2>/dev/null \
   | openssl x509 -noout -subject -issuer -dates
 ```
 
@@ -625,7 +641,7 @@ docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
 ```
 
 The bare command recreates nginx from the base file alone: `nginx.https.conf`
-is unmounted and port 443 stops being published. Because the site has already
+is no longer rendered and port 443 stops being published. Because the site has already
 sent `Strict-Transport-Security: max-age=31536000`, every browser that has
 visited it will refuse to fall back to `http://` — so this does not degrade
 the deployment to HTTP, it takes it **down**, with no click-through, until you
@@ -676,7 +692,7 @@ volume is declared in the overlay, so the blast radius follows the flags.)
 | `Dockerfile.backend` | API + WebSocket only. |
 | `Dockerfile.frontend` | nginx + Vite build, proxies to `backend:8787`. |
 | `nginx.conf` | Plain HTTP: SPA, `/api/`, `/ws/` (no buffering, long WS timeout), ACME challenge. |
-| `nginx.https.conf` | TLS on 443 for `grindelwald.magickvoice.com`, 80 → 443. The overlay mounts it over the image's `/etc/nginx/conf.d/default.conf`, replacing `nginx.conf`. |
+| `nginx.https.conf` | TLS on 443 for `$PUBLIC_DOMAIN`, 80 → 443. A template: the overlay mounts it into `/etc/nginx/templates/`, and the image renders it over `/etc/nginx/conf.d/default.conf`, replacing `nginx.conf`. |
 | `docker-compose.yml` | Two-service stack, UI on `${HTTP_PORT:-8080}`. |
 | `docker-compose.https.yml` | TLS overlay: 443, the certificate volume, the certbot renewer. Layers on `docker-compose.yml`. |
 | `docker-compose.single.yml` | One-service stack (Compose project `grindelwald-single`). |

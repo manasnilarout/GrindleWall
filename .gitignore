@@ -7,3 +7,10 @@ dist-check/
 .DS_Store
 recordings/
 data/
+
+# Terraform (deploy/terraform). State and tfvars hold vendor keys; the lock file is committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan

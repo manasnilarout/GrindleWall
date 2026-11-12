@@ -96,6 +96,15 @@ LLM_MODEL='gemini-3.1-flash-lite@minimal' TTS=sarvam-tts TTS_MODEL=bulbul:v3 \
 `smoke.mjs` refuses a real provider given without its `*_MODEL` (it would silently inherit
 a mock model id).
 
+## Deployment
+
+Production is an OCI Always Free ARM VM (`ap-hyderabad-1`) owned by Terraform in
+`deploy/terraform/`. `terraform apply` re-resolves `git_ref` to a commit and redeploys,
+so only pushed commits ship. State is local and holds every vendor key; never commit it.
+The public hostname is `grindelwald.magickvoice.app` (`PUBLIC_DOMAIN`, rendered into
+`nginx.https.conf`); its A record, on Cloudflare and DNS only, is the one manual step. `deployment-guide.md`
+documents the same stack done by hand.
+
 ## Architecture
 
 **Two session kinds, one interface.** `VoiceSession` (`backend/src/providers/types.ts`) is
