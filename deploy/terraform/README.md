@@ -27,18 +27,22 @@ you ──terraform apply──►  OCI (ap-hyderabad-1)
 
 | Need | Check | Expect |
 |---|---|---|
-| Terraform 1.5+ | `terraform version` | `Terraform v1.5` or later |
+| Terraform 1.12+ | `terraform version` | `Terraform v1.12` or later (first release with the OCI state backend) |
 | OCI CLI, configured | `oci iam region list --output table` | a table of regions, no auth error |
 | SSH key | `ls ~/.ssh/id_ed25519 ~/.ssh/id_ed25519.pub` | both files exist |
 | Cloudflare | log in at dash.cloudflare.com | you can edit DNS for **magickvoice.app** |
 
-If `oci` isn't configured, run `oci setup config`. Terraform reads the same
-`~/.oci/config` file. The region in it must be your tenancy's **home region**
-(`ap-hyderabad-1` here), because Always Free compute only exists there.
+If `oci` isn't configured, run `oci setup config` (an API key). Terraform reads the
+same `~/.oci/config` file. Its region must be your tenancy's **home region**
+(`ap-hyderabad-1` here), because Always Free compute only exists there. A browser
+login (`oci session authenticate`) works too; see
+[Part 4](#part-4-working-from-another-machine) for the two settings it needs.
 
-If you have no SSH key, create one with `ssh-keygen -t ed25519`. If your key has a
-passphrase, Terraform can't read it directly. In that case, run `ssh-add` first and
-set `ssh_private_key_path = null` in step 3, so Terraform uses ssh-agent instead.
+If you have no SSH key, create one with `ssh-keygen -t ed25519`. Its public half
+must be listed in `deploy/terraform/authorized_keys`, because the deploy step SSHes
+in with it. If your key has a passphrase, Terraform can't read it directly. In that
+case, run `ssh-add` first and set `ssh_private_key_path = null` in step 3, so
+Terraform uses ssh-agent instead.
 
 ### Step 2. Push the code you want to deploy
 
@@ -74,10 +78,20 @@ here.
 
 `terraform.tfvars` is gitignored. Never commit it.
 
-### Step 4. Initialise and preview
+### Step 4. Connect to the shared state, then preview
+
+Terraform's state (its record of what exists, including every key) lives in a
+private, versioned OCI bucket, `grindelwald-tfstate`, so every machine shares one
+copy and two applies can't run at once. The bucket already exists. On a brand-new
+tenancy you'd create it once with `deploy/terraform/bootstrap/` (instructions at the
+top of its `main.tf`).
+
+Point this checkout at the bucket:
 
 ```bash
-terraform init
+cp backend.hcl.example backend.hcl
+oci os ns get --query data --raw-output        # paste this as `namespace` in backend.hcl
+terraform init -backend-config=backend.hcl
 terraform plan
 ```
 
@@ -199,13 +213,15 @@ Terraform. Once the new site works:
 
 3. Stop or terminate the EC2 instance from the AWS console.
 
-### Step 11. Back up the Terraform state
+### Step 11. Know where the state lives
 
-`deploy/terraform/terraform.tfstate` is the only record of what Terraform created,
-and it contains **every vendor key and the login password** in plain text. Keep a copy
-somewhere private and encrypted, such as a password manager attachment. If it's
-lost, Terraform can no longer manage the VM, and you'd have to delete the resources in
-the OCI console and apply again.
+The state is the object `grindelwald/terraform.tfstate` in the `grindelwald-tfstate`
+bucket. It contains **every vendor key and the login password** in plain text, so
+treat access to that bucket like access to the keys. The bucket is private, and
+OCI encrypts it at rest. Versioning keeps every earlier state, so a bad apply can be
+undone by restoring an older version (Object Storage → the bucket → Objects →
+*View object versions*). The bucket has `prevent_destroy`, so Terraform won't delete
+it by accident.
 
 ---
 
@@ -223,7 +239,9 @@ the OCI console and apply again.
 | All containers | `ssh ubuntu@$IP 'sudo docker ps'` | expect frontend, backend and certbot |
 | Certificate expiry | the `openssl` line from step 9 | Let's Encrypt no longer emails you about expiry |
 | Rebuild the VM | `terraform apply -replace=oci_core_instance.app` | **wipes recorded sessions and the certificate**. The IP stays, and HTTPS comes back by itself within ~5 minutes |
-| Tear everything down | `terraform destroy` | releases the IP too. A later apply gets a new IP, so you'd need to update DNS |
+| Tear everything down | `terraform destroy` | releases the IP too. A later apply gets a new IP, so you'd need to update DNS. The state bucket stays |
+| Give a machine SSH access | add its public key to `authorized_keys`, push, apply from a machine that already has access | see Part 4 |
+| Remove a machine | delete its line from `authorized_keys`, push, apply | it loses SSH access on that apply |
 
 A deploy from `terraform apply` takes 3 to 5 minutes (mostly the image build). The
 site keeps serving until the new containers are swapped in, but live conversations
@@ -244,8 +262,88 @@ are cut at that moment.
 | browser shows a certificate error just after the DNS change | the certificate isn't issued yet. Wait for step 8 |
 | 502 Bad Gateway | the backend is not healthy. Check the backend logs (Part 2) |
 | a provider shows "not ready" | its key is missing or misspelt in `app_env`. Compare with `deploy/.env.example` |
+| `Error acquiring the state lock` | another apply or plan is running, from this machine or another. It names who holds the lock. Wait for it to finish. Only if that run crashed: `terraform force-unlock <ID>` with the ID from the message |
+| `Backend initialization required` | run `terraform init -backend-config=backend.hcl` |
+| `401-NotAuthenticated` with `auth = "SecurityToken"` | the session expired (1 hour). `oci session refresh --profile <profile>`, or `oci session authenticate` again |
+| new machine: SSH `Permission denied (publickey)` during apply | its key isn't on the VM yet. Its public key must be in `authorized_keys` **and** applied once from a machine that already has access (Part 4, step 3) |
 
 On the VM: the app is in `/opt/grindelwald` (a detached checkout of the deployed
 commit), its `.env` is root-only in `deploy/.env`, the deploy settings are in
 `/etc/grindelwald/deploy.conf`, and the deploy and TLS scripts are
 `deploy/terraform/scripts/` in this repo.
+
+---
+
+## Part 4: working from another machine
+
+Any machine can deploy, as long as it has these four things. The state is shared
+through the bucket, so nothing has to be copied between machines except the secrets.
+
+### Step 1. Tools and the repo
+
+Terraform 1.12+, the OCI CLI, and a clone of the repo (`git pull` to be current).
+
+### Step 2. An OCI login
+
+Either of these:
+
+- **API key** (doesn't expire): `oci setup config`. Nothing else to set.
+- **Browser login** (no key file on the machine; the session lasts an hour, and
+  `oci session refresh` extends it):
+
+  ```bash
+  oci session authenticate --region ap-hyderabad-1 --profile-name grindelwald
+  ```
+
+  Then set `oci_config_profile = "grindelwald"` and `oci_auth = "SecurityToken"` in
+  `terraform.tfvars`, and the same two values (`config_file_profile`, `auth`) in
+  `backend.hcl`.
+
+Check it with `oci os ns get` (add `--profile grindelwald --auth security_token` for
+a session).
+
+### Step 3. SSH access to the VM
+
+Being logged in to OCI does **not** let a machine SSH in, and the deploy step needs
+SSH. Each machine uses its own key:
+
+1. On the new machine, run `ssh-keygen -t ed25519` if it has no key, then
+   `cat ~/.ssh/id_ed25519.pub`.
+2. Add that line to `deploy/terraform/authorized_keys` (end it with a short name
+   such as `office-desktop`), commit and push.
+3. **From a machine that already has access**, `git pull` and `terraform apply`.
+   That apply writes the new list onto the VM.
+
+From then on the new machine can apply by itself. Removing a line and applying
+takes that machine's access away. All machines must use the same committed list,
+which is why it's in the repo and not in `terraform.tfvars`.
+
+### Step 4. The secrets: `terraform.tfvars` and `backend.hcl`
+
+Neither file is in git. To create them on the new machine:
+
+- `backend.hcl`: as in Part 1, step 4 (copy the example, fill in the namespace).
+- `terraform.tfvars`: copy it from wherever you keep it, such as a password
+  manager. Or keep it in the state bucket, which already holds the same secrets
+  inside the state:
+
+  ```bash
+  # from a machine that has it
+  oci os object put --bucket-name grindelwald-tfstate --name grindelwald/terraform.tfvars --file terraform.tfvars --force
+  # on the new machine
+  oci os object get --bucket-name grindelwald-tfstate --name grindelwald/terraform.tfvars --file terraform.tfvars
+  ```
+
+  If you keep it in the bucket, re-upload it every time you change it, or the
+  machines will drift apart on keys.
+
+### Step 5. Connect and check
+
+```bash
+cd deploy/terraform
+terraform init -backend-config=backend.hcl
+terraform plan          # should say "No changes" if main hasn't moved
+```
+
+If the plan wants to create the network or the VM, it isn't reading the shared
+state. Check `backend.hcl` before applying anything.

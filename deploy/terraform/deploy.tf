@@ -29,6 +29,14 @@ resource "random_password" "auth_hmac" {
 locals {
   git_sha = trimspace(data.http.git_sha.response_body)
 
+  # Every machine that may run `apply` has its public key in ./authorized_keys.
+  # It is committed, so all machines agree on it: a per-machine list would make
+  # each apply remove the other machines' access.
+  ssh_keys = [
+    for line in split("\n", file("${path.module}/authorized_keys")) : trimspace(line)
+    if trimspace(line) != "" && !startswith(trimspace(line), "#")
+  ]
+
   # HTTP_PORT=80: the first certificate is issued while only the plain stack
   # runs, and ACME reaches it on 80. CORS_ORIGINS is left unset on purpose so
   # the TLS overlay's https://<domain> default applies.
@@ -59,6 +67,14 @@ resource "terraform_data" "deploy" {
     conf     = sha256(local.deploy_conf)
     env      = sha256(local.app_env_file)
     scripts  = local.scripts_hash
+    ssh_keys = sha256(join("\n", local.ssh_keys))
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(local.ssh_keys) > 0 && alltrue([for k in local.ssh_keys : can(regex("^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-[a-z0-9@.-]+) [A-Za-z0-9+/=]+( .*)?$", k))])
+      error_message = "deploy/terraform/authorized_keys must hold at least one public key, one per line (ssh-ed25519 AAAA... name). Writing an empty list would lock every machine out."
+    }
   }
 
   connection {
@@ -92,6 +108,11 @@ resource "terraform_data" "deploy" {
   provisioner "file" {
     content     = local.app_env_file
     destination = "${local.stage_dir}/app.env"
+  }
+
+  provisioner "file" {
+    content     = "${join("\n", local.ssh_keys)}\n"
+    destination = "${local.stage_dir}/authorized_keys"
   }
 
   provisioner "remote-exec" {

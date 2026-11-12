@@ -18,6 +18,13 @@ install -m 755 "$STAGE/ensure-tls.sh" /usr/local/sbin/grindelwald-tls
 # shellcheck source=/dev/null
 . "$CONF"
 
+# SSH access for every machine listed in deploy/terraform/authorized_keys.
+# Replaces the file: a key removed from the list loses access here.
+if [ -s "$STAGE/authorized_keys" ]; then
+  install -m 600 -o ubuntu -g ubuntu "$STAGE/authorized_keys" /home/ubuntu/.ssh/authorized_keys
+  log "authorized_keys: $(grep -c . /home/ubuntu/.ssh/authorized_keys) key(s)"
+fi
+
 # The TLS timer must not run compose while this does.
 exec 9>"$LOCK"
 flock 9

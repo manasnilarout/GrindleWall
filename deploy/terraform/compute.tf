@@ -42,8 +42,11 @@ resource "oci_core_instance" "app" {
     boot_volume_size_in_gbs = var.boot_volume_gbs
   }
 
+  # Launch-time keys only. After launch the deploy step owns the VM's
+  # authorized_keys (from ./authorized_keys), which is how a new machine is
+  # given access without rebuilding the VM.
   metadata = {
-    ssh_authorized_keys = file(pathexpand(var.ssh_public_key_path))
+    ssh_authorized_keys = join("\n", local.ssh_keys)
   }
 
   preserve_boot_volume = false
@@ -52,7 +55,9 @@ resource "oci_core_instance" "app" {
     # Canonical publishes new images often; a new one must not rebuild the VM
     # (and wipe recorded sessions). `terraform apply -replace=oci_core_instance.app`
     # does that on purpose.
-    ignore_changes = [source_details[0].source_id]
+    # Metadata is ignored for the same reason: OCI only reads the SSH keys at
+    # launch, and a changed key list is applied by the deploy step instead.
+    ignore_changes = [source_details[0].source_id, metadata]
 
     precondition {
       # The provider returns null, not [], when nothing matches.

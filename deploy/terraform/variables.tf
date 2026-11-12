@@ -6,6 +6,17 @@ variable "oci_config_profile" {
   default     = "DEFAULT"
 }
 
+variable "oci_auth" {
+  description = "ApiKey (an API key in ~/.oci/config) or SecurityToken (a session from `oci session authenticate`; lasts an hour, `oci session refresh` extends it). Set the same value as `auth` in backend.hcl."
+  type        = string
+  default     = "ApiKey"
+
+  validation {
+    condition     = contains(["ApiKey", "SecurityToken"], var.oci_auth)
+    error_message = "oci_auth must be ApiKey or SecurityToken."
+  }
+}
+
 variable "region" {
   description = "OCI region. Null uses the profile's region. Always Free compute exists only in the tenancy's HOME region."
   type        = string
@@ -67,14 +78,8 @@ variable "boot_volume_gbs" {
   default     = 50
 }
 
-variable "ssh_public_key_path" {
-  description = "Public key installed for the `ubuntu` user."
-  type        = string
-  default     = "~/.ssh/id_ed25519.pub"
-}
-
 variable "ssh_private_key_path" {
-  description = "Private key Terraform deploys over. Null uses ssh-agent instead (needed if the key has a passphrase)."
+  description = "THIS machine's private key for the deploy step. Its public half must be listed in ./authorized_keys. Null uses ssh-agent instead (needed if the key has a passphrase)."
   type        = string
   default     = "~/.ssh/id_ed25519"
 }
