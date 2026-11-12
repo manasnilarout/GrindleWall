@@ -52,13 +52,18 @@ variable "instance_shape" {
 variable "instance_ocpus" {
   description = "OCPUs for a Flex shape. Always Free allows 4 A1 OCPUs in total across the tenancy."
   type        = number
-  default     = 2
+  # Measured 2026-11-13: the app idles near 0% CPU. One OCPU only makes the
+  # image build on each deploy slower.
+  default = 1
 }
 
 variable "instance_memory_gbs" {
-  description = "Memory for a Flex shape. Always Free allows 24 GB of A1 memory in total across the tenancy."
+  description = "Memory for a Flex shape (A1 allows 1-64 GB per OCPU). Always Free allows 24 GB of A1 memory in total across the tenancy."
   type        = number
-  default     = 12
+  # Measured 2026-11-13: the app uses ~75 MB and the whole VM ~740 MB at idle;
+  # the heaviest moment is the frontend build on each deploy (~470 MB peak for
+  # typecheck + Vite). 2 GB covers that plus the OS and Docker, with no swap.
+  default = 2
 }
 
 variable "fault_domain" {

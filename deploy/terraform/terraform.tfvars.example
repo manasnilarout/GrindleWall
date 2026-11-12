@@ -30,5 +30,5 @@ app_env = {
 # oci_auth           = "SecurityToken"
 # ssh_private_key_path = null                # use ssh-agent (key with a passphrase)
 # ssh_allowed_cidrs = ["203.0.113.7/32"]     # default is anywhere, key-only
-# instance_ocpus      = 2                    # Always Free: 4 OCPU / 24 GB A1 total
-# instance_memory_gbs = 12
+# instance_ocpus      = 1                    # Always Free: 4 OCPU / 24 GB A1 total
+# instance_memory_gbs = 2
