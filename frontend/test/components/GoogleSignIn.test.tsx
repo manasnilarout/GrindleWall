@@ -9,7 +9,11 @@ import { AUTH_STORAGE_KEY, type AllowlistState } from '../../src/lib/auth';
 import { routedFetch } from './fixtures';
 
 const googleIdToken = vi.fn<(cfg: unknown) => Promise<string>>();
-vi.mock('../../src/lib/firebase', () => ({ googleIdToken: (cfg: unknown) => googleIdToken(cfg) }));
+const prepareGoogle = vi.fn(async (_cfg: unknown) => ({}));
+vi.mock('../../src/lib/firebase', () => ({
+  googleIdToken: (cfg: unknown) => googleIdToken(cfg),
+  prepareGoogle: (cfg: unknown) => prepareGoogle(cfg),
+}));
 
 const FIREBASE = { apiKey: 'AIza-public', authDomain: 'gw.firebaseapp.com', projectId: 'gw' };
 
@@ -72,6 +76,8 @@ describe('useAuth with Google', () => {
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.status).toBe('login'));
     expect(result.current.googleEnabled).toBe(true);
+    // Firebase is warmed while the login page is up, before any click.
+    await waitFor(() => expect(prepareGoogle).toHaveBeenCalledWith(FIREBASE));
     expect(result.current.passwordEnabled).toBe(false);
 
     await act(() => result.current.signInWithGoogle());

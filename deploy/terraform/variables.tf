@@ -156,6 +156,13 @@ variable "app_env" {
     error_message = "app_env must not set HTTP_PORT, PUBLIC_DOMAIN, AUTH_PASSWORD, AUTH_HMAC_SECRET, CORS_ORIGINS, PORT, HOST, STATIC_DIR or SESSION_DIR; Terraform or Compose owns them."
   }
   validation {
+    # Test-only knobs. FIREBASE_JWKS_URL decides who can mint a sign-in (the
+    # backend refuses a non-loopback one anyway); AUTH_ALLOWLIST_FILE outside
+    # SESSION_DIR would land off the volume and vanish on the next deploy.
+    condition     = length(setintersection(keys(var.app_env), ["FIREBASE_JWKS_URL", "AUTH_ALLOWLIST_FILE"])) == 0
+    error_message = "app_env must not set FIREBASE_JWKS_URL or AUTH_ALLOWLIST_FILE; they exist for tests."
+  }
+  validation {
     condition     = alltrue([for v in values(var.app_env) : !can(regex("['\\n\\r]", v))])
     error_message = "app_env values must not contain a single quote or a newline (they are written single-quoted into deploy/.env)."
   }

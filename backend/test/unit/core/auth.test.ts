@@ -357,3 +357,20 @@ describe('tokenFromRequest', () => {
     expect(book.get(token, 0)?.username).toBe(AUTH_USERNAME);
   });
 });
+
+describe('SessionBook.onRevoke', () => {
+  it('fires for logout, for revokeWhere, and for expiry noticed on lookup — never for an unknown token', () => {
+    const book = new SessionBook(1_000);
+    const revoked: string[] = [];
+    book.onRevoke = (t) => revoked.push(t);
+    const a = book.create('a@x.io', 0);
+    const b = book.create('b@x.io', 0, { role: 'member', method: 'google' });
+    const c = book.create('c@x.io', 0);
+    book.revoke(a.token);
+    book.revoke(a.token);
+    book.revoke('unknown');
+    expect(book.revokeWhere((s) => s.method === 'google')).toBe(1);
+    expect(book.get(c.token, 5_000)).toBeUndefined();
+    expect(revoked).toEqual([a.token, b.token, c.token]);
+  });
+});

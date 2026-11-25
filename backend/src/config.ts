@@ -1,4 +1,9 @@
 import 'dotenv/config';
+import { join } from 'node:path';
+
+/** Where Google publishes the keys that sign Firebase ID tokens (as a JWK set; see `auth-google.ts`). */
+export const FIREBASE_DEFAULT_JWKS_URL =
+  'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
 
 export const config = {
   /** Empty or junk (`PORT=`, `PORT=abc`) is unset, never `listen(0)`'s random port. */
@@ -60,9 +65,11 @@ export const config = {
    * Google sign-in through Firebase Auth. Setting FIREBASE_PROJECT_ID and
    * FIREBASE_API_KEY turns it on; the browser does the Google popup and the
    * backend verifies the Firebase ID token it gets back, then issues its own
-   * session exactly as the password login does. The API key is a public
-   * identifier (Firebase ships it in every web bundle), served on
-   * GET /api/auth/config — it grants nothing on its own.
+   * session exactly as the password login does. The API key is served
+   * unauthenticated on GET /api/auth/config, as Firebase web apps always ship
+   * it — so it must be RESTRICTED in the Google Cloud console to the Firebase
+   * Auth APIs. An unrestricted key works against every API enabled in its
+   * project (Gemini, if that is the same project).
    */
   firebase: {
     projectId: (process.env.FIREBASE_PROJECT_ID ?? '').trim(),
@@ -73,12 +80,11 @@ export const config = {
     appId: (process.env.FIREBASE_APP_ID ?? '').trim() || undefined,
     /**
      * Where Firebase's ID-token signing keys are fetched from. Overridable ONLY
-     * so the integration tests can sign tokens with a local key; never set it in
-     * production — whoever serves this URL can mint any identity.
+     * so the integration tests can sign tokens with a local key — whoever serves
+     * this URL can mint any identity, admins included — so `index.ts` refuses
+     * to start with an override that is not http on a loopback address.
      */
-    jwksUrl:
-      (process.env.FIREBASE_JWKS_URL ?? '').trim() ||
-      'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com',
+    jwksUrl: (process.env.FIREBASE_JWKS_URL ?? '').trim() || FIREBASE_DEFAULT_JWKS_URL,
   },
   /**
    * Email domains whose Google accounts may sign in, comma-separated. These are
@@ -99,7 +105,8 @@ export const config = {
    * deliberately not a `*.json` file at its top level, which the session store
    * would try to read as a conversation.
    */
-  authAllowlistFile: process.env.AUTH_ALLOWLIST_FILE || `${process.env.SESSION_DIR ?? 'data/sessions'}/.auth/allowlist.json`,
+  authAllowlistFile:
+    process.env.AUTH_ALLOWLIST_FILE || join(process.env.SESSION_DIR ?? 'data/sessions', '.auth', 'allowlist.json'),
 };
 
 function csv(raw: string): string[] {
@@ -145,8 +152,8 @@ export function redactSecrets(text: string): string {
     if (value && !secrets.has(value)) secrets.set(value, key);
   }
   for (const [key, value] of Object.entries(process.env)) {
-    // Public by design and served on GET /api/auth/config; scrubbing it would
-    // only make Firebase errors unreadable.
+    // Served to every visitor on GET /api/auth/config anyway, so redacting it
+    // from an error would hide nothing.
     if (key === 'FIREBASE_API_KEY') continue;
     // Short values produce false positives (PATH fragments, "1", locale names).
     if (!value || value.length < 12) continue;

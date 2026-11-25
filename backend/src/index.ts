@@ -4,8 +4,8 @@ import { createServer } from 'node:http';
 import { createReadStream, existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { WebSocketServer } from 'ws';
-import { config, redactSecrets } from './config.js';
+import { WebSocketServer, type WebSocket } from 'ws';
+import { config, FIREBASE_DEFAULT_JWKS_URL, redactSecrets } from './config.js';
 import {
   AUTH_USERNAME,
   authEnabled,
@@ -16,8 +16,8 @@ import {
   verifyLogin,
   type AuthSession,
 } from './auth.js';
-import { GoogleTokenError, verifyFirebaseIdToken } from './auth-google.js';
-import { Allowlist, AllowlistError, isAllowed } from './auth-allowlist.js';
+import { GoogleKeysUnavailableError, GoogleTokenError, verifyFirebaseIdToken } from './auth-google.js';
+import { Allowlist, AllowlistError, AllowlistUnavailableError, isAllowed, normalizeEntry } from './auth-allowlist.js';
 import { catalogWithReadiness } from './providers/catalog.js';
 import { registeredIds } from './providers/factory.js';
 import { drainLiveSockets, handleSocket } from './server/session-socket.js';
@@ -46,8 +46,33 @@ const route =
     });
   };
 
+/**
+ * FIREBASE_JWKS_URL decides who can mint a valid identity. The test suite
+ * points it at a key it holds on 127.0.0.1; anything else is refused at boot
+ * rather than warned about, since a warning in a container log is not read.
+ */
+if (config.firebase.jwksUrl !== FIREBASE_DEFAULT_JWKS_URL) {
+  const u = URL.canParse(config.firebase.jwksUrl) ? new URL(config.firebase.jwksUrl) : undefined;
+  if (!u || u.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) {
+    throw new Error(
+      `FIREBASE_JWKS_URL=${config.firebase.jwksUrl} is not allowed: it exists only to point tests at a local key ` +
+        `(http://127.0.0.1:<port>/...). Unset it to use Google's keys.`,
+    );
+  }
+}
+
+/** Pinned domains, validated once. A junk value admits nobody, so it is dropped loudly rather than kept quietly. */
+const pinnedDomains = config.authAllowedDomains.flatMap((raw) => {
+  try {
+    return [normalizeEntry('domain', raw).value];
+  } catch {
+    console.error(`[auth] AUTH_ALLOWED_DOMAINS: "${raw}" is not a domain (e.g. magickvoice.com) — ignored`);
+    return [];
+  }
+});
+
 const sessions = new SessionBook(config.authSessionTtlMs);
-const allowlist = new Allowlist(config.authAllowlistFile, config.authAllowedDomains);
+const allowlist = new Allowlist(config.authAllowlistFile, pinnedDomains);
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): void {
   if (!authEnabled()) {
@@ -161,6 +186,11 @@ app.post(
         res.status(401).json({ error: err.message.startsWith('Invalid ID token') ? 'Invalid sign-in token' : err.message });
         return;
       }
+      if (err instanceof GoogleKeysUnavailableError) {
+        console.error('[auth] google sign-in unavailable:', err.message);
+        res.status(503).json({ error: 'Google sign-in is temporarily unavailable. Try again in a minute.' });
+        return;
+      }
       throw err;
     }
     const admin = isAdminEmail(identity.email);
@@ -212,6 +242,10 @@ app.post(
       console.log(`[auth] allowlist + ${req.body?.kind} ${String(req.body?.value)} by ${by}`);
       res.json({ entries, adminEmails: config.authAdminEmails });
     } catch (err) {
+      if (err instanceof AllowlistUnavailableError) {
+        res.status(503).json({ error: redactSecrets(err.message) });
+        return;
+      }
       if (!(err instanceof AllowlistError)) throw err;
       res.status(400).json({ error: err.message });
     }
@@ -232,6 +266,10 @@ app.delete(
       console.log(`[auth] allowlist - ${req.body?.kind} ${String(req.body?.value)} by ${by} (${revoked} signed out)`);
       res.json({ entries, adminEmails: config.authAdminEmails, revoked });
     } catch (err) {
+      if (err instanceof AllowlistUnavailableError) {
+        res.status(503).json({ error: redactSecrets(err.message) });
+        return;
+      }
       if (!(err instanceof AllowlistError)) throw err;
       res.status(400).json({ error: err.message });
     }
@@ -256,7 +294,6 @@ app.get('/api/catalog', requireAuth, (_req, res) => {
 app.get('/api/pricing', requireAuth, (_req, res) => {
   res.json({ usdPerInr, inrPerUsd, fxCheckedOn: FX_CHECKED_ON, rates: rateTable() });
 });
-
 
 /** Completed conversations, newest first. */
 app.get(
@@ -378,11 +415,48 @@ if (config.staticDir) serveUi(app, config.staticDir);
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws/session' });
+/**
+ * Open sockets per session token. The token is checked once, on upgrade — so
+ * without this a signed-out, expired or de-listed user's open tab could keep
+ * starting vendor sessions (each billed) until they closed it. Revoking a
+ * token closes its sockets with 4401, which the browser treats as "sign in
+ * again" and the socket handler as the end of the conversation.
+ */
+const socketsByToken = new Map<string, Set<WebSocket>>();
+sessions.onRevoke = (token) => {
+  const open = socketsByToken.get(token);
+  if (!open) return;
+  socketsByToken.delete(token);
+  for (const ws of open) ws.close(4401, 'signed out');
+};
+
+/** `setTimeout` overflows (and fires at once) above this. */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 wss.on('connection', (ws, req) => {
-  if (authEnabled() && !sessions.get(tokenFromRequest(req))) {
+  if (!authEnabled()) {
+    handleSocket(ws);
+    return;
+  }
+  const token = tokenFromRequest(req);
+  const session = sessions.get(token);
+  if (!token || !session) {
     ws.close(4401, 'unauthorized');
     return;
   }
+  let open = socketsByToken.get(token);
+  if (!open) socketsByToken.set(token, (open = new Set()));
+  open.add(ws);
+  // Expiry has no event of its own: close the socket when its session would stop being valid.
+  const expiry = setTimeout(() => {
+    if (!sessions.get(token)) ws.close(4401, 'session expired');
+  }, Math.min(Math.max(0, session.expiresAt - Date.now()) + 1_000, MAX_TIMEOUT_MS));
+  ws.once('close', () => {
+    clearTimeout(expiry);
+    const set = socketsByToken.get(token);
+    set?.delete(ws);
+    if (set?.size === 0) socketsByToken.delete(token);
+  });
   handleSocket(ws);
 });
 
@@ -393,10 +467,13 @@ const onListen = (): void => {
   if (config.staticDir) console.log(`  ui  ${config.staticDir}`);
   console.log(`  registered:`, registeredIds());
   if (googleAuthEnabled()) {
-    const domains = config.authAllowedDomains.join(', ') || '(none pinned)';
+    const domains = pinnedDomains.join(', ') || '(none pinned)';
     console.log(`  auth: google sign-in on (firebase ${config.firebase.projectId}; domains ${domains})`);
-    if (config.firebase.jwksUrl !== 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com') {
+    if (config.firebase.jwksUrl !== FIREBASE_DEFAULT_JWKS_URL) {
       console.warn(`  auth: FIREBASE_JWKS_URL is overridden (${config.firebase.jwksUrl}) — test use only`);
+    }
+    if (!passwordAuthEnabled() && config.authAdminEmails.length === 0) {
+      console.warn('  auth: no admin — set AUTH_ADMIN_EMAILS (or the password login), or nobody can edit the allowlist');
     }
   } else if (config.firebase.projectId || config.firebase.apiKey) {
     console.warn('  auth: only one of FIREBASE_PROJECT_ID / FIREBASE_API_KEY is set — google sign-in is off');

@@ -1,7 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AUTH_USERNAME, bootServer, login, pipelineConfig, WsClient, type ServerHandle } from './helpers.js';
+import {
+  AUTH_USERNAME,
+  bootExpectingExit,
+  bootServer,
+  freePort,
+  login,
+  ownTempDir,
+  pipelineConfig,
+  WsClient,
+  type ServerHandle,
+} from './helpers.js';
 import { fakeIssuer, PROJECT, serveJwks, type FakeIssuer } from '../../firebase-fake.js';
 
 const PASSWORD = 'correct horse battery staple';
@@ -150,6 +160,32 @@ describe('google sign-in alongside the password login', () => {
     expect(((await pinned.json()) as { error: string }).error).toMatch(/pinned/);
   });
 
+  it('removing an entry also closes the removed user\'s OPEN socket — it was only checked on upgrade', async () => {
+    const admin = await login(server, PASSWORD, SECRET);
+    await post(server, '/api/auth/allowlist', { kind: 'domain', value: 'socket.io' }, admin);
+    const leaver = await googleToken('x@socket.io');
+    const ws = await WsClient.connect(`${server.wsUrl}?token=${leaver}`);
+    ws.send({ type: 'start', config: pipelineConfig('open socket before removal') });
+    await ws.next('session_started');
+
+    await post(server, '/api/auth/allowlist', { kind: 'domain', value: 'socket.io' }, admin, 'DELETE');
+    const { code, reason } = await ws.closed;
+    expect(code).toBe(4401);
+    expect(reason).toBe('signed out');
+  });
+
+  it('logout closes that token\'s open socket and leaves another session\'s alone', async () => {
+    const mine = await googleToken('a@magickvoice.com');
+    const theirs = await googleToken('b@magickvoice.com');
+    const ws = await WsClient.connect(`${server.wsUrl}?token=${mine}`);
+    const other = await WsClient.connect(`${server.wsUrl}?token=${theirs}`);
+    await post(server, '/api/auth/logout', {}, mine);
+    expect((await ws.closed).code).toBe(4401);
+    other.send({ type: 'start', config: pipelineConfig('still signed in') });
+    await other.next('session_started');
+    await other.close();
+  });
+
   it('the JWKS is fetched once and cached, not per sign-in', () => {
     expect(jwks.hits()).toBe(1);
   });
@@ -189,6 +225,76 @@ describe('google sign-in only (no password)', () => {
   it('the password route is 503, not a way in', async () => {
     const r = await post(server, '/api/auth/login', { username: AUTH_USERNAME, hmac: 'ab' });
     expect(r.status).toBe(503);
+  });
+});
+
+describe('google sign-in when Google\'s keys cannot be fetched', () => {
+  let server: ServerHandle;
+  beforeAll(async () => {
+    const closed = await freePort(); // nothing listens here
+    server = await bootServer({
+      env: { FIREBASE_PROJECT_ID: PROJECT, FIREBASE_API_KEY: API_KEY, FIREBASE_JWKS_URL: `http://127.0.0.1:${closed}/jwks` },
+    });
+  });
+  afterAll(async () => {
+    await server?.stop();
+  });
+
+  it('is a 503 "try again", not a 401 "bad token" — and admits nobody', async () => {
+    const issuer = await fakeIssuer();
+    const r = await post(server, '/api/auth/google', { idToken: await issuer.mint() });
+    expect(r.status).toBe(503);
+    expect(((await r.json()) as { error: string }).error).toMatch(/temporarily unavailable/);
+  });
+});
+
+describe('a corrupt allowlist file', () => {
+  let server: ServerHandle;
+  let file: string;
+  const corrupt = '{"version":1,"entries":[{"kind":"domain","value":"partner.io"},]}';
+  beforeAll(async () => {
+    const sessionDir = ownTempDir();
+    file = join(sessionDir, '.auth', 'allowlist.json');
+    mkdirSync(join(sessionDir, '.auth'), { recursive: true });
+    writeFileSync(file, corrupt);
+    server = await bootServer({ sessionDir, env: { AUTH_PASSWORD: PASSWORD, AUTH_HMAC_SECRET: SECRET } });
+  });
+  afterAll(async () => {
+    await server?.stop();
+  });
+
+  it('refuses edits with a 503 and leaves the file exactly as it was', async () => {
+    const admin = await login(server, PASSWORD, SECRET);
+    const r = await post(server, '/api/auth/allowlist', { kind: 'domain', value: 'new.io' }, admin);
+    expect(r.status).toBe(503);
+    expect(((await r.json()) as { error: string }).error).toMatch(/unreadable/);
+    expect(readFileSync(file, 'utf8')).toBe(corrupt);
+    // Reads still work, from the pinned domains alone.
+    const list = await fetch(`${server.base}/api/auth/allowlist`, { headers: { authorization: `Bearer ${admin}` } });
+    expect(((await list.json()) as { entries: Array<{ value: string }> }).entries.map((e) => e.value)).toEqual(['magickvoice.com']);
+  });
+});
+
+describe('boot-time auth configuration', () => {
+  it('refuses to start with FIREBASE_JWKS_URL pointing anywhere but loopback', async () => {
+    const { code, output } = await bootExpectingExit({
+      env: { FIREBASE_PROJECT_ID: PROJECT, FIREBASE_API_KEY: API_KEY, FIREBASE_JWKS_URL: 'https://keys.example.com/jwks' },
+    });
+    expect(code).not.toBe(0);
+    expect(output).toMatch(/FIREBASE_JWKS_URL=https:\/\/keys\.example\.com\/jwks is not allowed/);
+  });
+
+  it('drops a pinned domain that is not a domain, loudly, and warns when nobody can be admin', async () => {
+    const server = await bootServer({
+      env: { FIREBASE_PROJECT_ID: PROJECT, FIREBASE_API_KEY: API_KEY, AUTH_ALLOWED_DOMAINS: '*.magickvoice.com,partner.io' },
+    });
+    try {
+      expect(server.output()).toMatch(/"\*\.magickvoice\.com" is not a domain/);
+      expect(server.output()).toMatch(/domains partner\.io\)/);
+      expect(server.output()).toMatch(/no admin/);
+    } finally {
+      await server.stop();
+    }
   });
 });
 

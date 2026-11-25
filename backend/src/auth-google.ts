@@ -1,14 +1,20 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from 'jose';
+import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from 'jose';
 
 /**
  * Verifies a Firebase Auth ID token — what the browser gets back from the
  * Google sign-in popup — without the Admin SDK.
  *
- * This is Firebase's documented "verify ID tokens using a third-party JWT
- * library" recipe: RS256, signed by one of the keys published for
+ * The claim checks follow Firebase's "verify ID tokens using a third-party JWT
+ * library" page: RS256, signed by one of the keys published for
  * securetoken@system.gserviceaccount.com, `aud` = the project id, `iss` =
- * https://securetoken.google.com/<project id>, a non-empty `sub`, and an
- * `auth_time` in the past. `jose` checks `exp`/`iat` and caches the key set.
+ * https://securetoken.google.com/<project id>, a non-empty `sub`, `iat` and
+ * `auth_time` in the past, `exp` in the future.
+ *
+ * The KEY SOURCE differs from that page: it names the x509 certificate URL
+ * (`/robot/v1/metadata/x509/...`), and this reads the same account's JWK set
+ * (`/service_accounts/v1/jwk/...`), which `jose` can consume and cache
+ * directly. That the two serve the same keys is a measurement, not a doc
+ * claim — `npm run firebase:keys` re-checks it key for key.
  *
  * On top of a valid token, this layer insists the identity is a GOOGLE
  * account with a VERIFIED email: Firebase projects can enable other
@@ -22,7 +28,10 @@ export interface GoogleIdentity {
   name?: string;
 }
 
+/** The token is bad or not acceptable: a 401 (or 403-style message) to the user. */
 export class GoogleTokenError extends Error {}
+/** Google's signing keys could not be fetched: our problem, not the user's — a 503. */
+export class GoogleKeysUnavailableError extends Error {}
 
 /** Clock tolerance for `exp` / `iat` / `auth_time`, seconds. */
 const CLOCK_SKEW_S = 60;
@@ -52,6 +61,7 @@ export async function verifyFirebaseIdToken(
       requiredClaims: ['sub', 'iat', 'exp'],
     }));
   } catch (err) {
+    if (isKeySourceFailure(err)) throw new GoogleKeysUnavailableError(`Google signing keys unavailable: ${(err as Error).message}`);
     throw new GoogleTokenError(`Invalid ID token: ${(err as Error).message}`);
   }
 
@@ -78,4 +88,16 @@ export async function verifyFirebaseIdToken(
     uid: payload.sub,
     name: typeof payload.name === 'string' ? payload.name : undefined,
   };
+}
+
+/**
+ * Whether a verify failure came from fetching the key set rather than from the
+ * token. jose's token errors all have their own classes; a network failure
+ * (fetch's TypeError), a timeout, an unparseable set, or a non-200 (a bare
+ * `JOSEError`) mean the key endpoint is down or blocked. Either way nobody is
+ * admitted — this only decides whether the user is told "try again" or "bad token".
+ */
+function isKeySourceFailure(err: unknown): boolean {
+  if (!(err instanceof errors.JOSEError)) return true;
+  return err instanceof errors.JWKSTimeout || err instanceof errors.JWKSInvalid || err.constructor === errors.JOSEError;
 }

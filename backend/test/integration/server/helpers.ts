@@ -34,7 +34,7 @@ afterAll(() => {
   for (const d of ownDirs) rmSync(d, { recursive: true, force: true });
 });
 
-function ownTempDir(): string {
+export function ownTempDir(): string {
   const d = mkdtempSync(join(tmpdir(), 'gw-int-server-'));
   ownDirs.add(d);
   return d;

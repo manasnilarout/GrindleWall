@@ -99,6 +99,16 @@ export function useAuth() {
     setStatus('ready');
   }, [config]);
 
+  // Warm Firebase while the login page is up, so the click opens the popup at
+  // once instead of after a chunk download (see `prepareGoogle`).
+  const google = config?.google;
+  useEffect(() => {
+    if (status !== 'login' || !google) return;
+    import('../lib/firebase')
+      .then((m) => m.prepareGoogle(google))
+      .catch(() => undefined); // retried on click, where the error is shown
+  }, [status, google]);
+
   const signInWithGoogle = useCallback(async () => {
     if (!config?.google) throw new Error('Google sign-in is not configured');
     const { googleIdToken } = await import('../lib/firebase');

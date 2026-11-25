@@ -83,11 +83,25 @@ for (const [prov, model, label] of [
 /**
  * When AUTH_PASSWORD is set the socket is gated. HMAC the password the same
  * way the login page does and pass the issued token as `?token=`.
+ *
+ * A script cannot do the Google popup, so a server gated by Google sign-in
+ * alone is unreachable from here — say so, rather than failing on a bare 4401.
  */
 async function sessionUrl() {
   const password = env.AUTH_PASSWORD;
   const secret = env.AUTH_HMAC_SECRET;
-  if (!password || !secret) return BASE_URL;
+  if (!password || !secret) {
+    const api = (env.API_URL ?? 'http://127.0.0.1:8787') + '/api/auth/config';
+    const cfg = await fetch(api).then((r) => (r.ok ? r.json() : undefined)).catch(() => undefined);
+    if (cfg?.required) {
+      console.error(
+        'FAIL: the server requires sign-in, and smoke can only use the admin password login. ' +
+          'Set AUTH_PASSWORD and AUTH_HMAC_SECRET (here and on the server), or run against a server without the gate.',
+      );
+      process.exit(1);
+    }
+    return BASE_URL;
+  }
   const hmac = createHmac('sha256', secret).update(password, 'utf8').digest('hex');
   const api = (env.API_URL ?? 'http://127.0.0.1:8787') + '/api/auth/login';
   const res = await fetch(api, {

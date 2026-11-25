@@ -43,15 +43,31 @@ An optional login gate sits in front of the UI, with two ways in:
 - **Google sign-in** (Firebase Auth), for anyone on an allowed domain. Set `FIREBASE_PROJECT_ID` and
   `FIREBASE_API_KEY` (see `backend/.env.example` for the console steps). `@magickvoice.com` is allowed
   by default (`AUTH_ALLOWED_DOMAINS`); an admin adds more domains or single addresses on the
-  **Access** page, and removing one signs its people out at once. The backend verifies the Firebase
-  ID token itself (signature, project, issuer, Google as the provider, verified email) and then
-  issues its own session, so everything downstream is unchanged.
+  **Access** page. Removing one revokes its people's sessions and closes their open sockets. The
+  backend verifies the Firebase ID token itself (signature, project, issuer, Google as the provider,
+  verified email) and then issues its own session, so everything downstream is unchanged.
 - **Admin password**: set both `AUTH_PASSWORD` and `AUTH_HMAC_SECRET` — username is always
   `admin@magickvoice.com`. It is always admin; Google accounts are admin only if listed in
-  `AUTH_ADMIN_EMAILS`.
+  `AUTH_ADMIN_EMAILS` (which also admits them whatever the allowlist says).
 
-With neither configured, the bench stays open. `npm run smoke` still works when the gate is on: it loads `.env` and signs in before opening
-the socket.
+With neither configured, the bench stays open.
+
+**Google sign-in has not yet been used against a real Firebase project.** The tests sign tokens with
+a local key, so they prove our checks, not Google's token shape. What has been measured: the key set
+the backend verifies against is the one Firebase documents (`npm run firebase:keys` compares it key
+for key with the documented x509 certificates). Two things to know before relying on it:
+
+- **Restrict the Firebase API key.** It is served to every visitor, as Firebase web apps always do.
+  In the Google Cloud console, limit it to the Firebase Auth APIs; an unrestricted key works against
+  every API enabled in its project — Gemini included, if that is the same project.
+- **A domain on the list is not proof of Workspace membership.** Firebase ID tokens carry no `hd`
+  claim, so any Google account with a *verified* address on an allowed domain gets in — including a
+  personal Google account someone registered with their work address, which outlives their
+  Workspace account. Remove that address (or the domain) to cut it off.
+
+`npm run smoke` still works when the gate is on as long as the password login is configured: it loads
+`.env` and signs in before opening the socket. A script cannot do the Google popup, so under a
+Google-only gate it stops and says so.
 
 ```bash
 cd backend
@@ -317,6 +333,7 @@ cd backend  && npm run nova:selftest             # 119 checks against a local fa
                                                  # section: that fake stands in for an HTTP/2 stream, so it is
                                                  # further from the vendor than any other fake here
 cd backend  && npm run auth:selftest             # 30 checks on the login layer
+cd backend  && npm run firebase:keys             # Google's Firebase signing keys: JWK set == documented x509 certs
 cd backend  && npm run nova:rates                # re-measures Nova Sonic's published rates (no key, bills nothing)
 cd backend  && npm run models                    # up to 12 checks against the vendors' free model listings (needs a key, bills nothing)
 cd backend  && npm run smoke                     # usage + summary over the real WS protocol

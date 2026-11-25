@@ -92,13 +92,21 @@ export class SessionBook {
     if (!session) return undefined;
     if (session.expiresAt <= now) {
       this.sessions.delete(token);
+      this.onRevoke?.(token);
       return undefined;
     }
     return session;
   }
 
+  /**
+   * Called with every token that stops being valid here — logout, an admin's
+   * removal, or expiry noticed on lookup. The server uses it to close that
+   * token's open WebSockets, which were only checked when they connected.
+   */
+  onRevoke?: (token: string) => void;
+
   revoke(token: string): void {
-    this.sessions.delete(token);
+    if (this.sessions.delete(token)) this.onRevoke?.(token);
   }
 
   /**
@@ -111,6 +119,7 @@ export class SessionBook {
     for (const [token, session] of this.sessions) {
       if (predicate(session)) {
         this.sessions.delete(token);
+        this.onRevoke?.(token);
         n++;
       }
     }

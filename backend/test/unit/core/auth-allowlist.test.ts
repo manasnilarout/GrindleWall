@@ -1,12 +1,22 @@
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { existsSync, rmSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Allowlist, AllowlistError, isAllowed, normalizeEntry } from '../../../src/auth-allowlist.js';
+import {
+  Allowlist,
+  AllowlistError,
+  AllowlistUnavailableError,
+  isAllowed,
+  normalizeEntry,
+} from '../../../src/auth-allowlist.js';
 
 const fresh = () => join(mkdtempSync(join(tmpdir(), 'allowlist-')), '.auth', 'allowlist.json');
 
 describe('normalizeEntry', () => {
+  it('takes an internationalised domain in its punycode form, TLD included', () => {
+    expect(normalizeEntry('domain', 'xn--80ak6aa92e.xn--p1ai').value).toBe('xn--80ak6aa92e.xn--p1ai');
+  });
+
   it('lower-cases, trims and strips a leading @ from domains', () => {
     expect(normalizeEntry('domain', '  @Example.COM ')).toEqual({ kind: 'domain', value: 'example.com' });
     expect(normalizeEntry('email', ' Someone@Example.com')).toEqual({ kind: 'email', value: 'someone@example.com' });
@@ -97,6 +107,52 @@ describe('Allowlist', () => {
     writeFileSync(file, JSON.stringify({ version: 1, entries: [{ kind: 'domain', value: 'ok.io' }, { kind: 'domain', value: '!!' }, null] }));
     const partial = new Allowlist(file, []);
     expect((await partial.list()).map((e) => e.value)).toEqual(['ok.io']);
+  });
+
+  it('a corrupt file is never overwritten: edits are refused until it is fixed, then work', async () => {
+    const file = fresh();
+    mkdirSync(join(file, '..'), { recursive: true });
+    const corrupt = '{"version":1,"entries":[{"kind":"domain","value":"partner.io"},]}';
+    writeFileSync(file, corrupt);
+    const list = new Allowlist(file, ['magickvoice.com']);
+    await expect(list.add('domain', 'new.io', 'a')).rejects.toBeInstanceOf(AllowlistUnavailableError);
+    await expect(list.remove('domain', 'partner.io')).rejects.toBeInstanceOf(AllowlistUnavailableError);
+    expect(readFileSync(file, 'utf8')).toBe(corrupt);
+
+    // Not cached as "empty": once someone fixes the file, the same instance reads it.
+    writeFileSync(file, JSON.stringify({ version: 1, entries: [{ kind: 'domain', value: 'partner.io' }] }));
+    await list.add('domain', 'new.io', 'a');
+    expect((await list.list()).map((e) => e.value)).toEqual(['magickvoice.com', 'partner.io', 'new.io']);
+  });
+
+  it('concurrent first calls share one read — an add racing a sign-in is not lost', async () => {
+    for (let i = 0; i < 50; i++) {
+      const file = fresh();
+      const list = new Allowlist(file, []);
+      await Promise.all([list.allows('x@y.io'), list.add('domain', 'race.io', 'a'), list.list()]);
+      expect(await list.allows('a@race.io')).toBe(true);
+      expect(await new Allowlist(file, []).allows('a@race.io')).toBe(true);
+    }
+  });
+
+  it('a failed save changes nothing in memory and leaves no temp file behind', async () => {
+    const file = fresh();
+    const list = new Allowlist(file, []);
+    await list.add('domain', 'kept.io', 'a');
+    // A directory where the file goes: rename() onto it fails even for root.
+    rmSync(file);
+    mkdirSync(file);
+    await expect(list.add('domain', 'lost.io', 'a')).rejects.toThrow();
+    await expect(list.remove('domain', 'kept.io')).rejects.toThrow();
+    expect(await list.allows('a@lost.io')).toBe(false);
+    expect(await list.allows('a@kept.io')).toBe(true);
+    expect(readdirSync(join(file, '..'))).toEqual(['allowlist.json']);
+  });
+
+  it('writes the file readable by its owner only', async () => {
+    const file = fresh();
+    await new Allowlist(file, []).add('domain', 'a.io', 'x');
+    expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it('with no pinned domains, nobody is allowed until an admin adds someone', async () => {
