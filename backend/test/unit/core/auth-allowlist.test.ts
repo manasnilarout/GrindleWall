@@ -1,5 +1,4 @@
 import { existsSync, rmSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -10,7 +9,8 @@ import {
   normalizeEntry,
 } from '../../../src/auth-allowlist.js';
 
-const fresh = () => join(mkdtempSync(join(tmpdir(), 'allowlist-')), '.auth', 'allowlist.json');
+/** Under the per-file SESSION_DIR that test/setup.ts creates and removes, so nothing piles up in /tmp. */
+const fresh = () => join(mkdtempSync(join(process.env.SESSION_DIR!, 'allowlist-')), '.auth', 'allowlist.json');
 
 describe('normalizeEntry', () => {
   it('takes an internationalised domain in its punycode form, TLD included', () => {
@@ -153,6 +153,11 @@ describe('Allowlist', () => {
     const file = fresh();
     await new Allowlist(file, []).add('domain', 'a.io', 'x');
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('normalises the pinned domains and drops junk ones', () => {
+    const list = new Allowlist(fresh(), [' @MagickVoice.COM', '*.partner.io', 'https://x.io', 'ok.io']);
+    expect(list.pinned).toEqual(['magickvoice.com', 'ok.io']);
   });
 
   it('with no pinned domains, nobody is allowed until an admin adds someone', async () => {

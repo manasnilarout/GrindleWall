@@ -79,9 +79,9 @@ describe('google sign-in settings', () => {
     ).toBe('login.example.com');
   });
 
-  it('normalises AUTH_ALLOWED_DOMAINS and AUTH_ADMIN_EMAILS; blank pins no domains', async () => {
+  it('splits AUTH_ALLOWED_DOMAINS (Allowlist normalises it), lower-cases AUTH_ADMIN_EMAILS; blank pins no domains', async () => {
     const { config } = await loadConfig({ AUTH_ALLOWED_DOMAINS: ' @MagickVoice.com, ,partner.IO ', AUTH_ADMIN_EMAILS: 'Boss@X.com' });
-    expect(config.authAllowedDomains).toEqual(['magickvoice.com', 'partner.io']);
+    expect(config.authAllowedDomains).toEqual(['@MagickVoice.com', 'partner.IO']);
     expect(config.authAdminEmails).toEqual(['boss@x.com']);
     expect((await loadConfig({ AUTH_ALLOWED_DOMAINS: '' })).config.authAllowedDomains).toEqual([]);
   });

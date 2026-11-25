@@ -67,14 +67,21 @@ export interface AuthSession {
 /** In-memory sessions. A process restart logs everyone out — first iteration. */
 export class SessionBook {
   private readonly sessions = new Map<string, AuthSession>();
+  /** One timer per session, so expiry is an event (and closes sockets) rather than something noticed on lookup. */
+  private readonly expiries = new Map<string, NodeJS.Timeout>();
 
+  /** `ttlMs` must stay under setTimeout's ~24.8-day ceiling; config caps it at 24h. */
   constructor(private readonly ttlMs: number = DEFAULT_SESSION_TTL_MS) {}
 
-  create(
-    username: string,
-    now = Date.now(),
-    who: { role: AuthRole; method: AuthMethod } = { role: 'admin', method: 'password' },
-  ): AuthSession {
+  /**
+   * Called with every token that stops being valid — logout, an admin's
+   * removal, or expiry. The server uses it to close that token's open
+   * WebSockets, which are only checked when they connect.
+   */
+  onRevoke?: (token: string) => void;
+
+  /** `who` is required: the role a sign-in path grants should be visible at the call that grants it. */
+  create(username: string, who: { role: AuthRole; method: AuthMethod }, now = Date.now()): AuthSession {
     const session: AuthSession = {
       token: randomBytes(32).toString('hex'),
       username,
@@ -83,6 +90,7 @@ export class SessionBook {
       method: who.method,
     };
     this.sessions.set(session.token, session);
+    this.expiries.set(session.token, setTimeout(() => this.drop(session.token), this.ttlMs).unref());
     return session;
   }
 
@@ -90,23 +98,16 @@ export class SessionBook {
     if (!token) return undefined;
     const session = this.sessions.get(token);
     if (!session) return undefined;
+    // The timer is the normal path; this covers a clock that ran ahead of it.
     if (session.expiresAt <= now) {
-      this.sessions.delete(token);
-      this.onRevoke?.(token);
+      this.drop(token);
       return undefined;
     }
     return session;
   }
 
-  /**
-   * Called with every token that stops being valid here — logout, an admin's
-   * removal, or expiry noticed on lookup. The server uses it to close that
-   * token's open WebSockets, which were only checked when they connected.
-   */
-  onRevoke?: (token: string) => void;
-
   revoke(token: string): void {
-    if (this.sessions.delete(token)) this.onRevoke?.(token);
+    this.drop(token);
   }
 
   /**
@@ -116,14 +117,18 @@ export class SessionBook {
    */
   revokeWhere(predicate: (session: AuthSession) => boolean): number {
     let n = 0;
-    for (const [token, session] of this.sessions) {
-      if (predicate(session)) {
-        this.sessions.delete(token);
-        this.onRevoke?.(token);
-        n++;
-      }
+    for (const session of [...this.sessions.values()]) {
+      if (predicate(session) && this.drop(session.token)) n++;
     }
     return n;
+  }
+
+  private drop(token: string): boolean {
+    clearTimeout(this.expiries.get(token));
+    this.expiries.delete(token);
+    if (!this.sessions.delete(token)) return false;
+    this.onRevoke?.(token);
+    return true;
   }
 }
 

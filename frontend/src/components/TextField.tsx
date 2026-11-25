@@ -9,10 +9,12 @@ interface Props {
   disabled?: boolean;
   /** Set the value in mono: for ids, which are read character by character. */
   mono?: boolean;
+  /** `email` lets the browser check an address; text otherwise. */
+  type?: 'text' | 'email';
 }
 
 /** Single-line text input in the same shape as <Select>, for ids no dropdown can enumerate. */
-export function TextField({ label, value, onChange, note, placeholder, hint, disabled, mono }: Props) {
+export function TextField({ label, value, onChange, note, placeholder, hint, disabled, mono, type = 'text' }: Props) {
   return (
     <label className="field">
       <span className="field-label">
@@ -20,7 +22,7 @@ export function TextField({ label, value, onChange, note, placeholder, hint, dis
         {note && <span className="field-note"> · {note}</span>}
       </span>
       <input
-        type="text"
+        type={type}
         className={mono ? 'mono' : undefined}
         value={value}
         placeholder={placeholder}

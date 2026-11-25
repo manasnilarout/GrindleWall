@@ -6,11 +6,22 @@ import { useAuth } from '../../src/hooks/useAuth';
 import { AUTH_STORAGE_KEY, AUTH_USERNAME, type AuthSession } from '../../src/lib/auth';
 import { routedFetch, type FakeResponseInit } from './fixtures';
 
-const SECRET = 'shared-hmac-secret';
-const gated = { required: true, username: 'admin@magickvoice.com', sessionTtlMs: 3_600_000, hmacSecret: SECRET };
-const open = { required: false, username: AUTH_USERNAME, sessionTtlMs: 10_800_000 };
+const googleIdToken = vi.fn<(cfg: unknown) => Promise<string>>();
+const prepareGoogle = vi.fn(async (_cfg: unknown) => ({}));
+vi.mock('../../src/lib/firebase', () => ({
+  googleIdToken: (cfg: unknown) => googleIdToken(cfg),
+  prepareGoogle: (cfg: unknown) => prepareGoogle(cfg),
+}));
 
-const store = (s: AuthSession) => localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(s));
+const SECRET = 'shared-hmac-secret';
+const gated = { required: true, username: 'admin@magickvoice.com', sessionTtlMs: 3_600_000, password: true, hmacSecret: SECRET };
+const open = { required: false, username: AUTH_USERNAME, sessionTtlMs: 10_800_000, password: false };
+const FIREBASE = { apiKey: 'AIza-public', authDomain: 'gw.firebaseapp.com', projectId: 'gw' };
+const googleOnly = { required: true, username: AUTH_USERNAME, sessionTtlMs: 3_600_000, password: false, google: FIREBASE };
+
+/** Role and method default to the password admin's, which is what these tests mostly sign in as. */
+const store = (s: Omit<AuthSession, 'role' | 'method'> & Partial<AuthSession>) =>
+  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ role: 'admin', method: 'password', ...s }));
 const stored = () => {
   const raw = localStorage.getItem(AUTH_STORAGE_KEY);
   return raw ? (JSON.parse(raw) as AuthSession) : null;
@@ -20,6 +31,7 @@ interface Routes {
   config?: () => FakeResponseInit | Promise<FakeResponseInit>;
   session?: (init?: RequestInit) => FakeResponseInit;
   login?: (init?: RequestInit) => FakeResponseInit;
+  google?: (init?: RequestInit) => FakeResponseInit;
   logout?: (init?: RequestInit) => FakeResponseInit;
 }
 function serve(routes: Routes) {
@@ -27,6 +39,7 @@ function serve(routes: Routes) {
     if (url === '/api/auth/config') return routes.config ? routes.config() : { body: gated };
     if (url === '/api/auth/session') return routes.session?.(init);
     if (url === '/api/auth/login') return routes.login?.(init);
+    if (url === '/api/auth/google') return routes.google?.(init);
     if (url === '/api/auth/logout') return routes.logout ? routes.logout(init) : { body: {} };
     return undefined;
   });
@@ -113,7 +126,7 @@ describe('useAuth', () => {
   });
 
   it('a session body without a session falls back to the stored one', async () => {
-    const mine = { token: 'tok-1', username: 'u', expiresAt: Date.now() + 600_000 };
+    const mine = { token: 'tok-1', username: 'u', expiresAt: Date.now() + 600_000, role: 'member', method: 'google' } as const;
     store(mine);
     serve({ session: () => ({ body: {} }) });
     const { result } = renderHook(() => useAuth());
@@ -341,5 +354,64 @@ describe('useAuth', () => {
       expect(result.current.status).toBe('loading');
       expect(() => window.dispatchEvent(new Event('auth:expired'))).not.toThrow();
     });
+  });
+});
+
+describe('useAuth with Google', () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    googleIdToken.mockReset();
+    prepareGoogle.mockClear();
+  });
+
+  it('warms Firebase on the login page, then trades the ID token for a backend session', async () => {
+    googleIdToken.mockResolvedValue('firebase-id-token');
+    const session = { token: 't'.repeat(64), username: 'intern@magickvoice.com', expiresAt: Date.now() + 3_600_000, role: 'member', method: 'google' };
+    serve({
+      config: () => ({ body: googleOnly }),
+      google: (init) => {
+        expect(JSON.parse(String(init?.body))).toEqual({ idToken: 'firebase-id-token' });
+        return { body: session };
+      },
+    });
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.status).toBe('login'));
+    expect(result.current.googleEnabled).toBe(true);
+    expect(result.current.passwordEnabled).toBe(false);
+    // Loaded while the login page is up, before any click.
+    await waitFor(() => expect(prepareGoogle).toHaveBeenCalledWith(FIREBASE));
+
+    await act(() => result.current.signInWithGoogle());
+    expect(googleIdToken).toHaveBeenCalledWith(FIREBASE);
+    expect(result.current.status).toBe('ready');
+    expect(result.current.isAdmin).toBe(false);
+    expect(stored()?.username).toBe('intern@magickvoice.com');
+  });
+
+  it('a backend refusal stays on the login page with the server message', async () => {
+    googleIdToken.mockResolvedValue('tok');
+    serve({
+      config: () => ({ body: googleOnly }),
+      google: () => ({ status: 403, body: { error: 'x@gmail.com is not allowed to sign in.' } }),
+    });
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.status).toBe('login'));
+    const err = await rejection(() => result.current.signInWithGoogle());
+    expect(err.message).toBe('x@gmail.com is not allowed to sign in.');
+    expect(result.current.status).toBe('login');
+    expect(stored()).toBeNull();
+  });
+
+  it('is admin only when the session says so', async () => {
+    store({ token: 'a'.repeat(64), username: 'admin@magickvoice.com', expiresAt: Date.now() + 3_600_000 });
+    serve({
+      session: () => ({ body: { required: true, session: { token: 'a'.repeat(64), username: 'admin@magickvoice.com', expiresAt: Date.now() + 3_600_000, role: 'admin', method: 'password' } } }),
+    });
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.passwordEnabled).toBe(true);
+    expect(result.current.isAdmin).toBe(true);
   });
 });

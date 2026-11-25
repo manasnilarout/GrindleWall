@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createLocalJWKSet } from 'jose';
-import { GoogleTokenError, verifyFirebaseIdToken } from '../../../src/auth-google.js';
+import { GoogleKeysUnavailableError, GoogleTokenError, verifyFirebaseIdToken } from '../../../src/auth-google.js';
 import { fakeIssuer, PROJECT, type FakeIssuer } from '../../firebase-fake.js';
 
 let issuer: FakeIssuer;
@@ -22,8 +22,8 @@ async function rejects(token: string | Promise<string>, pattern: RegExp): Promis
 
 describe('verifyFirebaseIdToken', () => {
   it('accepts a Google token with a verified email and lower-cases the address', async () => {
-    const id = await verify(await issuer.mint({ email: 'Intern@MagickVoice.com', name: 'An Intern' }));
-    expect(id).toEqual({ email: 'intern@magickvoice.com', uid: 'uid-123', name: 'An Intern' });
+    const id = await verify(await issuer.mint({ email: 'Intern@MagickVoice.com' }));
+    expect(id).toEqual({ email: 'intern@magickvoice.com' });
   });
 
   it('rejects an empty token', async () => {
@@ -32,6 +32,28 @@ describe('verifyFirebaseIdToken', () => {
 
   it('rejects garbage', async () => {
     await rejects('not.a.jwt', /Invalid ID token/);
+  });
+
+  it('a key lookup that fails is a 503 "keys unavailable", not a bad token', async () => {
+    const down = async () => {
+      throw new TypeError('fetch failed');
+    };
+    const err = await verifyFirebaseIdToken(await issuer.mint(), { projectId: PROJECT, jwksUrl: 'http://unused.invalid', keys: down }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(GoogleKeysUnavailableError);
+    expect((err as GoogleKeysUnavailableError).status).toBe(503);
+  });
+
+  it('an unknown kid is the token\'s fault (401), not the key source\'s', async () => {
+    const other = await fakeIssuer('k2');
+    await rejects(other.mint(), /Invalid ID token/);
+  });
+
+  it('tells the user less than the log: jose detail stays out of publicMessage', async () => {
+    const err = (await verify('not.a.jwt').catch((e: unknown) => e)) as GoogleTokenError;
+    expect(err.status).toBe(401);
+    expect(err.publicMessage).toBe('Invalid sign-in token');
   });
 
   it('rejects a token signed by a key not in the set', async () => {

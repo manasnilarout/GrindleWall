@@ -1957,7 +1957,6 @@ check('Sidebar shows Access to admins only', () => {
 }, ['Access', 'aria-current="page"']);
 check('AccessPage', () => {
   const html = renderToString(h(AccessPage, {
-    api: { fetch: async () => ({ entries: [], adminEmails: [] }), add: async () => ({ entries: [], adminEmails: [] }), remove: async () => ({ entries: [], adminEmails: [] }) },
     initial: {
       entries: [
         { kind: 'domain', value: 'magickvoice.com', source: 'env' },

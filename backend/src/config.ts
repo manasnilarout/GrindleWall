@@ -5,6 +5,9 @@ import { join } from 'node:path';
 export const FIREBASE_DEFAULT_JWKS_URL =
   'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
 
+const sessionDir = process.env.SESSION_DIR ?? 'data/sessions';
+const firebaseProjectId = (process.env.FIREBASE_PROJECT_ID ?? '').trim();
+
 export const config = {
   /** Empty or junk (`PORT=`, `PORT=abc`) is unset, never `listen(0)`'s random port. */
   port: sanePort(process.env.PORT, 8787),
@@ -29,7 +32,7 @@ export const config = {
    * through `SessionStore`, so a recorder that resolved its own would 404 on a
    * file that plainly exists.
    */
-  sessionDir: process.env.SESSION_DIR ?? 'data/sessions',
+  sessionDir,
   /**
    * When set, Express serves a built frontend from this directory and falls
    * back to index.html for the SPA. Used by the all-in-one container image so
@@ -72,11 +75,10 @@ export const config = {
    * project (Gemini, if that is the same project).
    */
   firebase: {
-    projectId: (process.env.FIREBASE_PROJECT_ID ?? '').trim(),
+    projectId: firebaseProjectId,
     apiKey: (process.env.FIREBASE_API_KEY ?? '').trim(),
     authDomain:
-      (process.env.FIREBASE_AUTH_DOMAIN ?? '').trim() ||
-      (process.env.FIREBASE_PROJECT_ID?.trim() ? `${process.env.FIREBASE_PROJECT_ID.trim()}.firebaseapp.com` : ''),
+      (process.env.FIREBASE_AUTH_DOMAIN ?? '').trim() || (firebaseProjectId ? `${firebaseProjectId}.firebaseapp.com` : ''),
     appId: (process.env.FIREBASE_APP_ID ?? '').trim() || undefined,
     /**
      * Where Firebase's ID-token signing keys are fetched from. Overridable ONLY
@@ -90,10 +92,9 @@ export const config = {
    * Email domains whose Google accounts may sign in, comma-separated. These are
    * the pinned baseline: an admin can add more domains (and single addresses)
    * from the Access page, but cannot remove these — change the env var for that.
+   * Raw values: `Allowlist` normalises them and drops any that are not a domain.
    */
-  authAllowedDomains: csv(process.env.AUTH_ALLOWED_DOMAINS ?? 'magickvoice.com').map((d) =>
-    d.replace(/^@/, '').toLowerCase(),
-  ),
+  authAllowedDomains: csv(process.env.AUTH_ALLOWED_DOMAINS ?? 'magickvoice.com'),
   /**
    * Google accounts that sign in as admin (may edit the allowlist). The
    * password login is always admin. Comma-separated, case-insensitive.
@@ -106,7 +107,7 @@ export const config = {
    * would try to read as a conversation.
    */
   authAllowlistFile:
-    process.env.AUTH_ALLOWLIST_FILE || join(process.env.SESSION_DIR ?? 'data/sessions', '.auth', 'allowlist.json'),
+    process.env.AUTH_ALLOWLIST_FILE || join(sessionDir, '.auth', 'allowlist.json'),
 };
 
 function csv(raw: string): string[] {

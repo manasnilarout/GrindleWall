@@ -1,19 +1,28 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import {
   addAllowEntry,
   fetchAllowlist,
   removeAllowEntry,
   type AllowEntry,
   type AllowlistState,
+  type AllowTarget,
 } from '../lib/auth';
+import { when } from '../lib/format';
 import { PageHeader } from './PageHeader';
 import { Icon } from './Icon';
+import { Select } from './Select';
+import { TextField } from './TextField';
 
 type Api = {
   fetch: () => Promise<AllowlistState>;
-  add: (e: Pick<AllowEntry, 'kind' | 'value'>) => Promise<AllowlistState>;
-  remove: (e: Pick<AllowEntry, 'kind' | 'value'>) => Promise<AllowlistState>;
+  add: (t: AllowTarget) => Promise<AllowlistState>;
+  remove: (t: AllowTarget) => Promise<AllowlistState>;
 };
+
+const KINDS = [
+  { id: 'domain', name: 'Whole domain' },
+  { id: 'email', name: 'Single address' },
+];
 
 const defaultApi: Api = { fetch: fetchAllowlist, add: addAllowEntry, remove: removeAllowEntry };
 
@@ -32,7 +41,8 @@ export function AccessPage({ api = defaultApi, initial }: { api?: Api; initial?:
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(() => {
+  useEffect(() => {
+    if (initial) return;
     api
       .fetch()
       .then((s) => {
@@ -40,11 +50,7 @@ export function AccessPage({ api = defaultApi, initial }: { api?: Api; initial?:
         setError(undefined);
       })
       .catch((err: Error) => setError(err.message));
-  }, [api]);
-
-  useEffect(() => {
-    if (!initial) load();
-  }, [initial, load]);
+  }, [api, initial]);
 
   const run = async (fn: () => Promise<AllowlistState>) => {
     setBusy(true);
@@ -69,7 +75,7 @@ export function AccessPage({ api = defaultApi, initial }: { api?: Api; initial?:
 
   const onRemove = (entry: AllowEntry) => {
     const who = entry.kind === 'domain' ? `everyone at @${entry.value}` : entry.value;
-    if (typeof window !== 'undefined' && !window.confirm(`Remove ${entry.value}? ${who} will be signed out now.`)) return;
+    if (!window.confirm(`Remove ${entry.value}? ${who} will be signed out now.`)) return;
     void run(() => api.remove({ kind: entry.kind, value: entry.value }));
   };
 
@@ -118,7 +124,7 @@ export function AccessPage({ api = defaultApi, initial }: { api?: Api; initial?:
                     <td className="access-added">
                       {e.source === 'env'
                         ? 'Pinned (AUTH_ALLOWED_DOMAINS)'
-                        : [e.addedBy, e.addedAt ? new Date(e.addedAt).toLocaleDateString() : undefined]
+                        : [e.addedBy, e.addedAt ? when(e.addedAt) : undefined]
                             .filter(Boolean)
                             .join(' · ') || '—'}
                     </td>
@@ -154,26 +160,24 @@ export function AccessPage({ api = defaultApi, initial }: { api?: Api; initial?:
         )}
 
         <form className="access-add" onSubmit={(e) => void onAdd(e)}>
-          <label className="field">
-            <span className="field-label">Kind</span>
-            <select value={kind} onChange={(e) => setKind(e.target.value as AllowEntry['kind'])} disabled={busy}>
-              <option value="domain">Whole domain</option>
-              <option value="email">Single address</option>
-            </select>
-          </label>
-          <label className="field access-value">
-            <span className="field-label">{kind === 'domain' ? 'Domain' : 'Email address'}</span>
-            <input
+          <Select
+            label="Kind"
+            value={kind}
+            options={KINDS}
+            onChange={(id) => setKind(id as AllowEntry['kind'])}
+            disabled={busy}
+          />
+          <div className="access-value">
+            <TextField
+              label={kind === 'domain' ? 'Domain' : 'Email address'}
               type={kind === 'domain' ? 'text' : 'email'}
-              className="mono"
+              mono
               value={value}
               placeholder={kind === 'domain' ? 'partner.com' : 'someone@gmail.com'}
-              spellCheck={false}
-              autoComplete="off"
-              onChange={(e) => setValue(e.target.value)}
+              onChange={setValue}
               disabled={busy}
             />
-          </label>
+          </div>
           <button type="submit" className="btn primary" disabled={busy || !value.trim()}>
             <Icon name="plus" size={16} />
             Add

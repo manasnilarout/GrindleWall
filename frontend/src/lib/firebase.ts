@@ -1,11 +1,12 @@
 import type { FirebaseWebConfig } from './auth';
 
-type FirebaseAuthModule = typeof import('firebase/auth');
+type FirebaseAuth = typeof import('firebase/auth');
 
 interface Prepared {
-  mod: FirebaseAuthModule;
   auth: import('firebase/auth').Auth;
   provider: import('firebase/auth').GoogleAuthProvider;
+  signInWithPopup: FirebaseAuth['signInWithPopup'];
+  signOut: FirebaseAuth['signOut'];
 }
 
 let prepared: { key: string; promise: Promise<Prepared> } | undefined;
@@ -26,21 +27,30 @@ export function prepareGoogle(cfg: FirebaseWebConfig): Promise<Prepared> {
   const key = JSON.stringify(cfg);
   if (prepared?.key !== key) {
     const promise = (async () => {
-      const [{ getApps, initializeApp }, mod] = await Promise.all([import('firebase/app'), import('firebase/auth')]);
+      // Destructured straight off `await import()` — the form the bundler can
+      // tree-shake — so the chunk drops what is never called (phone, reCAPTCHA, TOTP...).
+      const app = import('firebase/app');
+      const {
+        browserPopupRedirectResolver,
+        getAuth,
+        GoogleAuthProvider,
+        inMemoryPersistence,
+        initializeAuth,
+        signInWithPopup,
+        signOut,
+      } = await import('firebase/auth');
+      const { getApps, initializeApp } = await app;
       const name = `grindelwald:${cfg.projectId}`;
       const existing = getApps().find((a) => a.name === name);
-      const app = existing ?? initializeApp(cfg, name);
+      const firebaseApp = existing ?? initializeApp(cfg, name);
       const auth = existing
-        ? mod.getAuth(app)
-        : mod.initializeAuth(app, {
-            persistence: mod.inMemoryPersistence,
-            popupRedirectResolver: mod.browserPopupRedirectResolver,
-          });
-      const provider = new mod.GoogleAuthProvider();
+        ? getAuth(firebaseApp)
+        : initializeAuth(firebaseApp, { persistence: inMemoryPersistence, popupRedirectResolver: browserPopupRedirectResolver });
+      const provider = new GoogleAuthProvider();
       // Always show the account chooser: the person most likely to hit "wrong
       // account" is an intern signed into a personal Gmail as well.
       provider.setCustomParameters({ prompt: 'select_account' });
-      return { mod, auth, provider };
+      return { auth, provider, signInWithPopup, signOut };
     })();
     // A failed load (offline) must not stick: the next attempt starts over.
     promise.catch(() => {
@@ -63,14 +73,14 @@ export function prepareGoogle(cfg: FirebaseWebConfig): Promise<Prepared> {
  * the bench never needs it, and the server-side render check must not pull it in.
  */
 export async function googleIdToken(cfg: FirebaseWebConfig): Promise<string> {
-  const { mod, auth, provider } = await prepareGoogle(cfg);
+  const { auth, provider, signInWithPopup, signOut } = await prepareGoogle(cfg);
   try {
-    const cred = await mod.signInWithPopup(auth, provider);
+    const cred = await signInWithPopup(auth, provider);
     return await cred.user.getIdToken();
   } catch (err) {
     throw new Error(firebaseMessage(err));
   } finally {
-    await mod.signOut(auth).catch(() => undefined);
+    await signOut(auth).catch(() => undefined);
   }
 }
 

@@ -129,11 +129,9 @@ export function useAuth() {
     required: config?.required ?? false,
     username: config?.username ?? AUTH_USERNAME,
     sessionTtlMs: config?.sessionTtlMs ?? 3 * 60 * 60 * 1000,
-    /** The admin password form. Older backends do not send `password`: infer it from the key they hand out. */
-    passwordEnabled: config ? (config.password ?? Boolean(config.hmacSecret)) : false,
+    passwordEnabled: config?.password ?? false,
     googleEnabled: Boolean(config?.google),
-    /** A session stored before roles existed was the password login, which is always admin. */
-    isAdmin: Boolean(session) && (session?.role ?? 'admin') === 'admin',
+    isAdmin: session?.role === 'admin',
     session,
     signIn,
     signInWithGoogle,

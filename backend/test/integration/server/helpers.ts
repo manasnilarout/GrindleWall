@@ -243,6 +243,26 @@ export async function login(server: ServerHandle, password: string, secret: stri
   return body.token;
 }
 
+/**
+ * One JSON request against the server, optionally as a signed-in session.
+ * `body` is sent as JSON when given (DELETE included — the allowlist route reads one).
+ */
+export function call(
+  server: ServerHandle,
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  opts: { token?: string; body?: unknown } = {},
+): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
+  if (opts.body !== undefined) headers['content-type'] = 'application/json';
+  return fetch(`${server.base}${path}`, {
+    method,
+    headers,
+    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+  });
+}
+
 /* ------------------------------------ http ------------------------------------ */
 
 export interface RawResponse {

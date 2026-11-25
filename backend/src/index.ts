@@ -16,8 +16,9 @@ import {
   verifyLogin,
   type AuthSession,
 } from './auth.js';
-import { GoogleKeysUnavailableError, GoogleTokenError, verifyFirebaseIdToken } from './auth-google.js';
-import { Allowlist, AllowlistError, AllowlistUnavailableError, isAllowed, normalizeEntry } from './auth-allowlist.js';
+import { verifyFirebaseIdToken } from './auth-google.js';
+import { Allowlist, isAllowed, type AllowEntry } from './auth-allowlist.js';
+import { HttpError } from './http-error.js';
 import { catalogWithReadiness } from './providers/catalog.js';
 import { registeredIds } from './providers/factory.js';
 import { drainLiveSockets, handleSocket } from './server/session-socket.js';
@@ -38,6 +39,13 @@ const route =
   (fn: (req: express.Request, res: express.Response) => Promise<void>) =>
   (req: express.Request, res: express.Response): void => {
     fn(req, res).catch((err: Error) => {
+      // An expected refusal that already knows its answer (bad allowlist entry,
+      // rejected sign-in token, ...). `message` may carry detail for the log only.
+      if (err instanceof HttpError) {
+        console.warn(`[api] ${req.method} ${req.path} ${err.status}:`, err.message);
+        if (!res.headersSent) res.status(err.status).json({ error: redactSecrets(err.publicMessage) });
+        return;
+      }
       console.error(`[api] ${req.method} ${req.path} failed:`, err.message);
       // Scrubbed like every other message that leaves this process: the
       // invariant is stated as absolute, and an fs error already carries
@@ -61,18 +69,8 @@ if (config.firebase.jwksUrl !== FIREBASE_DEFAULT_JWKS_URL) {
   }
 }
 
-/** Pinned domains, validated once. A junk value admits nobody, so it is dropped loudly rather than kept quietly. */
-const pinnedDomains = config.authAllowedDomains.flatMap((raw) => {
-  try {
-    return [normalizeEntry('domain', raw).value];
-  } catch {
-    console.error(`[auth] AUTH_ALLOWED_DOMAINS: "${raw}" is not a domain (e.g. magickvoice.com) — ignored`);
-    return [];
-  }
-});
-
 const sessions = new SessionBook(config.authSessionTtlMs);
-const allowlist = new Allowlist(config.authAllowlistFile, pinnedDomains);
+const allowlist = new Allowlist(config.authAllowlistFile, config.authAllowedDomains);
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): void {
   if (!authEnabled()) {
@@ -110,6 +108,14 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
 }
 
 const isAdminEmail = (email: string): boolean => config.authAdminEmails.includes(email.toLowerCase());
+
+/**
+ * Who may hold a Google session: an AUTH_ADMIN_EMAILS account, or anyone the
+ * allowlist covers. The one rule, for sign-in and for revoking on removal alike.
+ */
+const admits = (entries: AllowEntry[], email: string): boolean => isAdminEmail(email) || isAllowed(entries, email);
+
+const allowlistBody = (entries: AllowEntry[]) => ({ entries, adminEmails: config.authAdminEmails });
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, sampleRate: CANONICAL_SAMPLE_RATE, registered: registeredIds() });
@@ -157,7 +163,7 @@ app.post('/api/auth/login', (req, res) => {
     res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
-  res.json(sessions.create(username));
+  res.json(sessions.create(username, { role: 'admin', method: 'password' }));
 });
 
 /**
@@ -173,34 +179,19 @@ app.post(
       res.status(503).json({ error: 'Google sign-in is not configured (set FIREBASE_PROJECT_ID and FIREBASE_API_KEY)' });
       return;
     }
-    const idToken = typeof req.body?.idToken === 'string' ? req.body.idToken : '';
-    let identity;
-    try {
-      identity = await verifyFirebaseIdToken(idToken, {
-        projectId: config.firebase.projectId,
-        jwksUrl: config.firebase.jwksUrl,
-      });
-    } catch (err) {
-      if (err instanceof GoogleTokenError) {
-        console.warn('[auth] google sign-in rejected:', err.message);
-        res.status(401).json({ error: err.message.startsWith('Invalid ID token') ? 'Invalid sign-in token' : err.message });
-        return;
-      }
-      if (err instanceof GoogleKeysUnavailableError) {
-        console.error('[auth] google sign-in unavailable:', err.message);
-        res.status(503).json({ error: 'Google sign-in is temporarily unavailable. Try again in a minute.' });
-        return;
-      }
-      throw err;
-    }
-    const admin = isAdminEmail(identity.email);
-    if (!admin && !(await allowlist.allows(identity.email))) {
-      console.warn(`[auth] google sign-in refused, not on the allowlist: ${identity.email}`);
-      res.status(403).json({ error: `${identity.email} is not allowed to sign in. Ask an admin to add it or its domain.` });
+    // A bad token (401) or unreachable Google keys (503) throw an HttpError that `route` answers.
+    const { email } = await verifyFirebaseIdToken(typeof req.body?.idToken === 'string' ? req.body.idToken : '', {
+      projectId: config.firebase.projectId,
+      jwksUrl: config.firebase.jwksUrl,
+    });
+    if (!admits(await allowlist.list(), email)) {
+      console.warn(`[auth] google sign-in refused, not on the allowlist: ${email}`);
+      res.status(403).json({ error: `${email} is not allowed to sign in. Ask an admin to add it or its domain.` });
       return;
     }
-    console.log(`[auth] google sign-in: ${identity.email}${admin ? ' (admin)' : ''}`);
-    res.json(sessions.create(identity.email, Date.now(), { role: admin ? 'admin' : 'member', method: 'google' }));
+    const admin = isAdminEmail(email);
+    console.log(`[auth] google sign-in: ${email}${admin ? ' (admin)' : ''}`);
+    res.json(sessions.create(email, { role: admin ? 'admin' : 'member', method: 'google' }));
   }),
 );
 
@@ -228,7 +219,7 @@ app.get(
   '/api/auth/allowlist',
   requireAdmin,
   route(async (_req, res) => {
-    res.json({ entries: await allowlist.list(), adminEmails: config.authAdminEmails });
+    res.json(allowlistBody(await allowlist.list()));
   }),
 );
 
@@ -236,19 +227,11 @@ app.post(
   '/api/auth/allowlist',
   requireAdmin,
   route(async (req, res) => {
+    // A junk value (400) or an unreadable file (503) throw an HttpError that `route` answers.
     const by = (res.locals.session as AuthSession).username;
-    try {
-      const entries = await allowlist.add(req.body?.kind, req.body?.value, by);
-      console.log(`[auth] allowlist + ${req.body?.kind} ${String(req.body?.value)} by ${by}`);
-      res.json({ entries, adminEmails: config.authAdminEmails });
-    } catch (err) {
-      if (err instanceof AllowlistUnavailableError) {
-        res.status(503).json({ error: redactSecrets(err.message) });
-        return;
-      }
-      if (!(err instanceof AllowlistError)) throw err;
-      res.status(400).json({ error: err.message });
-    }
+    const entries = await allowlist.add(req.body?.kind, req.body?.value, by);
+    console.log(`[auth] allowlist + ${req.body?.kind} ${String(req.body?.value)} by ${by}`);
+    res.json(allowlistBody(entries));
   }),
 );
 
@@ -257,22 +240,11 @@ app.delete(
   requireAdmin,
   route(async (req, res) => {
     const by = (res.locals.session as AuthSession).username;
-    try {
-      const entries = await allowlist.remove(req.body?.kind, req.body?.value);
-      // Out now, not at token expiry: end every Google session the list no longer covers.
-      const revoked = sessions.revokeWhere(
-        (s) => s.method === 'google' && !isAdminEmail(s.username) && !isAllowed(entries, s.username),
-      );
-      console.log(`[auth] allowlist - ${req.body?.kind} ${String(req.body?.value)} by ${by} (${revoked} signed out)`);
-      res.json({ entries, adminEmails: config.authAdminEmails, revoked });
-    } catch (err) {
-      if (err instanceof AllowlistUnavailableError) {
-        res.status(503).json({ error: redactSecrets(err.message) });
-        return;
-      }
-      if (!(err instanceof AllowlistError)) throw err;
-      res.status(400).json({ error: err.message });
-    }
+    const entries = await allowlist.remove(req.body?.kind, req.body?.value);
+    // Out now, not at token expiry: end every Google session the list no longer covers.
+    const revoked = sessions.revokeWhere((s) => s.method === 'google' && !admits(entries, s.username));
+    console.log(`[auth] allowlist - ${req.body?.kind} ${String(req.body?.value)} by ${by} (${revoked} signed out)`);
+    res.json({ ...allowlistBody(entries), revoked });
   }),
 );
 
@@ -418,9 +390,10 @@ const wss = new WebSocketServer({ server, path: '/ws/session' });
 /**
  * Open sockets per session token. The token is checked once, on upgrade — so
  * without this a signed-out, expired or de-listed user's open tab could keep
- * starting vendor sessions (each billed) until they closed it. Revoking a
- * token closes its sockets with 4401, which the browser treats as "sign in
- * again" and the socket handler as the end of the conversation.
+ * starting vendor sessions (each billed) until they closed it. Every way a
+ * token ends goes through `SessionBook.onRevoke`, which closes its sockets with
+ * 4401: the browser treats that as "sign in again", the socket handler as the
+ * end of the conversation.
  */
 const socketsByToken = new Map<string, Set<WebSocket>>();
 sessions.onRevoke = (token) => {
@@ -430,29 +403,20 @@ sessions.onRevoke = (token) => {
   for (const ws of open) ws.close(4401, 'signed out');
 };
 
-/** `setTimeout` overflows (and fires at once) above this. */
-const MAX_TIMEOUT_MS = 2_147_483_647;
-
 wss.on('connection', (ws, req) => {
   if (!authEnabled()) {
     handleSocket(ws);
     return;
   }
   const token = tokenFromRequest(req);
-  const session = sessions.get(token);
-  if (!token || !session) {
+  if (!token || !sessions.get(token)) {
     ws.close(4401, 'unauthorized');
     return;
   }
   let open = socketsByToken.get(token);
   if (!open) socketsByToken.set(token, (open = new Set()));
   open.add(ws);
-  // Expiry has no event of its own: close the socket when its session would stop being valid.
-  const expiry = setTimeout(() => {
-    if (!sessions.get(token)) ws.close(4401, 'session expired');
-  }, Math.min(Math.max(0, session.expiresAt - Date.now()) + 1_000, MAX_TIMEOUT_MS));
   ws.once('close', () => {
-    clearTimeout(expiry);
     const set = socketsByToken.get(token);
     set?.delete(ws);
     if (set?.size === 0) socketsByToken.delete(token);
@@ -467,7 +431,7 @@ const onListen = (): void => {
   if (config.staticDir) console.log(`  ui  ${config.staticDir}`);
   console.log(`  registered:`, registeredIds());
   if (googleAuthEnabled()) {
-    const domains = pinnedDomains.join(', ') || '(none pinned)';
+    const domains = allowlist.pinned.join(', ') || '(none pinned)';
     console.log(`  auth: google sign-in on (firebase ${config.firebase.projectId}; domains ${domains})`);
     if (config.firebase.jwksUrl !== FIREBASE_DEFAULT_JWKS_URL) {
       console.warn(`  auth: FIREBASE_JWKS_URL is overridden (${config.firebase.jwksUrl}) — test use only`);

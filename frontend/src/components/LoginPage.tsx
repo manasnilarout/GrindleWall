@@ -36,8 +36,8 @@ export function LoginPage({
   const [email, setEmail] = useState(username);
   const [password, setPassword] = useState('');
   const [localError, setLocalError] = useState<string>();
-  const [busy, setBusy] = useState(false);
-  const [googleBusy, setGoogleBusy] = useState(false);
+  /** Which way in is in flight, if any. */
+  const [pending, setPending] = useState<'password' | 'google'>();
 
   const hours = sessionTtlMs / 3_600_000;
   const ttlLabel =
@@ -45,43 +45,28 @@ export function LoginPage({
       ? `${Math.round(hours)} hour${Math.round(hours) === 1 ? '' : 's'}`
       : `${Math.max(1, Math.round(sessionTtlMs / 60_000))} minutes`;
   const message = error ?? localError;
-  const waiting = submitting || busy || googleBusy;
+  const waiting = submitting || pending !== undefined;
+  const passwordBusy = submitting || pending === 'password';
 
-  const handleSubmit = async (e: FormEvent) => {
+  const attempt = async (which: 'password' | 'google', run: () => Promise<void>) => {
+    setLocalError(undefined);
+    setPending(which);
+    try {
+      await run();
+    } catch (err) {
+      setLocalError((err as Error).message);
+    } finally {
+      setPending(undefined);
+    }
+  };
+
+  const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!onSubmit) return;
-    setLocalError(undefined);
-    setBusy(true);
-    try {
-      await onSubmit(email.trim(), password);
-    } catch (err) {
-      setLocalError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    if (onSubmit) void attempt('password', () => onSubmit(email.trim(), password));
   };
 
-  const handleGoogle = async () => {
-    if (!onGoogle) return;
-    setLocalError(undefined);
-    setGoogleBusy(true);
-    try {
-      await onGoogle();
-    } catch (err) {
-      setLocalError((err as Error).message);
-    } finally {
-      setGoogleBusy(false);
-    }
-  };
-
-  const alert = message && (
-    <div className="banner error login-error" role="alert">
-      {message}
-    </div>
-  );
-
-  const passwordFields = (
-    <>
+  const passwordForm = (
+    <form onSubmit={handleSubmit}>
       <label className="field">
         <span className="field-label">Username</span>
         <input
@@ -105,58 +90,59 @@ export function LoginPage({
           required
         />
       </label>
-    </>
+
+      <button
+        type="submit"
+        className={`btn login-submit ${google ? '' : 'primary'}`}
+        disabled={waiting || !password}
+      >
+        {passwordBusy ? 'Signing in…' : google ? 'Sign in as admin' : 'Sign in'}
+      </button>
+    </form>
   );
 
-  const card = google ? (
+  const card = (
     <div className="login-card">
       <span className="eyebrow">Members only</span>
       <h1>Sign in</h1>
       <p className="login-lede">
-        Use your Google work account. Only approved domains get in; the session lasts {ttlLabel}.
+        {google ? (
+          <>Use your Google work account. Only approved domains get in; the session lasts {ttlLabel}.</>
+        ) : (
+          <>
+            A single static account. The password is HMAC&apos;d in the browser before it is sent; the session lasts{' '}
+            {ttlLabel}.
+          </>
+        )}
       </p>
 
-      {alert}
+      {message && (
+        <div className="banner error login-error" role="alert">
+          {message}
+        </div>
+      )}
 
-      <button
-        type="button"
-        className="btn login-google"
-        onClick={() => void handleGoogle()}
-        disabled={waiting}
-      >
-        <GoogleMark />
-        {googleBusy ? 'Waiting for Google…' : 'Sign in with Google'}
-      </button>
-
-      {passwordEnabled && (
-        <details className="login-admin">
-          <summary>Admin sign-in</summary>
-          <form onSubmit={(e) => void handleSubmit(e)}>
-            {passwordFields}
-            <button type="submit" className="btn login-submit" disabled={waiting || !password}>
-              {busy || submitting ? 'Signing in…' : 'Sign in as admin'}
-            </button>
-          </form>
-        </details>
+      {!google && passwordForm}
+      {google && (
+        <>
+          <button
+            type="button"
+            className="btn login-google"
+            onClick={() => onGoogle && void attempt('google', onGoogle)}
+            disabled={waiting}
+          >
+            <GoogleMark />
+            {pending === 'google' ? 'Waiting for Google…' : 'Sign in with Google'}
+          </button>
+          {passwordEnabled && (
+            <details className="login-admin">
+              <summary>Admin sign-in</summary>
+              {passwordForm}
+            </details>
+          )}
+        </>
       )}
     </div>
-  ) : (
-    <form className="login-card" onSubmit={(e) => void handleSubmit(e)}>
-      <span className="eyebrow">Members only</span>
-      <h1>Sign in</h1>
-      <p className="login-lede">
-        A single static account. The password is HMAC&apos;d in the browser before it is sent; the session lasts{' '}
-        {ttlLabel}.
-      </p>
-
-      {passwordFields}
-
-      {alert}
-
-      <button type="submit" className="btn primary login-submit" disabled={waiting || !password}>
-        {waiting ? 'Signing in…' : 'Sign in'}
-      </button>
-    </form>
   );
 
   return (

@@ -1,4 +1,5 @@
 import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from 'jose';
+import { HttpError } from './http-error.js';
 
 /**
  * Verifies a Firebase Auth ID token — what the browser gets back from the
@@ -24,14 +25,22 @@ import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload, type JWTVerifyG
 
 export interface GoogleIdentity {
   email: string;
-  uid: string;
-  name?: string;
 }
 
-/** The token is bad or not acceptable: a 401 (or 403-style message) to the user. */
-export class GoogleTokenError extends Error {}
-/** Google's signing keys could not be fetched: our problem, not the user's — a 503. */
-export class GoogleKeysUnavailableError extends Error {}
+/** The token is bad or not acceptable. The detail goes to the log; the user gets `publicMessage`. */
+export class GoogleTokenError extends HttpError {
+  constructor(detail: string, publicMessage = detail) {
+    super(401, detail, publicMessage);
+  }
+}
+/** Google's signing keys could not be fetched: our problem, not the user's. */
+export class GoogleKeysUnavailableError extends HttpError {
+  constructor(detail: string) {
+    super(503, detail, 'Google sign-in is temporarily unavailable. Try again in a minute.');
+  }
+}
+
+const invalid = (detail: string) => new GoogleTokenError(`Invalid ID token: ${detail}`, 'Invalid sign-in token');
 
 /** Clock tolerance for `exp` / `iat` / `auth_time`, seconds. */
 const CLOCK_SKEW_S = 60;
@@ -46,6 +55,24 @@ function keySetFor(jwksUrl: string): JWTVerifyGetKey {
   return set;
 }
 
+/**
+ * The key lookup, with its failures sorted at the source. An unknown or
+ * ambiguous `kid` is the TOKEN's fault; anything else thrown while getting
+ * keys (network, timeout, non-200, an unparseable set) means Google's key
+ * endpoint is down or blocked. Nobody is admitted either way — this only picks
+ * "bad token" over "try again".
+ */
+function keysFrom(source: JWTVerifyGetKey): JWTVerifyGetKey {
+  return async (header, token) => {
+    try {
+      return await source(header, token);
+    } catch (err) {
+      if (err instanceof errors.JWKSNoMatchingKey || err instanceof errors.JWKSMultipleMatchingKeys) throw err;
+      throw new GoogleKeysUnavailableError(`Google signing keys unavailable: ${(err as Error).message}`);
+    }
+  };
+}
+
 export async function verifyFirebaseIdToken(
   idToken: string,
   opts: { projectId: string; jwksUrl: string; keys?: JWTVerifyGetKey },
@@ -53,7 +80,7 @@ export async function verifyFirebaseIdToken(
   if (!idToken || typeof idToken !== 'string') throw new GoogleTokenError('Missing ID token');
   let payload: JWTPayload;
   try {
-    ({ payload } = await jwtVerify(idToken, opts.keys ?? keySetFor(opts.jwksUrl), {
+    ({ payload } = await jwtVerify(idToken, keysFrom(opts.keys ?? keySetFor(opts.jwksUrl)), {
       algorithms: ['RS256'],
       audience: opts.projectId,
       issuer: `https://securetoken.google.com/${opts.projectId}`,
@@ -61,43 +88,22 @@ export async function verifyFirebaseIdToken(
       requiredClaims: ['sub', 'iat', 'exp'],
     }));
   } catch (err) {
-    if (isKeySourceFailure(err)) throw new GoogleKeysUnavailableError(`Google signing keys unavailable: ${(err as Error).message}`);
-    throw new GoogleTokenError(`Invalid ID token: ${(err as Error).message}`);
+    if (err instanceof GoogleKeysUnavailableError) throw err;
+    throw invalid((err as Error).message);
   }
 
-  if (typeof payload.sub !== 'string' || !payload.sub) throw new GoogleTokenError('Invalid ID token: empty sub');
+  if (typeof payload.sub !== 'string' || !payload.sub) throw invalid('empty sub');
   const nowS = Date.now() / 1000;
   // jose checks `exp` but leaves a future `iat` alone; Firebase requires it in the past.
-  if (typeof payload.iat !== 'number' || payload.iat > nowS + CLOCK_SKEW_S) {
-    throw new GoogleTokenError('Invalid ID token: iat in the future');
-  }
+  if (typeof payload.iat !== 'number' || payload.iat > nowS + CLOCK_SKEW_S) throw invalid('iat in the future');
   const authTime = payload.auth_time;
   if (typeof authTime !== 'number' || authTime > nowS + CLOCK_SKEW_S) {
-    throw new GoogleTokenError('Invalid ID token: auth_time missing or in the future');
+    throw invalid('auth_time missing or in the future');
   }
   const firebase = payload.firebase as { sign_in_provider?: unknown } | undefined;
-  if (firebase?.sign_in_provider !== 'google.com') {
-    throw new GoogleTokenError('Only Google sign-in is accepted');
-  }
+  if (firebase?.sign_in_provider !== 'google.com') throw new GoogleTokenError('Only Google sign-in is accepted');
   const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '';
   if (!email) throw new GoogleTokenError('The Google account has no email');
   if (payload.email_verified !== true) throw new GoogleTokenError('The Google account email is not verified');
-
-  return {
-    email,
-    uid: payload.sub,
-    name: typeof payload.name === 'string' ? payload.name : undefined,
-  };
-}
-
-/**
- * Whether a verify failure came from fetching the key set rather than from the
- * token. jose's token errors all have their own classes; a network failure
- * (fetch's TypeError), a timeout, an unparseable set, or a non-200 (a bare
- * `JOSEError`) mean the key endpoint is down or blocked. Either way nobody is
- * admitted — this only decides whether the user is told "try again" or "bad token".
- */
-function isKeySourceFailure(err: unknown): boolean {
-  if (!(err instanceof errors.JOSEError)) return true;
-  return err instanceof errors.JWKSTimeout || err instanceof errors.JWKSInvalid || err.constructor === errors.JOSEError;
+  return { email };
 }

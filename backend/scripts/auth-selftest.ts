@@ -21,6 +21,8 @@ import {
 } from '../src/auth.js';
 import { config, redactSecrets } from '../src/config.js';
 
+const ADMIN = { role: 'admin', method: 'password' } as const;
+
 let passed = 0;
 const failures: string[] = [];
 
@@ -75,7 +77,7 @@ console.log('\nlogin verification');
 console.log('\nsessions');
 {
   const book = new SessionBook(3 * 60 * 60 * 1000);
-  const session = book.create(AUTH_USERNAME, 1_000);
+  const session = book.create(AUTH_USERNAME, ADMIN, 1_000);
   check('issued token is 32 bytes hex', session.token.length, 64);
   check('username is the static account', session.username, AUTH_USERNAME);
   check('expires 3 hours after `now`', session.expiresAt, 1_000 + 3 * 60 * 60 * 1000);
@@ -86,10 +88,10 @@ console.log('\nsessions');
   check('an expired token cannot be reused', book.get(session.token, session.expiresAt + 1), undefined);
 
   const short = new SessionBook(50);
-  const brief = short.create(AUTH_USERNAME, 0);
+  const brief = short.create(AUTH_USERNAME, ADMIN, 0);
   check('a 50ms TTL is already dead at t=50', short.get(brief.token, 50), undefined);
 
-  const live = book.create(AUTH_USERNAME, 10_000);
+  const live = book.create(AUTH_USERNAME, ADMIN, 10_000);
   book.revoke(live.token);
   check('revoke drops the session immediately', book.get(live.token, 10_000), undefined);
 }

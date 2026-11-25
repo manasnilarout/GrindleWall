@@ -14,6 +14,8 @@ import {
 } from '../../../src/auth.js';
 import { config } from '../../../src/config.js';
 
+const ADMIN = { role: 'admin', method: 'password' } as const;
+
 vi.mock('dotenv/config', () => ({}));
 
 const SECRET = 'bench-hmac-secret';
@@ -162,53 +164,53 @@ describe('verifyLogin', () => {
 describe('SessionBook', () => {
   it('issues 32-byte hex tokens for the given user, expiring TTL after now', () => {
     const book = new SessionBook(1000);
-    const s = book.create(AUTH_USERNAME, 5_000);
+    const s = book.create(AUTH_USERNAME, ADMIN, 5_000);
     expect(s.token).toMatch(/^[0-9a-f]{64}$/);
     expect(s.username).toBe(AUTH_USERNAME);
     expect(s.expiresAt).toBe(6_000);
   });
 
   it('defaults to the three-hour TTL', () => {
-    const s = new SessionBook().create(AUTH_USERNAME, 0);
+    const s = new SessionBook().create(AUTH_USERNAME, ADMIN, 0);
     expect(s.expiresAt).toBe(DEFAULT_SESSION_TTL_MS);
   });
 
   it('issues a distinct token every time', () => {
     const book = new SessionBook();
-    const tokens = new Set(Array.from({ length: 200 }, () => book.create(AUTH_USERNAME, 0).token));
+    const tokens = new Set(Array.from({ length: 200 }, () => book.create(AUTH_USERNAME, ADMIN, 0).token));
     expect(tokens.size).toBe(200);
   });
 
   it('get returns the live session', () => {
     const book = new SessionBook(1000);
-    const s = book.create(AUTH_USERNAME, 0);
+    const s = book.create(AUTH_USERNAME, ADMIN, 0);
     expect(book.get(s.token, 0)).toEqual(s);
     expect(book.get(s.token, 999)).toEqual(s);
   });
 
   it('a session is dead AT its expiry instant (<=), not one tick later', () => {
     const book = new SessionBook(1000);
-    const s = book.create(AUTH_USERNAME, 0);
+    const s = book.create(AUTH_USERNAME, ADMIN, 0);
     expect(book.get(s.token, 1000)).toBeUndefined();
   });
 
   it('an expired session is deleted, so going back in time cannot revive it', () => {
     const book = new SessionBook(1000);
-    const s = book.create(AUTH_USERNAME, 0);
+    const s = book.create(AUTH_USERNAME, ADMIN, 0);
     expect(book.get(s.token, 2000)).toBeUndefined();
     expect(book.get(s.token, 10)).toBeUndefined();
   });
 
   it.each([undefined, '', 'deadbeef', 'x'.repeat(64)])('get(%j) is a miss', (token) => {
     const book = new SessionBook();
-    book.create(AUTH_USERNAME, 0);
+    book.create(AUTH_USERNAME, ADMIN, 0);
     expect(book.get(token, 0)).toBeUndefined();
   });
 
   it('revoke drops the session immediately, and is harmless on unknown tokens', () => {
     const book = new SessionBook();
-    const a = book.create(AUTH_USERNAME, 0);
-    const b = book.create(AUTH_USERNAME, 0);
+    const a = book.create(AUTH_USERNAME, ADMIN, 0);
+    const b = book.create(AUTH_USERNAME, ADMIN, 0);
     book.revoke(a.token);
     expect(book.get(a.token, 0)).toBeUndefined();
     expect(book.get(b.token, 0)).toBeDefined(); // only the one revoked
@@ -219,7 +221,7 @@ describe('SessionBook', () => {
   it('books are independent', () => {
     const one = new SessionBook();
     const two = new SessionBook();
-    const s = one.create(AUTH_USERNAME, 0);
+    const s = one.create(AUTH_USERNAME, ADMIN, 0);
     expect(two.get(s.token, 0)).toBeUndefined();
   });
 
@@ -232,7 +234,7 @@ describe('SessionBook', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-10-20T12:00:00Z'));
       const book = new SessionBook(60_000);
-      const s = book.create(AUTH_USERNAME);
+      const s = book.create(AUTH_USERNAME, ADMIN);
       expect(s.expiresAt).toBe(Date.parse('2026-10-20T12:01:00Z'));
       vi.advanceTimersByTime(59_999);
       expect(book.get(s.token)).toBeDefined();
@@ -244,7 +246,7 @@ describe('SessionBook', () => {
       vi.useFakeTimers();
       vi.setSystemTime(0);
       const book = new SessionBook();
-      const s = book.create(AUTH_USERNAME);
+      const s = book.create(AUTH_USERNAME, ADMIN);
       vi.setSystemTime(DEFAULT_SESSION_TTL_MS - 60_000);
       expect(book.get(s.token)?.username).toBe(AUTH_USERNAME);
       vi.setSystemTime(DEFAULT_SESSION_TTL_MS);
@@ -352,7 +354,7 @@ describe('tokenFromRequest', () => {
 
   it('round-trips with a SessionBook', () => {
     const book = new SessionBook();
-    const s = book.create(AUTH_USERNAME, 0);
+    const s = book.create(AUTH_USERNAME, ADMIN, 0);
     const token = tokenFromRequest({ headers: { authorization: `Bearer ${s.token}` } });
     expect(book.get(token, 0)?.username).toBe(AUTH_USERNAME);
   });
@@ -363,9 +365,9 @@ describe('SessionBook.onRevoke', () => {
     const book = new SessionBook(1_000);
     const revoked: string[] = [];
     book.onRevoke = (t) => revoked.push(t);
-    const a = book.create('a@x.io', 0);
-    const b = book.create('b@x.io', 0, { role: 'member', method: 'google' });
-    const c = book.create('c@x.io', 0);
+    const a = book.create('a@x.io', ADMIN, 0);
+    const b = book.create('b@x.io', { role: 'member', method: 'google' }, 0);
+    const c = book.create('c@x.io', ADMIN, 0);
     book.revoke(a.token);
     book.revoke(a.token);
     book.revoke('unknown');

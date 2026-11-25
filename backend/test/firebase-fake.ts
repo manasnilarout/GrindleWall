@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { exportJWK, generateKeyPair, SignJWT, type CryptoKey, type JWK } from 'jose';
+import { exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose';
 
 /**
  * A stand-in for Firebase's token issuer: an RS256 key pair, a JWKS served on
@@ -14,20 +14,15 @@ export const PROJECT = 'grindelwald-test';
 export interface FakeIssuer {
   kid: string;
   jwk: JWK;
-  privateKey: CryptoKey;
   mint(claims?: Record<string, unknown>, opts?: MintOptions): Promise<string>;
 }
 
 export interface MintOptions {
-  kid?: string;
-  alg?: string;
-  key?: CryptoKey;
   /** Seconds relative to now. */
   iat?: number;
   exp?: number;
   aud?: string;
   iss?: string;
-  sub?: string;
 }
 
 export async function fakeIssuer(kid = 'test-key-1'): Promise<FakeIssuer> {
@@ -36,7 +31,6 @@ export async function fakeIssuer(kid = 'test-key-1'): Promise<FakeIssuer> {
   return {
     kid,
     jwk,
-    privateKey,
     async mint(claims = {}, opts = {}) {
       const now = Math.floor(Date.now() / 1000);
       const body = {
@@ -47,13 +41,13 @@ export async function fakeIssuer(kid = 'test-key-1'): Promise<FakeIssuer> {
         ...claims,
       };
       return new SignJWT(body)
-        .setProtectedHeader({ alg: opts.alg ?? 'RS256', kid: opts.kid ?? kid, typ: 'JWT' })
+        .setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' })
         .setIssuedAt(now + (opts.iat ?? 0))
         .setExpirationTime(now + (opts.exp ?? 3600))
         .setAudience(opts.aud ?? PROJECT)
         .setIssuer(opts.iss ?? `https://securetoken.google.com/${PROJECT}`)
-        .setSubject(opts.sub ?? 'uid-123')
-        .sign(opts.key ?? privateKey);
+        .setSubject('uid-123')
+        .sign(privateKey);
     },
   };
 }

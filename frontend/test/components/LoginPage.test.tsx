@@ -142,3 +142,37 @@ describe('LoginPage', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });
+
+describe('LoginPage with Google', () => {
+  it('leads with Google and folds the admin password form away', () => {
+    render(<LoginPage google password onGoogle={vi.fn(async () => {})} />);
+    expect(screen.getByRole('button', { name: 'Sign in with Google' })).toBeTruthy();
+    const details = screen.getByText('Admin sign-in').closest('details')!;
+    expect(details.open).toBe(false);
+    expect(screen.getByText(/Only approved domains get in/)).toBeTruthy();
+  });
+
+  it('has no admin form when the password login is not configured', () => {
+    render(<LoginPage google password={false} />);
+    expect(screen.queryByText('Admin sign-in')).toBeNull();
+    expect(screen.queryByLabelText('Password')).toBeNull();
+  });
+
+  it('shows the busy state while the popup is open, and a refusal as an alert', async () => {
+    const pending = deferred();
+    render(<LoginPage google onGoogle={() => pending.promise} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }));
+    expect(screen.getByRole('button', { name: 'Waiting for Google…' })).toHaveProperty('disabled', true);
+    await act(async () => pending.reject(new Error('someone@gmail.com is not allowed to sign in.')));
+    expect(screen.getByRole('alert').textContent).toContain('someone@gmail.com is not allowed');
+    expect(screen.getByRole('button', { name: 'Sign in with Google' })).toHaveProperty('disabled', false);
+  });
+
+  it('the folded admin form still submits the password', async () => {
+    const onSubmit = vi.fn(async () => {});
+    render(<LoginPage google password onSubmit={onSubmit} />);
+    fireEvent.change(password(), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in as admin' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('admin@magickvoice.com', 'pw'));
+  });
+});

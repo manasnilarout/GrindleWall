@@ -33,6 +33,17 @@ describe('Sidebar', () => {
     expect(within(list).getAllByRole('listitem')).toHaveLength(2);
   });
 
+  it('shows Access to admins only, and navigates to it', () => {
+    const onNavigate = vi.fn();
+    const { rerender } = render(<Sidebar {...props({ onNavigate })} />);
+    expect(screen.queryByRole('button', { name: /Access/ })).toBeNull();
+    rerender(<Sidebar {...props({ onNavigate, showAccess: true, view: 'access' })} />);
+    const link = screen.getByRole('button', { name: /Access/ });
+    expect(link.getAttribute('aria-current')).toBe('page');
+    fireEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledWith('access');
+  });
+
   it('marks Runs as the current page when it is', () => {
     render(<Sidebar {...props({ view: 'runs' })} />);
     expect(screen.getByRole('button', { name: /Runs/ }).getAttribute('aria-current')).toBe('page');
