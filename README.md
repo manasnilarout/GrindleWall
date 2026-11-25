@@ -38,9 +38,19 @@ Ships with mock providers for every slot, so it works end to end with **no API k
 click **Connect**, then **Start mic**, or just type a turn. You'll hear synthetic beeps and get real
 latency numbers for the transport.
 
-An optional login gate sits in front of the UI. Set both `AUTH_PASSWORD` and `AUTH_HMAC_SECRET` in
-`backend/.env` to turn it on — username is always `admin@magickvoice.com`. Unset, the bench stays
-open. `npm run smoke` still works when the gate is on: it loads `.env` and signs in before opening
+An optional login gate sits in front of the UI, with two ways in:
+
+- **Google sign-in** (Firebase Auth), for anyone on an allowed domain. Set `FIREBASE_PROJECT_ID` and
+  `FIREBASE_API_KEY` (see `backend/.env.example` for the console steps). `@magickvoice.com` is allowed
+  by default (`AUTH_ALLOWED_DOMAINS`); an admin adds more domains or single addresses on the
+  **Access** page, and removing one signs its people out at once. The backend verifies the Firebase
+  ID token itself (signature, project, issuer, Google as the provider, verified email) and then
+  issues its own session, so everything downstream is unchanged.
+- **Admin password**: set both `AUTH_PASSWORD` and `AUTH_HMAC_SECRET` — username is always
+  `admin@magickvoice.com`. It is always admin; Google accounts are admin only if listed in
+  `AUTH_ADMIN_EMAILS`.
+
+With neither configured, the bench stays open. `npm run smoke` still works when the gate is on: it loads `.env` and signs in before opening
 the socket.
 
 ```bash

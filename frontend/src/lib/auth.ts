@@ -1,19 +1,51 @@
-/** The only account the naive layer accepts. Mirrored on the backend. */
+/** The only account the password login accepts. Mirrored on the backend. */
 export const AUTH_USERNAME = 'admin@magickvoice.com';
 
 export const AUTH_STORAGE_KEY = 'voice-bench.auth';
+
+/** Firebase's public web config — what `initializeApp` takes. Served by the backend. */
+export interface FirebaseWebConfig {
+  apiKey: string;
+  authDomain: string;
+  projectId: string;
+  appId?: string;
+}
 
 export interface AuthConfig {
   required: boolean;
   username: string;
   sessionTtlMs: number;
+  /** Whether the admin password login is configured. Absent from older backends: inferred from `hmacSecret`. */
+  password?: boolean;
   hmacSecret?: string;
+  /** Present when Google sign-in is configured. */
+  google?: FirebaseWebConfig;
 }
+
+export type AuthRole = 'admin' | 'member';
 
 export interface AuthSession {
   token: string;
   username: string;
   expiresAt: number;
+  /** `admin` may edit the sign-in allowlist. Absent on sessions stored by an older build. */
+  role?: AuthRole;
+  method?: 'password' | 'google';
+}
+
+export interface AllowEntry {
+  kind: 'domain' | 'email';
+  value: string;
+  /** `env` entries are pinned by AUTH_ALLOWED_DOMAINS and cannot be removed from the UI. */
+  source: 'env' | 'admin';
+  addedBy?: string;
+  addedAt?: number;
+}
+
+export interface AllowlistState {
+  entries: AllowEntry[];
+  /** AUTH_ADMIN_EMAILS — Google accounts that sign in as admin. */
+  adminEmails: string[];
 }
 
 export async function fetchAuthConfig(): Promise<AuthConfig> {
@@ -78,6 +110,38 @@ export async function login(username: string, password: string, hmacSecret: stri
   writeSession(session);
   return session;
 }
+
+/** Trades a Firebase ID token from the Google popup for one of our own sessions. */
+export async function loginWithGoogle(idToken: string): Promise<AuthSession> {
+  const res = await fetch('/api/auth/google', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ idToken }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `Sign-in failed: ${res.status}`);
+  }
+  const session = (await res.json()) as AuthSession;
+  writeSession(session);
+  return session;
+}
+
+async function allowlistCall(method: 'GET' | 'POST' | 'DELETE', entry?: Pick<AllowEntry, 'kind' | 'value'>) {
+  const res = await authFetch('/api/auth/allowlist', {
+    method,
+    ...(entry ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(entry) } : {}),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `Allowlist request failed: ${res.status}`);
+  }
+  return (await res.json()) as AllowlistState;
+}
+
+export const fetchAllowlist = () => allowlistCall('GET');
+export const addAllowEntry = (entry: Pick<AllowEntry, 'kind' | 'value'>) => allowlistCall('POST', entry);
+export const removeAllowEntry = (entry: Pick<AllowEntry, 'kind' | 'value'>) => allowlistCall('DELETE', entry);
 
 export async function logout(): Promise<void> {
   const session = readSession();

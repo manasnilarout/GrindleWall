@@ -56,7 +56,58 @@ export const config = {
    * immediately on the client while the server session was still live.
    */
   authSessionTtlMs: Math.round(Math.min(sanePositive(process.env.AUTH_SESSION_HOURS, 3), 24) * 3_600_000),
+  /**
+   * Google sign-in through Firebase Auth. Setting FIREBASE_PROJECT_ID and
+   * FIREBASE_API_KEY turns it on; the browser does the Google popup and the
+   * backend verifies the Firebase ID token it gets back, then issues its own
+   * session exactly as the password login does. The API key is a public
+   * identifier (Firebase ships it in every web bundle), served on
+   * GET /api/auth/config — it grants nothing on its own.
+   */
+  firebase: {
+    projectId: (process.env.FIREBASE_PROJECT_ID ?? '').trim(),
+    apiKey: (process.env.FIREBASE_API_KEY ?? '').trim(),
+    authDomain:
+      (process.env.FIREBASE_AUTH_DOMAIN ?? '').trim() ||
+      (process.env.FIREBASE_PROJECT_ID?.trim() ? `${process.env.FIREBASE_PROJECT_ID.trim()}.firebaseapp.com` : ''),
+    appId: (process.env.FIREBASE_APP_ID ?? '').trim() || undefined,
+    /**
+     * Where Firebase's ID-token signing keys are fetched from. Overridable ONLY
+     * so the integration tests can sign tokens with a local key; never set it in
+     * production — whoever serves this URL can mint any identity.
+     */
+    jwksUrl:
+      (process.env.FIREBASE_JWKS_URL ?? '').trim() ||
+      'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com',
+  },
+  /**
+   * Email domains whose Google accounts may sign in, comma-separated. These are
+   * the pinned baseline: an admin can add more domains (and single addresses)
+   * from the Access page, but cannot remove these — change the env var for that.
+   */
+  authAllowedDomains: csv(process.env.AUTH_ALLOWED_DOMAINS ?? 'magickvoice.com').map((d) =>
+    d.replace(/^@/, '').toLowerCase(),
+  ),
+  /**
+   * Google accounts that sign in as admin (may edit the allowlist). The
+   * password login is always admin. Comma-separated, case-insensitive.
+   */
+  authAdminEmails: csv(process.env.AUTH_ADMIN_EMAILS ?? '').map((e) => e.toLowerCase()),
+  /**
+   * Where admin-added domains/emails persist. Defaults to a directory inside
+   * SESSION_DIR — the one path the container already keeps on a volume — and
+   * deliberately not a `*.json` file at its top level, which the session store
+   * would try to read as a conversation.
+   */
+  authAllowlistFile: process.env.AUTH_ALLOWLIST_FILE || `${process.env.SESSION_DIR ?? 'data/sessions'}/.auth/allowlist.json`,
 };
+
+function csv(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 function sanePositive(raw: string | undefined, fallback: number): number {
   const n = Number(raw);
@@ -94,6 +145,9 @@ export function redactSecrets(text: string): string {
     if (value && !secrets.has(value)) secrets.set(value, key);
   }
   for (const [key, value] of Object.entries(process.env)) {
+    // Public by design and served on GET /api/auth/config; scrubbing it would
+    // only make Firebase errors unreadable.
+    if (key === 'FIREBASE_API_KEY') continue;
     // Short values produce false positives (PATH fragments, "1", locale names).
     if (!value || value.length < 12) continue;
     if (!/(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)) continue;

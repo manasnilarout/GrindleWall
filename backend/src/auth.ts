@@ -1,13 +1,24 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { config } from './config.js';
 
-/** The only account this naive layer accepts. */
+/** The only account the password login accepts. Google sign-in is separate (`auth-google.ts`). */
 export const AUTH_USERNAME = 'admin@magickvoice.com';
 
 export const DEFAULT_SESSION_TTL_MS = 3 * 60 * 60 * 1000;
 
-export function authEnabled(): boolean {
+/** The admin password login: both AUTH_PASSWORD and AUTH_HMAC_SECRET set. */
+export function passwordAuthEnabled(): boolean {
   return Boolean(config.authPassword && config.authHmacSecret);
+}
+
+/** Google sign-in through Firebase: FIREBASE_PROJECT_ID and FIREBASE_API_KEY set. */
+export function googleAuthEnabled(): boolean {
+  return Boolean(config.firebase.projectId && config.firebase.apiKey);
+}
+
+/** The gate is on when either way in is configured. Unset, the bench stays open. */
+export function authEnabled(): boolean {
+  return passwordAuthEnabled() || googleAuthEnabled();
 }
 
 /**
@@ -41,10 +52,16 @@ export function verifyLogin(
   return hmacEquals(expected.hmacSecret, expected.password, presented.hmac);
 }
 
+/** `admin` may edit the sign-in allowlist; `member` may use everything else. */
+export type AuthRole = 'admin' | 'member';
+export type AuthMethod = 'password' | 'google';
+
 export interface AuthSession {
   token: string;
   username: string;
   expiresAt: number;
+  role: AuthRole;
+  method: AuthMethod;
 }
 
 /** In-memory sessions. A process restart logs everyone out — first iteration. */
@@ -53,11 +70,17 @@ export class SessionBook {
 
   constructor(private readonly ttlMs: number = DEFAULT_SESSION_TTL_MS) {}
 
-  create(username: string, now = Date.now()): AuthSession {
+  create(
+    username: string,
+    now = Date.now(),
+    who: { role: AuthRole; method: AuthMethod } = { role: 'admin', method: 'password' },
+  ): AuthSession {
     const session: AuthSession = {
       token: randomBytes(32).toString('hex'),
       username,
       expiresAt: now + this.ttlMs,
+      role: who.role,
+      method: who.method,
     };
     this.sessions.set(session.token, session);
     return session;
@@ -76,6 +99,22 @@ export class SessionBook {
 
   revoke(token: string): void {
     this.sessions.delete(token);
+  }
+
+  /**
+   * Ends every session matching `predicate` — an admin taking a domain off the
+   * allowlist means its people are out now, not when their token expires.
+   * Returns how many were revoked.
+   */
+  revokeWhere(predicate: (session: AuthSession) => boolean): number {
+    let n = 0;
+    for (const [token, session] of this.sessions) {
+      if (predicate(session)) {
+        this.sessions.delete(token);
+        n++;
+      }
+    }
+    return n;
   }
 }
 

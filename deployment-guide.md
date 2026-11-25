@@ -111,6 +111,9 @@ bake keys into an image.** Pass them at run time:
 | `HOST` | `0.0.0.0` in the images | Bind address. Unset locally so Node keeps its dual-stack default. |
 | `AUTH_PASSWORD` / `AUTH_HMAC_SECRET` | unset (gate off) | Both required to turn the login gate on. Username is always `admin@magickvoice.com`. Sessions live in the process — a restart or a second replica signs people out. Run one instance (or rely on session affinity) if the gate is on. |
 | `AUTH_SESSION_HOURS` | `3` (capped at 24) | How long a UI session lasts after login. |
+| `FIREBASE_PROJECT_ID` / `FIREBASE_API_KEY` | unset (Google sign-in off) | Both turn on Google sign-in through Firebase Auth (and the gate with it). Enable the Google provider in the Firebase console and add the public hostname under *Authorized domains*, or the popup fails with `auth/unauthorized-domain`. `FIREBASE_AUTH_DOMAIN` defaults to `<project>.firebaseapp.com`. Do not add a `Cross-Origin-Opener-Policy: same-origin` header — it breaks the popup. |
+| `AUTH_ALLOWED_DOMAINS` | `magickvoice.com` | Comma-separated domains whose Google accounts may sign in. Pinned; the Access page adds more but cannot remove these. Admin additions persist to `$SESSION_DIR/.auth/allowlist.json`, so they ride the session volume. |
+| `AUTH_ADMIN_EMAILS` | unset | Google accounts that sign in as admin (may edit the allowlist). The password login is always admin. |
 | `STATIC_DIR` | unset / `/app/ui` in the all-in-one image | Directory of the Vite build. When set, Express serves the UI. |
 | `SESSION_DIR` | `/data/sessions` | JSON records + stereo WAVs. Mount a volume here. |
 | `PUBLIC_DOMAIN` | unset | Public hostname for the TLS overlay (`grindelwald.magickvoice.app`). Required by `docker-compose.https.yml`, unused otherwise. |
@@ -608,7 +611,7 @@ openssl s_client -connect grindelwald.magickvoice.app:443 \
   | openssl x509 -noout -subject -issuer -dates
 ```
 
-With the login gate on (`AUTH_PASSWORD` and `AUTH_HMAC_SECRET` both set),
+With the login gate on (`AUTH_PASSWORD` and `AUTH_HMAC_SECRET` both set, or Google sign-in configured),
 `/api/catalog` answers `{"error":"Unauthorized"}` until you log in — that is
 the gate working, not a broken deployment, and the catalog check above will
 fail until you do. `/api/health` stays open, which is what makes it the right

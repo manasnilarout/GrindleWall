@@ -6,6 +6,7 @@ import {
   fetchAuthConfig,
   fetchAuthSession,
   login as postLogin,
+  loginWithGoogle,
   logout as postLogout,
   readSession,
   type AuthConfig,
@@ -98,6 +99,15 @@ export function useAuth() {
     setStatus('ready');
   }, [config]);
 
+  const signInWithGoogle = useCallback(async () => {
+    if (!config?.google) throw new Error('Google sign-in is not configured');
+    const { googleIdToken } = await import('../lib/firebase');
+    const idToken = await googleIdToken(config.google);
+    const next = await loginWithGoogle(idToken);
+    setSession(next);
+    setStatus('ready');
+  }, [config]);
+
   const signOut = useCallback(async () => {
     await postLogout();
     setSession(null);
@@ -109,8 +119,14 @@ export function useAuth() {
     required: config?.required ?? false,
     username: config?.username ?? AUTH_USERNAME,
     sessionTtlMs: config?.sessionTtlMs ?? 3 * 60 * 60 * 1000,
+    /** The admin password form. Older backends do not send `password`: infer it from the key they hand out. */
+    passwordEnabled: config ? (config.password ?? Boolean(config.hmacSecret)) : false,
+    googleEnabled: Boolean(config?.google),
+    /** A session stored before roles existed was the password login, which is always admin. */
+    isAdmin: Boolean(session) && (session?.role ?? 'admin') === 'admin',
     session,
     signIn,
+    signInWithGoogle,
     signOut,
   };
 }

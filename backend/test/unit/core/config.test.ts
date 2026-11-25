@@ -24,6 +24,14 @@ const CONFIG_VARS = [
   'AUTH_PASSWORD',
   'AUTH_HMAC_SECRET',
   'AUTH_SESSION_HOURS',
+  'FIREBASE_PROJECT_ID',
+  'FIREBASE_API_KEY',
+  'FIREBASE_AUTH_DOMAIN',
+  'FIREBASE_APP_ID',
+  'FIREBASE_JWKS_URL',
+  'AUTH_ALLOWED_DOMAINS',
+  'AUTH_ADMIN_EMAILS',
+  'AUTH_ALLOWLIST_FILE',
 ] as const;
 
 type ConfigVar = (typeof CONFIG_VARS)[number];
@@ -49,7 +57,44 @@ describe('config defaults (nothing set)', () => {
       authPassword: '',
       authHmacSecret: '',
       authSessionTtlMs: 3 * 3_600_000,
+      firebase: {
+        projectId: '',
+        apiKey: '',
+        authDomain: '',
+        appId: undefined,
+        jwksUrl: 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com',
+      },
+      authAllowedDomains: ['magickvoice.com'],
+      authAdminEmails: [],
+      authAllowlistFile: 'data/sessions/.auth/allowlist.json',
     });
+  });
+});
+
+describe('google sign-in settings', () => {
+  it('derives authDomain from the project id, and an explicit one wins', async () => {
+    expect((await loadConfig({ FIREBASE_PROJECT_ID: 'gw-prod' })).config.firebase.authDomain).toBe('gw-prod.firebaseapp.com');
+    expect(
+      (await loadConfig({ FIREBASE_PROJECT_ID: 'gw-prod', FIREBASE_AUTH_DOMAIN: 'login.example.com' })).config.firebase.authDomain,
+    ).toBe('login.example.com');
+  });
+
+  it('normalises AUTH_ALLOWED_DOMAINS and AUTH_ADMIN_EMAILS; blank pins no domains', async () => {
+    const { config } = await loadConfig({ AUTH_ALLOWED_DOMAINS: ' @MagickVoice.com, ,partner.IO ', AUTH_ADMIN_EMAILS: 'Boss@X.com' });
+    expect(config.authAllowedDomains).toEqual(['magickvoice.com', 'partner.io']);
+    expect(config.authAdminEmails).toEqual(['boss@x.com']);
+    expect((await loadConfig({ AUTH_ALLOWED_DOMAINS: '' })).config.authAllowedDomains).toEqual([]);
+  });
+
+  it('keeps the allowlist inside SESSION_DIR, the one path on a volume', async () => {
+    expect((await loadConfig({ SESSION_DIR: '/data/sessions' })).config.authAllowlistFile).toBe('/data/sessions/.auth/allowlist.json');
+  });
+
+  it('never redacts the public Firebase web API key', async () => {
+    vi.stubEnv('FIREBASE_API_KEY', 'AIzaSyPublicWebKey123456');
+    const { redactSecrets } = await loadConfig();
+    vi.stubEnv('FIREBASE_API_KEY', 'AIzaSyPublicWebKey123456');
+    expect(redactSecrets('key AIzaSyPublicWebKey123456')).toBe('key AIzaSyPublicWebKey123456');
   });
 });
 

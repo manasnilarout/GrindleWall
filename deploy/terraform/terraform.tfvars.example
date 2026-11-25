@@ -20,6 +20,10 @@ app_env = {
   # AWS_SECRET_ACCESS_KEY = ""
   # AWS_REGION            = "us-east-1"
   # SESSION_MAX_RECORDS   = "500"
+  # Google sign-in for anyone @magickvoice.com (see deploy/.env.example):
+  # FIREBASE_PROJECT_ID   = ""
+  # FIREBASE_API_KEY      = ""
+  # AUTH_ADMIN_EMAILS     = "you@magickvoice.com"
 }
 
 # git_ref           = "main"                 # branch, tag or commit

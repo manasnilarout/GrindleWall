@@ -66,6 +66,13 @@ function baseEnv(): Record<string, string> {
     'AUTH_PASSWORD',
     'AUTH_HMAC_SECRET',
     'AUTH_SESSION_HOURS',
+    'FIREBASE_PROJECT_ID',
+    'FIREBASE_API_KEY',
+    'FIREBASE_AUTH_DOMAIN',
+    'FIREBASE_APP_ID',
+    'FIREBASE_JWKS_URL',
+    'AUTH_ADMIN_EMAILS',
+    'AUTH_ALLOWLIST_FILE',
     'AWS_SESSION_TOKEN',
     'AWS_DEFAULT_REGION',
     'OPENAI_BASE_URL',
@@ -89,6 +96,8 @@ function baseEnv(): Record<string, string> {
     for (const aliases of Object.values(p.envAliases ?? {})) for (const a of aliases) blank.add(a);
   }
   for (const k of blank) env[k] = '';
+  // Unset rather than blank: blank means "pin no domains", unset is the default.
+  delete env.AUTH_ALLOWED_DOMAINS;
   env.CORS_ORIGINS = 'http://localhost:5173';
   return env;
 }

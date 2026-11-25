@@ -27,8 +27,15 @@ const VENDOR_KEYS = [
   'GROQ_API_KEY',
   'AUTH_PASSWORD',
   'AUTH_HMAC_SECRET',
+  'FIREBASE_PROJECT_ID',
+  'FIREBASE_API_KEY',
+  'FIREBASE_JWKS_URL',
+  'AUTH_ADMIN_EMAILS',
+  'AUTH_ALLOWLIST_FILE',
 ];
 for (const k of VENDOR_KEYS) process.env[k] = '';
+// Unset, not blank: blank would mean "pin no domains".
+delete process.env.AUTH_ALLOWED_DOMAINS;
 
 // Never write records into the repo's data/sessions. Removed again after the
 // file, so repeated local runs do not pile up temp dirs.
