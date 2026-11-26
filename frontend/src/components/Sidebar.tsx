@@ -3,8 +3,8 @@ import { chainOf, rigColor, rigLetter, type Rig } from '../lib/rigs';
 import { ms } from '../lib/format';
 import { Icon } from './Icon';
 
-/** The two places you navigate to. A run's detail page is reached from Runs, not from here. */
-export type NavView = 'bench' | 'runs';
+/** The places you navigate to. A run's detail page is reached from Runs, not from here; Access is admin-only. */
+export type NavView = 'bench' | 'runs' | 'access';
 
 /** What the sidebar can honestly say about the backend: whether the catalog came back. */
 export type BackendStatus = 'loading' | 'ready' | 'unreachable';
@@ -41,6 +41,7 @@ export function Sidebar({
   backend,
   username,
   onLogout,
+  showAccess = false,
 }: {
   /** Which nav entry is current. The run detail page counts as Runs. */
   view: NavView;
@@ -56,6 +57,8 @@ export function Sidebar({
   backend: BackendStatus;
   username?: string;
   onLogout?: () => void;
+  /** Admins get an Access entry for the sign-in allowlist. */
+  showAccess?: boolean;
 }) {
   const activeName = rigs.find((r) => r.id === activeRigId)?.name;
 
@@ -88,6 +91,17 @@ export function Sidebar({
           <Icon name="scroll" size={18} />
           Runs
         </button>
+        {showAccess && (
+          <button
+            type="button"
+            className="side-link"
+            aria-current={view === 'access' ? 'page' : undefined}
+            onClick={() => onNavigate('access')}
+          >
+            <Icon name="shield" size={18} />
+            Access
+          </button>
+        )}
       </div>
 
       <div className="side-section">

@@ -4,15 +4,21 @@ import { createServer } from 'node:http';
 import { createReadStream, existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { WebSocketServer } from 'ws';
-import { config, redactSecrets } from './config.js';
+import { WebSocketServer, type WebSocket } from 'ws';
+import { config, FIREBASE_DEFAULT_JWKS_URL, redactSecrets } from './config.js';
 import {
   AUTH_USERNAME,
   authEnabled,
+  googleAuthEnabled,
+  passwordAuthEnabled,
   SessionBook,
   tokenFromRequest,
   verifyLogin,
+  type AuthSession,
 } from './auth.js';
+import { verifyFirebaseIdToken } from './auth-google.js';
+import { Allowlist, isAllowed, type AllowEntry } from './auth-allowlist.js';
+import { HttpError } from './http-error.js';
 import { catalogWithReadiness } from './providers/catalog.js';
 import { registeredIds } from './providers/factory.js';
 import { drainLiveSockets, handleSocket } from './server/session-socket.js';
@@ -24,7 +30,47 @@ const app = express();
 app.use(cors({ origin: config.corsOrigins }));
 app.use(express.json());
 
+/**
+ * Express 4 does not catch rejections from async handlers — an unguarded one
+ * leaves the request hanging with no response and no status. Every async route
+ * goes through this.
+ */
+const route =
+  (fn: (req: express.Request, res: express.Response) => Promise<void>) =>
+  (req: express.Request, res: express.Response): void => {
+    fn(req, res).catch((err: Error) => {
+      // An expected refusal that already knows its answer (bad allowlist entry,
+      // rejected sign-in token, ...). `message` may carry detail for the log only.
+      if (err instanceof HttpError) {
+        console.warn(`[api] ${req.method} ${req.path} ${err.status}:`, err.message);
+        if (!res.headersSent) res.status(err.status).json({ error: redactSecrets(err.publicMessage) });
+        return;
+      }
+      console.error(`[api] ${req.method} ${req.path} failed:`, err.message);
+      // Scrubbed like every other message that leaves this process: the
+      // invariant is stated as absolute, and an fs error already carries
+      // SESSION_DIR.
+      if (!res.headersSent) res.status(500).json({ error: redactSecrets(err.message) });
+    });
+  };
+
+/**
+ * FIREBASE_JWKS_URL decides who can mint a valid identity. The test suite
+ * points it at a key it holds on 127.0.0.1; anything else is refused at boot
+ * rather than warned about, since a warning in a container log is not read.
+ */
+if (config.firebase.jwksUrl !== FIREBASE_DEFAULT_JWKS_URL) {
+  const u = URL.canParse(config.firebase.jwksUrl) ? new URL(config.firebase.jwksUrl) : undefined;
+  if (!u || u.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) {
+    throw new Error(
+      `FIREBASE_JWKS_URL=${config.firebase.jwksUrl} is not allowed: it exists only to point tests at a local key ` +
+        `(http://127.0.0.1:<port>/...). Unset it to use Google's keys.`,
+    );
+  }
+}
+
 const sessions = new SessionBook(config.authSessionTtlMs);
+const allowlist = new Allowlist(config.authAllowlistFile, config.authAllowedDomains);
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): void {
   if (!authEnabled()) {
@@ -38,6 +84,39 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   res.status(401).json({ error: 'Unauthorized' });
 }
 
+/**
+ * Admin-only routes. With the gate off there is no one to be admin, and the
+ * allowlist only matters to a gate that is on — so these are closed (403)
+ * rather than open, unlike every other route.
+ */
+function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (!authEnabled()) {
+    res.status(403).json({ error: 'Sign-in is not configured' });
+    return;
+  }
+  const session = sessions.get(tokenFromRequest(req));
+  if (!session) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  if (session.role !== 'admin') {
+    res.status(403).json({ error: 'Admins only' });
+    return;
+  }
+  res.locals.session = session;
+  next();
+}
+
+const isAdminEmail = (email: string): boolean => config.authAdminEmails.includes(email.toLowerCase());
+
+/**
+ * Who may hold a Google session: an AUTH_ADMIN_EMAILS account, or anyone the
+ * allowlist covers. The one rule, for sign-in and for revoking on removal alike.
+ */
+const admits = (entries: AllowEntry[], email: string): boolean => isAdminEmail(email) || isAllowed(entries, email);
+
+const allowlistBody = (entries: AllowEntry[]) => ({ entries, adminEmails: config.authAdminEmails });
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, sampleRate: CANONICAL_SAMPLE_RATE, registered: registeredIds() });
 });
@@ -48,16 +127,29 @@ app.get('/api/health', (_req, res) => {
  */
 app.get('/api/auth/config', (_req, res) => {
   const required = authEnabled();
+  const password = passwordAuthEnabled();
+  const google = googleAuthEnabled();
   res.json({
     required,
     username: AUTH_USERNAME,
     sessionTtlMs: config.authSessionTtlMs,
-    ...(required ? { hmacSecret: config.authHmacSecret } : {}),
+    password,
+    ...(password ? { hmacSecret: config.authHmacSecret } : {}),
+    ...(google
+      ? {
+          google: {
+            apiKey: config.firebase.apiKey,
+            authDomain: config.firebase.authDomain,
+            projectId: config.firebase.projectId,
+            ...(config.firebase.appId ? { appId: config.firebase.appId } : {}),
+          },
+        }
+      : {}),
   });
 });
 
 app.post('/api/auth/login', (req, res) => {
-  if (!authEnabled()) {
+  if (!passwordAuthEnabled()) {
     res.status(503).json({ error: 'Login is not configured (set AUTH_PASSWORD and AUTH_HMAC_SECRET)' });
     return;
   }
@@ -71,8 +163,37 @@ app.post('/api/auth/login', (req, res) => {
     res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
-  res.json(sessions.create(username));
+  res.json(sessions.create(username, { role: 'admin', method: 'password' }));
 });
+
+/**
+ * Google sign-in. The browser ran Firebase's Google popup and posts the ID
+ * token it got; we verify it, check the allowlist, and hand back one of our own
+ * session tokens — so the WebSocket, the <audio> URLs and every route keep
+ * working exactly as they do for the password login.
+ */
+app.post(
+  '/api/auth/google',
+  route(async (req, res) => {
+    if (!googleAuthEnabled()) {
+      res.status(503).json({ error: 'Google sign-in is not configured (set FIREBASE_PROJECT_ID and FIREBASE_API_KEY)' });
+      return;
+    }
+    // A bad token (401) or unreachable Google keys (503) throw an HttpError that `route` answers.
+    const { email } = await verifyFirebaseIdToken(typeof req.body?.idToken === 'string' ? req.body.idToken : '', {
+      projectId: config.firebase.projectId,
+      jwksUrl: config.firebase.jwksUrl,
+    });
+    if (!admits(await allowlist.list(), email)) {
+      console.warn(`[auth] google sign-in refused, not on the allowlist: ${email}`);
+      res.status(403).json({ error: `${email} is not allowed to sign in. Ask an admin to add it or its domain.` });
+      return;
+    }
+    const admin = isAdminEmail(email);
+    console.log(`[auth] google sign-in: ${email}${admin ? ' (admin)' : ''}`);
+    res.json(sessions.create(email, { role: admin ? 'admin' : 'member', method: 'google' }));
+  }),
+);
 
 app.post('/api/auth/logout', (req, res) => {
   const token = tokenFromRequest(req);
@@ -93,6 +214,40 @@ app.get('/api/auth/session', (req, res) => {
   res.json({ required: true, session });
 });
 
+/** Who may sign in with Google. Admins only — it lists colleagues' addresses. */
+app.get(
+  '/api/auth/allowlist',
+  requireAdmin,
+  route(async (_req, res) => {
+    res.json(allowlistBody(await allowlist.list()));
+  }),
+);
+
+app.post(
+  '/api/auth/allowlist',
+  requireAdmin,
+  route(async (req, res) => {
+    // A junk value (400) or an unreadable file (503) throw an HttpError that `route` answers.
+    const by = (res.locals.session as AuthSession).username;
+    const entries = await allowlist.add(req.body?.kind, req.body?.value, by);
+    console.log(`[auth] allowlist + ${req.body?.kind} ${String(req.body?.value)} by ${by}`);
+    res.json(allowlistBody(entries));
+  }),
+);
+
+app.delete(
+  '/api/auth/allowlist',
+  requireAdmin,
+  route(async (req, res) => {
+    const by = (res.locals.session as AuthSession).username;
+    const entries = await allowlist.remove(req.body?.kind, req.body?.value);
+    // Out now, not at token expiry: end every Google session the list no longer covers.
+    const revoked = sessions.revokeWhere((s) => s.method === 'google' && !admits(entries, s.username));
+    console.log(`[auth] allowlist - ${req.body?.kind} ${String(req.body?.value)} by ${by} (${revoked} signed out)`);
+    res.json({ ...allowlistBody(entries), revoked });
+  }),
+);
+
 /** Everything the frontend needs to render its provider/model toggles. */
 app.get('/api/catalog', requireAuth, (_req, res) => {
   const registered = registeredIds();
@@ -111,23 +266,6 @@ app.get('/api/catalog', requireAuth, (_req, res) => {
 app.get('/api/pricing', requireAuth, (_req, res) => {
   res.json({ usdPerInr, inrPerUsd, fxCheckedOn: FX_CHECKED_ON, rates: rateTable() });
 });
-
-/**
- * Express 4 does not catch rejections from async handlers — an unguarded one
- * leaves the request hanging with no response and no status. Every async route
- * goes through this.
- */
-const route =
-  (fn: (req: express.Request, res: express.Response) => Promise<void>) =>
-  (req: express.Request, res: express.Response): void => {
-    fn(req, res).catch((err: Error) => {
-      console.error(`[api] ${req.method} ${req.path} failed:`, err.message);
-      // Scrubbed like every other message that leaves this process: the
-      // invariant is stated as absolute, and an fs error already carries
-      // SESSION_DIR.
-      if (!res.headersSent) res.status(500).json({ error: redactSecrets(err.message) });
-    });
-  };
 
 /** Completed conversations, newest first. */
 app.get(
@@ -249,11 +387,40 @@ if (config.staticDir) serveUi(app, config.staticDir);
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws/session' });
+/**
+ * Open sockets per session token. The token is checked once, on upgrade — so
+ * without this a signed-out, expired or de-listed user's open tab could keep
+ * starting vendor sessions (each billed) until they closed it. Every way a
+ * token ends goes through `SessionBook.onRevoke`, which closes its sockets with
+ * 4401: the browser treats that as "sign in again", the socket handler as the
+ * end of the conversation.
+ */
+const socketsByToken = new Map<string, Set<WebSocket>>();
+sessions.onRevoke = (token) => {
+  const open = socketsByToken.get(token);
+  if (!open) return;
+  socketsByToken.delete(token);
+  for (const ws of open) ws.close(4401, 'signed out');
+};
+
 wss.on('connection', (ws, req) => {
-  if (authEnabled() && !sessions.get(tokenFromRequest(req))) {
+  if (!authEnabled()) {
+    handleSocket(ws);
+    return;
+  }
+  const token = tokenFromRequest(req);
+  if (!token || !sessions.get(token)) {
     ws.close(4401, 'unauthorized');
     return;
   }
+  let open = socketsByToken.get(token);
+  if (!open) socketsByToken.set(token, (open = new Set()));
+  open.add(ws);
+  ws.once('close', () => {
+    const set = socketsByToken.get(token);
+    set?.delete(ws);
+    if (set?.size === 0) socketsByToken.delete(token);
+  });
   handleSocket(ws);
 });
 
@@ -263,10 +430,22 @@ const onListen = (): void => {
   console.log(`  ws  ws://${where}/ws/session`);
   if (config.staticDir) console.log(`  ui  ${config.staticDir}`);
   console.log(`  registered:`, registeredIds());
+  if (googleAuthEnabled()) {
+    const domains = allowlist.pinned.join(', ') || '(none pinned)';
+    console.log(`  auth: google sign-in on (firebase ${config.firebase.projectId}; domains ${domains})`);
+    if (config.firebase.jwksUrl !== FIREBASE_DEFAULT_JWKS_URL) {
+      console.warn(`  auth: FIREBASE_JWKS_URL is overridden (${config.firebase.jwksUrl}) — test use only`);
+    }
+    if (!passwordAuthEnabled() && config.authAdminEmails.length === 0) {
+      console.warn('  auth: no admin — set AUTH_ADMIN_EMAILS (or the password login), or nobody can edit the allowlist');
+    }
+  } else if (config.firebase.projectId || config.firebase.apiKey) {
+    console.warn('  auth: only one of FIREBASE_PROJECT_ID / FIREBASE_API_KEY is set — google sign-in is off');
+  }
   if (config.authPassword && !config.authHmacSecret) {
-    console.warn('  auth: AUTH_PASSWORD is set but AUTH_HMAC_SECRET is not — login gate is off');
+    console.warn('  auth: AUTH_PASSWORD is set but AUTH_HMAC_SECRET is not — password login is off');
   } else if (config.authHmacSecret && !config.authPassword) {
-    console.warn('  auth: AUTH_HMAC_SECRET is set but AUTH_PASSWORD is not — login gate is off');
+    console.warn('  auth: AUTH_HMAC_SECRET is set but AUTH_PASSWORD is not — password login is off');
   } else if (authEnabled()) {
     console.log(`  auth: required (session ${Math.round(config.authSessionTtlMs / 3_600_000)}h)`);
   }

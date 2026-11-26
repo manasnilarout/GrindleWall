@@ -146,7 +146,15 @@ ws.on('message', (data, isBinary) => {
 
 ws.on('error', (err) => fail(`socket: ${err.message}`));
 
-ws.on('close', () => {
+ws.on('close', (code) => {
+  // 4401: the gate refused (or later revoked) this socket. A script cannot do
+  // the Google popup, so only the password login can get smoke through it.
+  if (code === 4401) {
+    fail(
+      'the server requires sign-in (WebSocket closed 4401). smoke can only use the admin password login: ' +
+        'set AUTH_PASSWORD and AUTH_HMAC_SECRET here and on the server, or run against a server without the gate.',
+    );
+  }
   const problems = [];
   if (!seen.started) problems.push('no session_started');
   if (seen.audioFrames === 0) problems.push('no audio frames');

@@ -41,7 +41,8 @@ Verification scripts, all in `backend/`:
 | Command | Needs a key | What it proves |
 |---|---|---|
 | `npm run smoke` | no | one full turn over the real WS protocol, both modes (needs `npm run dev` running) |
-| `npm run auth:selftest` | no | HMAC construction, login verify, session TTL/revoke, token extraction — the naive login layer |
+| `npm run auth:selftest` | no | HMAC construction, login verify, session TTL/revoke, token extraction — the admin password layer (Google sign-in is covered by `npm test`: `auth-google`, `auth-allowlist`) |
+| `npm run firebase:keys` | no | the JWK set `auth-google.ts` verifies Firebase ID tokens against serves the same keys as the x509 URL Firebase's docs name — key id, modulus and exponent |
 | `npm run gemini:selftest` | no | Gemini SSE/wire handling against a local fake |
 | `npm run usage:selftest` | no | cost arithmetic, persistence, secret redaction — vs hand-computed vendor denominations |
 | `npm run turn:selftest` | no | turn attribution: silence, barge-in, overlapping turns, TTS failure, tails |
@@ -216,6 +217,22 @@ Key files:
   prompt, language) plus usage and cost. The system prompt *is* persisted — that is deliberate,
   since it is what produced the numbers — so treat `data/sessions/` as conversation content.
   Records are ~1-3 KB per turn and kept forever unless `SESSION_MAX_RECORDS` is set.
+- **Sign-in is Google (Firebase) for the team, a password for the one admin — and both end in the
+  same backend session.** `auth-google.ts` verifies the Firebase ID token itself with `jose`
+  (RS256, `aud`/`iss` = the project, `iat`/`auth_time` in the past) and additionally requires
+  `sign_in_provider === 'google.com'` and `email_verified === true`, so an email/password Firebase
+  account cannot claim an allowed address. Its keys come from the JWK URL, not the x509 URL Firebase
+  documents; `npm run firebase:keys` is what says they are the same keys. A key-fetch failure is a
+  503, never a 401. Then `auth-allowlist.ts` decides: `AUTH_ALLOWED_DOMAINS` (default
+  `magickvoice.com`) is pinned and not removable from the UI; admin additions persist under
+  `$SESSION_DIR/.auth/` (inside the volume, and not a top-level `*.json`, which the store would read
+  as a conversation). An unreadable allowlist file is never overwritten — edits get a 503 — and
+  memory only changes after a successful write. Revoking a token (logout, an allowlist removal,
+  expiry) also **closes its open WebSockets with 4401**: the token is checked only on upgrade, and an
+  open socket can start billed vendor sessions indefinitely. The Firebase user is signed out right
+  after the popup — only our token is kept. `FIREBASE_JWKS_URL` exists for the local fake in tests;
+  the server refuses to boot with a non-loopback value and Terraform refuses to set it. No real
+  Firebase project has been used yet, so the tests prove our checks, not Google's token shape.
 - **Errors and logs are scrubbed before they reach the browser** (`redactSecrets`). `credentials()`
   hands every provider the whole environment, so one adapter interpolating its options into an
   error message would otherwise send every key in `.env` to the client.

@@ -1,13 +1,24 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { config } from './config.js';
 
-/** The only account this naive layer accepts. */
+/** The only account the password login accepts. Google sign-in is separate (`auth-google.ts`). */
 export const AUTH_USERNAME = 'admin@magickvoice.com';
 
 export const DEFAULT_SESSION_TTL_MS = 3 * 60 * 60 * 1000;
 
-export function authEnabled(): boolean {
+/** The admin password login: both AUTH_PASSWORD and AUTH_HMAC_SECRET set. */
+export function passwordAuthEnabled(): boolean {
   return Boolean(config.authPassword && config.authHmacSecret);
+}
+
+/** Google sign-in through Firebase: FIREBASE_PROJECT_ID and FIREBASE_API_KEY set. */
+export function googleAuthEnabled(): boolean {
+  return Boolean(config.firebase.projectId && config.firebase.apiKey);
+}
+
+/** The gate is on when either way in is configured. Unset, the bench stays open. */
+export function authEnabled(): boolean {
+  return passwordAuthEnabled() || googleAuthEnabled();
 }
 
 /**
@@ -41,25 +52,45 @@ export function verifyLogin(
   return hmacEquals(expected.hmacSecret, expected.password, presented.hmac);
 }
 
+/** `admin` may edit the sign-in allowlist; `member` may use everything else. */
+export type AuthRole = 'admin' | 'member';
+export type AuthMethod = 'password' | 'google';
+
 export interface AuthSession {
   token: string;
   username: string;
   expiresAt: number;
+  role: AuthRole;
+  method: AuthMethod;
 }
 
 /** In-memory sessions. A process restart logs everyone out — first iteration. */
 export class SessionBook {
   private readonly sessions = new Map<string, AuthSession>();
+  /** One timer per session, so expiry is an event (and closes sockets) rather than something noticed on lookup. */
+  private readonly expiries = new Map<string, NodeJS.Timeout>();
 
+  /** `ttlMs` must stay under setTimeout's ~24.8-day ceiling; config caps it at 24h. */
   constructor(private readonly ttlMs: number = DEFAULT_SESSION_TTL_MS) {}
 
-  create(username: string, now = Date.now()): AuthSession {
+  /**
+   * Called with every token that stops being valid — logout, an admin's
+   * removal, or expiry. The server uses it to close that token's open
+   * WebSockets, which are only checked when they connect.
+   */
+  onRevoke?: (token: string) => void;
+
+  /** `who` is required: the role a sign-in path grants should be visible at the call that grants it. */
+  create(username: string, who: { role: AuthRole; method: AuthMethod }, now = Date.now()): AuthSession {
     const session: AuthSession = {
       token: randomBytes(32).toString('hex'),
       username,
       expiresAt: now + this.ttlMs,
+      role: who.role,
+      method: who.method,
     };
     this.sessions.set(session.token, session);
+    this.expiries.set(session.token, setTimeout(() => this.drop(session.token), this.ttlMs).unref());
     return session;
   }
 
@@ -67,15 +98,37 @@ export class SessionBook {
     if (!token) return undefined;
     const session = this.sessions.get(token);
     if (!session) return undefined;
+    // The timer is the normal path; this covers a clock that ran ahead of it.
     if (session.expiresAt <= now) {
-      this.sessions.delete(token);
+      this.drop(token);
       return undefined;
     }
     return session;
   }
 
   revoke(token: string): void {
-    this.sessions.delete(token);
+    this.drop(token);
+  }
+
+  /**
+   * Ends every session matching `predicate` — an admin taking a domain off the
+   * allowlist means its people are out now, not when their token expires.
+   * Returns how many were revoked.
+   */
+  revokeWhere(predicate: (session: AuthSession) => boolean): number {
+    let n = 0;
+    for (const session of [...this.sessions.values()]) {
+      if (predicate(session) && this.drop(session.token)) n++;
+    }
+    return n;
+  }
+
+  private drop(token: string): boolean {
+    clearTimeout(this.expiries.get(token));
+    this.expiries.delete(token);
+    if (!this.sessions.delete(token)) return false;
+    this.onRevoke?.(token);
+    return true;
   }
 }
 

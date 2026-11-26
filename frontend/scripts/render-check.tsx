@@ -16,6 +16,7 @@ import { join, resolve } from 'node:path';
 import type { SessionIndexEntry, SessionSummary, StartConfig } from '../src/lib/protocol';
 import App, { Bench } from '../src/App';
 import { LoginPage } from '../src/components/LoginPage';
+import { AccessPage } from '../src/components/AccessPage';
 import { SessionReport } from '../src/components/SessionReport';
 import { RunDetailView } from '../src/components/RunDetailView';
 import { UsagePanel } from '../src/components/UsagePanel';
@@ -1938,6 +1939,40 @@ check('LoginPage: a refused sign-in is an alert', () => {
   if (!/<label class="field"><span class="field-label">Password/.test(html)) throw new Error('the password field is not a label');
   return html;
 }, ['role="alert"', 'Wrong password.']);
+check('LoginPage (Google, admin form folded away)', () => {
+  const html = renderToString(h(LoginPage, { google: true, password: true, sessionTtlMs: 3 * 60 * 60 * 1000 }));
+  if (!/<details class="login-admin">/.test(html)) throw new Error('the admin form is not folded under a <details>');
+  if (/<details[^>]*\bopen\b/.test(html)) throw new Error('the admin form starts open');
+  return html;
+}, ['Sign in with Google', 'Admin sign-in', 'Sign in as admin', 'Only approved domains', '3 hours']);
+check('LoginPage (Google only) has no password field', () => {
+  const html = renderToString(h(LoginPage, { google: true, password: false }));
+  if (html.includes('Password')) throw new Error('a password field was rendered with the password login off');
+  return html;
+}, ['Sign in with Google']);
+check('Sidebar shows Access to admins only', () => {
+  const member = renderToString(h(Sidebar, sidebarProps));
+  if (member.includes('>Access<')) throw new Error('a member was shown the Access page');
+  return renderToString(h(Sidebar, { ...sidebarProps, showAccess: true, view: 'access' as const }));
+}, ['Access', 'aria-current="page"']);
+check('AccessPage', () => {
+  const html = renderToString(h(AccessPage, {
+    initial: {
+      entries: [
+        { kind: 'domain', value: 'magickvoice.com', source: 'env' },
+        { kind: 'email', value: 'friend@gmail.com', source: 'admin', addedBy: 'admin@magickvoice.com', addedAt: Date.UTC(2026, 10, 1) },
+      ],
+      adminEmails: ['boss@magickvoice.com'],
+    },
+  }));
+  if ((html.match(/>Remove</g) ?? []).length !== 1) throw new Error('expected exactly one removable entry');
+  return html;
+}, ['Access', '@magickvoice.com', 'Pinned (AUTH_ALLOWED_DOMAINS)', 'friend@gmail.com', 'boss@magickvoice.com', 'Add']);
+check('Bench (signed in as admin) offers Access', () => renderToString(h(Bench, {
+  onLogout: () => {},
+  username: 'admin@magickvoice.com',
+  isAdmin: true,
+})), ['Access', 'Sign out']);
 
 /* --------------------- against the real catalog ------------------------ */
 /**

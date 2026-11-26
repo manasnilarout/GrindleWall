@@ -46,6 +46,7 @@ describe('login gate enabled', () => {
       required: true,
       username: AUTH_USERNAME,
       sessionTtlMs: 24 * 3_600_000, // AUTH_SESSION_HOURS=100 clamped to 24
+      password: true,
       hmacSecret: SECRET,
     });
     expect(text).not.toContain(PASSWORD);

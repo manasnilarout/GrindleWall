@@ -24,6 +24,8 @@ const session = (over: Partial<AuthSession> = {}): AuthSession => ({
   token: 'tok-123',
   username: AUTH_USERNAME,
   expiresAt: NOW + 60_000,
+  role: 'admin',
+  method: 'password',
   ...over,
 });
 

@@ -6,6 +6,7 @@ import {
   fetchAuthConfig,
   fetchAuthSession,
   login as postLogin,
+  loginWithGoogle,
   logout as postLogout,
   readSession,
   type AuthConfig,
@@ -98,6 +99,25 @@ export function useAuth() {
     setStatus('ready');
   }, [config]);
 
+  // Warm Firebase while the login page is up, so the click opens the popup at
+  // once instead of after a chunk download (see `prepareGoogle`).
+  const google = config?.google;
+  useEffect(() => {
+    if (status !== 'login' || !google) return;
+    import('../lib/firebase')
+      .then((m) => m.prepareGoogle(google))
+      .catch(() => undefined); // retried on click, where the error is shown
+  }, [status, google]);
+
+  const signInWithGoogle = useCallback(async () => {
+    if (!config?.google) throw new Error('Google sign-in is not configured');
+    const { googleIdToken } = await import('../lib/firebase');
+    const idToken = await googleIdToken(config.google);
+    const next = await loginWithGoogle(idToken);
+    setSession(next);
+    setStatus('ready');
+  }, [config]);
+
   const signOut = useCallback(async () => {
     await postLogout();
     setSession(null);
@@ -109,8 +129,12 @@ export function useAuth() {
     required: config?.required ?? false,
     username: config?.username ?? AUTH_USERNAME,
     sessionTtlMs: config?.sessionTtlMs ?? 3 * 60 * 60 * 1000,
+    passwordEnabled: config?.password ?? false,
+    googleEnabled: Boolean(config?.google),
+    isAdmin: session?.role === 'admin',
     session,
     signIn,
+    signInWithGoogle,
     signOut,
   };
 }

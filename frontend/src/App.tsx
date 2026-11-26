@@ -22,6 +22,7 @@ import { ComparePage, type RunsMemory } from './components/ComparePage';
 import { Console } from './components/Console';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LoginPage } from './components/LoginPage';
+import { AccessPage } from './components/AccessPage';
 import { useAuth } from './hooks/useAuth';
 
 const DEFAULT_PROMPT = 'You are a voice assistant. Answer in one or two short sentences. Never use lists or markdown.';
@@ -52,19 +53,31 @@ export default function App() {
         username={auth.username}
         sessionTtlMs={auth.sessionTtlMs}
         onSubmit={auth.signIn}
+        google={auth.googleEnabled}
+        password={auth.passwordEnabled}
+        onGoogle={auth.signInWithGoogle}
       />
     );
   }
 
-  return <Bench onLogout={auth.required ? auth.signOut : undefined} username={auth.session?.username} />;
+  return (
+    <Bench
+      onLogout={auth.required ? auth.signOut : undefined}
+      username={auth.session?.username}
+      isAdmin={auth.required && auth.isAdmin}
+    />
+  );
 }
 
 export function Bench({
   onLogout,
   username,
+  isAdmin = false,
 }: {
   onLogout?: () => void;
   username?: string;
+  /** Shows the Access page (the Google sign-in allowlist). Only meaningful behind the gate. */
+  isAdmin?: boolean;
 }) {
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [catalogError, setCatalogError] = useState<string>();
@@ -232,6 +245,7 @@ export function Bench({
         onAddRig={addRig}
         backend={backend}
         username={username}
+        showAccess={isAdmin}
         onLogout={
           onLogout &&
           (() => {
@@ -271,6 +285,12 @@ export function Bench({
         {view === 'runs' && (
           <ErrorBoundary panel="Runs">
             <ComparePage onOpenReport={openRun} providers={providers} memory={runsMemory.current} />
+          </ErrorBoundary>
+        )}
+
+        {view === 'access' && isAdmin && (
+          <ErrorBoundary panel="Access">
+            <AccessPage />
           </ErrorBoundary>
         )}
 

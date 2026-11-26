@@ -34,7 +34,7 @@ afterAll(() => {
   for (const d of ownDirs) rmSync(d, { recursive: true, force: true });
 });
 
-function ownTempDir(): string {
+export function ownTempDir(): string {
   const d = mkdtempSync(join(tmpdir(), 'gw-int-server-'));
   ownDirs.add(d);
   return d;
@@ -66,6 +66,13 @@ function baseEnv(): Record<string, string> {
     'AUTH_PASSWORD',
     'AUTH_HMAC_SECRET',
     'AUTH_SESSION_HOURS',
+    'FIREBASE_PROJECT_ID',
+    'FIREBASE_API_KEY',
+    'FIREBASE_AUTH_DOMAIN',
+    'FIREBASE_APP_ID',
+    'FIREBASE_JWKS_URL',
+    'AUTH_ADMIN_EMAILS',
+    'AUTH_ALLOWLIST_FILE',
     'AWS_SESSION_TOKEN',
     'AWS_DEFAULT_REGION',
     'OPENAI_BASE_URL',
@@ -89,6 +96,8 @@ function baseEnv(): Record<string, string> {
     for (const aliases of Object.values(p.envAliases ?? {})) for (const a of aliases) blank.add(a);
   }
   for (const k of blank) env[k] = '';
+  // Unset rather than blank: blank means "pin no domains", unset is the default.
+  delete env.AUTH_ALLOWED_DOMAINS;
   env.CORS_ORIGINS = 'http://localhost:5173';
   return env;
 }
@@ -232,6 +241,26 @@ export async function login(server: ServerHandle, password: string, secret: stri
   if (r.status !== 200) throw new Error(`login failed: ${r.status}`);
   const body = (await r.json()) as { token: string };
   return body.token;
+}
+
+/**
+ * One JSON request against the server, optionally as a signed-in session.
+ * `body` is sent as JSON when given (DELETE included — the allowlist route reads one).
+ */
+export function call(
+  server: ServerHandle,
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  opts: { token?: string; body?: unknown } = {},
+): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
+  if (opts.body !== undefined) headers['content-type'] = 'application/json';
+  return fetch(`${server.base}${path}`, {
+    method,
+    headers,
+    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+  });
 }
 
 /* ------------------------------------ http ------------------------------------ */

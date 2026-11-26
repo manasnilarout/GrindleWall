@@ -249,6 +249,11 @@
 .login-lede { margin: 0 0 20px; font-size: 13px; color: var(--ink-3); }
 .login-error { margin: 0 0 14px; font-size: 13px; }
 .login-submit { width: 100%; }
+.login-google { width: 100%; gap: 10px; font-weight: 600; }
+.login-google-mark { flex: none; }
+.login-admin { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; }
+.login-admin summary { cursor: pointer; color: var(--ink-3); margin-bottom: 4px; }
+.login-admin[open] summary { margin-bottom: 14px; }
 
 @media (max-width: 899px) {
   .login { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }

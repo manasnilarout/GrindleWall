@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bootServer, rawRequest, type ServerHandle } from './helpers.js';
+import { bootServer, call, rawRequest, type ServerHandle } from './helpers.js';
 import { CATALOG } from '../../../src/providers/catalog.js';
 import type { SessionSummary } from '../../../src/shared/protocol.js';
 
@@ -51,6 +51,11 @@ describe('HTTP routes with auth disabled', () => {
     });
     expect(r.status).toBe(503);
     expect(((await r.json()) as { error: string }).error).toMatch(/AUTH_PASSWORD and AUTH_HMAC_SECRET/);
+  });
+
+  it('Google sign-in is 503 and the allowlist is closed (403), not open, with the gate off', async () => {
+    expect((await call(server, 'POST', '/api/auth/google', { body: { idToken: 'x' } })).status).toBe(503);
+    expect((await call(server, 'GET', '/api/auth/allowlist')).status).toBe(403);
   });
 
   it('GET /api/auth/session reports no session and does not 401', async () => {

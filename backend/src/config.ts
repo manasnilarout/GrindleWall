@@ -1,4 +1,12 @@
 import 'dotenv/config';
+import { join } from 'node:path';
+
+/** Where Google publishes the keys that sign Firebase ID tokens (as a JWK set; see `auth-google.ts`). */
+export const FIREBASE_DEFAULT_JWKS_URL =
+  'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
+
+const sessionDir = process.env.SESSION_DIR ?? 'data/sessions';
+const firebaseProjectId = (process.env.FIREBASE_PROJECT_ID ?? '').trim();
 
 export const config = {
   /** Empty or junk (`PORT=`, `PORT=abc`) is unset, never `listen(0)`'s random port. */
@@ -24,7 +32,7 @@ export const config = {
    * through `SessionStore`, so a recorder that resolved its own would 404 on a
    * file that plainly exists.
    */
-  sessionDir: process.env.SESSION_DIR ?? 'data/sessions',
+  sessionDir,
   /**
    * When set, Express serves a built frontend from this directory and falls
    * back to index.html for the SPA. Used by the all-in-one container image so
@@ -56,7 +64,58 @@ export const config = {
    * immediately on the client while the server session was still live.
    */
   authSessionTtlMs: Math.round(Math.min(sanePositive(process.env.AUTH_SESSION_HOURS, 3), 24) * 3_600_000),
+  /**
+   * Google sign-in through Firebase Auth. Setting FIREBASE_PROJECT_ID and
+   * FIREBASE_API_KEY turns it on; the browser does the Google popup and the
+   * backend verifies the Firebase ID token it gets back, then issues its own
+   * session exactly as the password login does. The API key is served
+   * unauthenticated on GET /api/auth/config, as Firebase web apps always ship
+   * it — so it must be RESTRICTED in the Google Cloud console to the Firebase
+   * Auth APIs. An unrestricted key works against every API enabled in its
+   * project (Gemini, if that is the same project).
+   */
+  firebase: {
+    projectId: firebaseProjectId,
+    apiKey: (process.env.FIREBASE_API_KEY ?? '').trim(),
+    authDomain:
+      (process.env.FIREBASE_AUTH_DOMAIN ?? '').trim() || (firebaseProjectId ? `${firebaseProjectId}.firebaseapp.com` : ''),
+    appId: (process.env.FIREBASE_APP_ID ?? '').trim() || undefined,
+    /**
+     * Where Firebase's ID-token signing keys are fetched from. Overridable ONLY
+     * so the integration tests can sign tokens with a local key — whoever serves
+     * this URL can mint any identity, admins included — so `index.ts` refuses
+     * to start with an override that is not http on a loopback address.
+     */
+    jwksUrl: (process.env.FIREBASE_JWKS_URL ?? '').trim() || FIREBASE_DEFAULT_JWKS_URL,
+  },
+  /**
+   * Email domains whose Google accounts may sign in, comma-separated. These are
+   * the pinned baseline: an admin can add more domains (and single addresses)
+   * from the Access page, but cannot remove these — change the env var for that.
+   * Raw values: `Allowlist` normalises them and drops any that are not a domain.
+   */
+  authAllowedDomains: csv(process.env.AUTH_ALLOWED_DOMAINS ?? 'magickvoice.com'),
+  /**
+   * Google accounts that sign in as admin (may edit the allowlist). The
+   * password login is always admin. Comma-separated, case-insensitive.
+   */
+  authAdminEmails: csv(process.env.AUTH_ADMIN_EMAILS ?? '').map((e) => e.toLowerCase()),
+  /**
+   * Where admin-added domains/emails persist. Defaults to a directory inside
+   * SESSION_DIR — the one path the container already keeps on a volume — and
+   * deliberately not a `*.json` file at its top level, which the session store
+   * would try to read as a conversation.
+   */
+  authAllowlistFile:
+    process.env.AUTH_ALLOWLIST_FILE || join(sessionDir, '.auth', 'allowlist.json'),
 };
+
+function csv(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 function sanePositive(raw: string | undefined, fallback: number): number {
   const n = Number(raw);
@@ -94,6 +153,9 @@ export function redactSecrets(text: string): string {
     if (value && !secrets.has(value)) secrets.set(value, key);
   }
   for (const [key, value] of Object.entries(process.env)) {
+    // Served to every visitor on GET /api/auth/config anyway, so redacting it
+    // from an error would hide nothing.
+    if (key === 'FIREBASE_API_KEY') continue;
     // Short values produce false positives (PATH fragments, "1", locale names).
     if (!value || value.length < 12) continue;
     if (!/(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)) continue;

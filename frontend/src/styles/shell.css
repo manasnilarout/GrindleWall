@@ -151,3 +151,17 @@
 
 /* The root error boundary's fallback: the whole UI is gone, so it stands alone. */
 .crash { max-width: 720px; margin: 48px auto; padding: 0 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+
+/* --------------------------------- access --------------------------------- */
+
+.access { display: flex; flex-direction: column; gap: 16px; max-width: 860px; }
+.access-table td:nth-child(2), .access-table th:nth-child(2),
+.access-table td:nth-child(3), .access-table th:nth-child(3) { text-align: left; }
+.access-added { color: var(--ink-3); font-size: 12px; }
+.access-pinned { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ink-3); }
+.access-table .ghost.inline.danger { color: var(--err); }
+.access-empty { margin: 0; color: var(--ink-3); font-size: 13px; white-space: normal; text-align: left; }
+.access-add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 18px; }
+.access-add .field { margin-bottom: 0; }
+.access-add .access-value { flex: 1 1 220px; min-width: 0; }
+.access-note { margin: 14px 0 0; font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }

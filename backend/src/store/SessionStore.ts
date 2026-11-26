@@ -1,8 +1,9 @@
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { SessionIndexEntry, SessionSummary, StartConfig } from '../shared/protocol.js';
 import { config } from '../config.js';
+import { SerialQueue, writeFileAtomic } from './fs-atomic.js';
 
 /**
  * Conversations are persisted as one JSON file each, rewritten after every turn
@@ -26,7 +27,7 @@ export class SessionStore {
   private readonly dir: string;
   private ready?: Promise<void>;
   /** Serializes every write; see the class comment. */
-  private queue: Promise<unknown> = Promise.resolve();
+  private readonly queue = new SerialQueue();
   /**
    * Listing used to fully parse every record to read eight fields from each —
    * tens of megabytes on the event loop once a few hundred conversations
@@ -123,14 +124,9 @@ export class SessionStore {
   }
 
   /** Idempotent: called after every turn, and again when the conversation ends. */
-  async save(summary: SessionSummary): Promise<void> {
-    const run = this.queue.then(
-      () => this.writeAtomic(summary),
-      () => this.writeAtomic(summary), // a previous save failing must not block this one
-    );
-    // Keep the chain alive regardless of outcome; callers see their own result.
-    this.queue = run.catch(() => {});
-    return run;
+  save(summary: SessionSummary): Promise<void> {
+    // Serial, and a previous save failing must not block this one.
+    return this.queue.run(() => this.writeAtomic(summary));
   }
 
   private async writeAtomic(summary: SessionSummary): Promise<void> {
@@ -140,16 +136,8 @@ export class SessionStore {
       throw new Error(`Refusing to write a record with an unsafe id: ${summary.recordId}`);
     }
     await this.init();
-    const target = this.path(summary.recordId);
-    const tmp = `${target}.${randomUUID().slice(0, 8)}.tmp`;
-    try {
-      await writeFile(tmp, JSON.stringify(summary, null, 2), 'utf8');
-      await rename(tmp, target);
-      await this.prune();
-    } catch (err) {
-      await unlink(tmp).catch(() => {});
-      throw err;
-    }
+    await writeFileAtomic(this.path(summary.recordId), JSON.stringify(summary, null, 2));
+    await this.prune();
   }
 
   /**

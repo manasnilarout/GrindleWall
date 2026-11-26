@@ -1,19 +1,55 @@
-/** The only account the naive layer accepts. Mirrored on the backend. */
+/** The only account the password login accepts. Mirrored on the backend. */
 export const AUTH_USERNAME = 'admin@magickvoice.com';
 
 export const AUTH_STORAGE_KEY = 'voice-bench.auth';
+
+/** Firebase's public web config — what `initializeApp` takes. Served by the backend. */
+export interface FirebaseWebConfig {
+  apiKey: string;
+  authDomain: string;
+  projectId: string;
+  appId?: string;
+}
 
 export interface AuthConfig {
   required: boolean;
   username: string;
   sessionTtlMs: number;
+  /** Whether the admin password login is configured (`hmacSecret` is sent only then). */
+  password: boolean;
   hmacSecret?: string;
+  /** Present when Google sign-in is configured. */
+  google?: FirebaseWebConfig;
 }
+
+export type AuthRole = 'admin' | 'member';
 
 export interface AuthSession {
   token: string;
   username: string;
   expiresAt: number;
+  /** `admin` may edit the sign-in allowlist. */
+  role: AuthRole;
+  method: 'password' | 'google';
+}
+
+/** What an admin names when adding or removing: a whole domain or one address. */
+export interface AllowTarget {
+  kind: 'domain' | 'email';
+  value: string;
+}
+
+export interface AllowEntry extends AllowTarget {
+  /** `env` entries are pinned by AUTH_ALLOWED_DOMAINS and cannot be removed from the UI. */
+  source: 'env' | 'admin';
+  addedBy?: string;
+  addedAt?: number;
+}
+
+export interface AllowlistState {
+  entries: AllowEntry[];
+  /** AUTH_ADMIN_EMAILS — Google accounts that sign in as admin. */
+  adminEmails: string[];
 }
 
 export async function fetchAuthConfig(): Promise<AuthConfig> {
@@ -63,21 +99,47 @@ export async function hmacHex(secret: string, value: string): Promise<string> {
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export async function login(username: string, password: string, hmacSecret: string): Promise<AuthSession> {
-  const hmac = await hmacHex(hmacSecret, password);
-  const res = await fetch('/api/auth/login', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username, hmac }),
-  });
+/** The JSON body of a successful response; otherwise throws the server's `{ error }` (or `fallback: <status>`). */
+async function jsonOrThrow<T>(res: Response, fallback: string): Promise<T> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `Login failed: ${res.status}`);
+    throw new Error(body.error ?? `${fallback}: ${res.status}`);
   }
-  const session = (await res.json()) as AuthSession;
+  return (await res.json()) as T;
+}
+
+/** POSTs a sign-in and stores the session it returns. */
+async function signInWith(url: string, body: unknown, fallback: string): Promise<AuthSession> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const session = await jsonOrThrow<AuthSession>(res, fallback);
   writeSession(session);
   return session;
 }
+
+export async function login(username: string, password: string, hmacSecret: string): Promise<AuthSession> {
+  return signInWith('/api/auth/login', { username, hmac: await hmacHex(hmacSecret, password) }, 'Login failed');
+}
+
+/** Trades a Firebase ID token from the Google popup for one of our own sessions. */
+export function loginWithGoogle(idToken: string): Promise<AuthSession> {
+  return signInWith('/api/auth/google', { idToken }, 'Sign-in failed');
+}
+
+async function allowlistCall(method: 'GET' | 'POST' | 'DELETE', target?: AllowTarget): Promise<AllowlistState> {
+  const res = await authFetch('/api/auth/allowlist', {
+    method,
+    ...(target ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(target) } : {}),
+  });
+  return jsonOrThrow<AllowlistState>(res, 'Allowlist request failed');
+}
+
+export const fetchAllowlist = () => allowlistCall('GET');
+export const addAllowEntry = (target: AllowTarget) => allowlistCall('POST', target);
+export const removeAllowEntry = (target: AllowTarget) => allowlistCall('DELETE', target);
 
 export async function logout(): Promise<void> {
   const session = readSession();

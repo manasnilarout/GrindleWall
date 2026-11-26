@@ -111,6 +111,9 @@ bake keys into an image.** Pass them at run time:
 | `HOST` | `0.0.0.0` in the images | Bind address. Unset locally so Node keeps its dual-stack default. |
 | `AUTH_PASSWORD` / `AUTH_HMAC_SECRET` | unset (gate off) | Both required to turn the login gate on. Username is always `admin@magickvoice.com`. Sessions live in the process — a restart or a second replica signs people out. Run one instance (or rely on session affinity) if the gate is on. |
 | `AUTH_SESSION_HOURS` | `3` (capped at 24) | How long a UI session lasts after login. |
+| `FIREBASE_PROJECT_ID` / `FIREBASE_API_KEY` | unset (Google sign-in off) | Both turn on Google sign-in through Firebase Auth (and the gate with it). Enable the Google provider in the Firebase console and add the public hostname under *Authorized domains* (Firebase's docs say the popup is refused on an unlisted host; the UI maps that error, `auth/unauthorized-domain`, to a readable message). **Restrict the API key** to the Firebase Auth APIs in the Google Cloud console: it is served to every visitor, and an unrestricted key works against every API in its project. `FIREBASE_AUTH_DOMAIN` defaults to `<project>.firebaseapp.com`. The nginx configs here set no `Cross-Origin-Opener-Policy`; adding `same-origin` is expected to break the popup's hand-back (not tried). Not yet used against a real Firebase project — see README. |
+| `AUTH_ALLOWED_DOMAINS` | `magickvoice.com` | Comma-separated domains whose Google accounts may sign in. Pinned; the Access page adds more but cannot remove these. **Unset** means the default; **set but blank** pins none (only the Access page then admits anyone). A value that is not a domain (`*.x.com`, a URL) is dropped with an error at boot. Admin additions persist to `$SESSION_DIR/.auth/allowlist.json`, so they ride the session volume; if that file is ever unreadable, sign-in falls back to the pinned domains and edits are refused (503) rather than overwriting it. |
+| `AUTH_ADMIN_EMAILS` | unset | Google accounts that sign in as admin (may edit the allowlist) — and are admitted whatever the allowlist says. The password login is always admin. With Google on, no password and none listed here, the boot log warns that nobody can edit the allowlist. |
 | `STATIC_DIR` | unset / `/app/ui` in the all-in-one image | Directory of the Vite build. When set, Express serves the UI. |
 | `SESSION_DIR` | `/data/sessions` | JSON records + stereo WAVs. Mount a volume here. |
 | `PUBLIC_DOMAIN` | unset | Public hostname for the TLS overlay (`grindelwald.magickvoice.app`). Required by `docker-compose.https.yml`, unused otherwise. |
@@ -608,7 +611,7 @@ openssl s_client -connect grindelwald.magickvoice.app:443 \
   | openssl x509 -noout -subject -issuer -dates
 ```
 
-With the login gate on (`AUTH_PASSWORD` and `AUTH_HMAC_SECRET` both set),
+With the login gate on (`AUTH_PASSWORD` and `AUTH_HMAC_SECRET` both set, or Google sign-in configured),
 `/api/catalog` answers `{"error":"Unauthorized"}` until you log in — that is
 the gate working, not a broken deployment, and the catalog check above will
 fail until you do. `/api/health` stays open, which is what makes it the right
