@@ -230,7 +230,11 @@ Key files:
   memory only changes after a successful write. Revoking a token (logout, an allowlist removal,
   expiry) also **closes its open WebSockets with 4401**: the token is checked only on upgrade, and an
   open socket can start billed vendor sessions indefinitely. The Firebase user is signed out right
-  after the popup — only our token is kept. `FIREBASE_JWKS_URL` exists for the local fake in tests;
+  after the popup — only our token is kept. **The Firebase app name must never contain `:`**
+  (`firebaseAppName` in `frontend/src/lib/firebase.ts`): Google's popup handler splits
+  `apiKey:appName` on `:` to find the iframe it hands the result to, and with a colon the result is
+  lost to partitioned storage — sign-in then fails as `popup-closed-by-user` after the account is
+  picked (it did, in production, 2026-11-26). `FIREBASE_JWKS_URL` exists for the local fake in tests;
   the server refuses to boot with a non-loopback value and Terraform refuses to set it. No real
   Firebase project has been used yet, so the tests prove our checks, not Google's token shape.
 - **Errors and logs are scrubbed before they reach the browser** (`redactSecrets`). `credentials()`

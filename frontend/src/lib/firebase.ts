@@ -12,6 +12,24 @@ interface Prepared {
 let prepared: { key: string; promise: Promise<Prepared> } | undefined;
 
 /**
+ * The Firebase app's name. It must NOT contain a colon.
+ *
+ * When the popup finishes, Google's auth handler (`/__/auth/handler` on the
+ * authDomain) hands the result to the hidden Firebase iframe in this page. It
+ * finds that iframe by building the key `${apiKey}:${appName}`, splitting it on
+ * ":" and comparing part [1] with the iframe's `appName` — so a name with a
+ * colon never matches. The handler then falls back to localStorage, which the
+ * browser partitions between the popup (first-party) and the iframe (third-party
+ * in this page): the result never arrives, and the SDK reports
+ * `auth/popup-closed-by-user` right after the user picked an account. Read from
+ * the live handler.js on 2026-11-26; `grindelwald:<project>` broke sign-in in
+ * production exactly this way.
+ */
+export function firebaseAppName(projectId: string): string {
+  return `grindelwald-${projectId.replace(/:/g, '-')}`;
+}
+
+/**
  * Loads and initialises Firebase Auth ahead of the click. Call it as soon as
  * the login page knows Google is on.
  *
@@ -40,7 +58,7 @@ export function prepareGoogle(cfg: FirebaseWebConfig): Promise<Prepared> {
         signOut,
       } = await import('firebase/auth');
       const { getApps, initializeApp } = await app;
-      const name = `grindelwald:${cfg.projectId}`;
+      const name = firebaseAppName(cfg.projectId);
       const existing = getApps().find((a) => a.name === name);
       const firebaseApp = existing ?? initializeApp(cfg, name);
       const auth = existing
